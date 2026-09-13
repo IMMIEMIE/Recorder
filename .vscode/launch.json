@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Recorder}",
+            "name": "Debug Recorder",
+            "target": "Recorder",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Recorder"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Recorder}",
+            "name": "Release Recorder",
+            "target": "Recorder",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Recorder"
+        }
+    ]
+}

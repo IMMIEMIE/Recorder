@@ -1,0 +1,37 @@
+{
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "architecture": "arm64",
+  "model_path": "/Users/liu/Documents/Recorder/models/models--mlx-community--whisper-large-v3-turbo/snapshots/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+  "revision": "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+  "load_seconds": 4.736200750000535,
+  "warmup_seconds": 2.4143780840004183,
+  "peak_rss_bytes": 1854996480,
+  "mlx_peak_bytes": 2550442874,
+  "versions": {
+    "mlx": "0.32.2",
+    "mlx-audio": "0.5.1",
+    "transformers": "5.16.1",
+    "huggingface-hub": "1.30.0",
+    "webrtcvad-wheels": "2.0.14"
+  },
+  "results": [
+    {
+      "file": "chinese.aiff",
+      "audio_seconds": 8.005625,
+      "elapsed_ms": 469.3067500002144,
+      "text": "你好,这是一个本地语音识别测试,今天下午三点开会,请记住数字12345。"
+    },
+    {
+      "file": "english.aiff",
+      "audio_seconds": 5.1880625,
+      "elapsed_ms": 423.6803339999824,
+      "text": "This is a local speech recognition test. Please remember the number 12345."
+    },
+    {
+      "file": "mixed.aiff",
+      "audio_seconds": 6.5996875,
+      "elapsed_ms": 450.7640830006494,
+      "text": "今天我们测试Python和Swift,所有音频都在本地处理,谢谢,谢谢。"
+    }
+  ]
+}

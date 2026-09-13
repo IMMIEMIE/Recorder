@@ -1,0 +1,29 @@
+{
+  "runtime": "/Users/liu/Documents/Recorder/dist/声笺.app/Contents/Resources/runtime/bin/python3",
+  "paced_audio": true,
+  "offline_environment": true,
+  "sessions": [
+    {
+      "fixture": "chinese",
+      "partials": 6,
+      "finals": 1,
+      "text": "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+      "stop_to_ready_seconds": 0.38783787499960454
+    },
+    {
+      "fixture": "english",
+      "partials": 4,
+      "finals": 1,
+      "text": "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+      "stop_to_ready_seconds": 0.41188954199969885
+    },
+    {
+      "fixture": "mixed",
+      "partials": 5,
+      "finals": 1,
+      "text": "今天我们测试Python和Swift，所有音频都在本地处理。谢谢，谢谢。",
+      "stop_to_ready_seconds": 0.3407034170013503
+    }
+  ],
+  "exit_code": 0
+}

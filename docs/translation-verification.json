@@ -1,0 +1,153 @@
+{
+  "runtime": "/Users/liu/Documents/Recorder/dist/声笺.app/Contents/Resources/runtime/bin/python3",
+  "translator": "mlx-community/Qwen3-4B-Instruct-2507-4bit",
+  "offline_environment": true,
+  "paced_audio": true,
+  "translator_load_and_warmup_seconds": 5.524,
+  "server_rss_bytes": 6997770240,
+  "sessions": [
+    {
+      "fixture": "english",
+      "target": "简体中文",
+      "finals": [
+        {
+          "segment_id": 1,
+          "text": "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+          "forced_cut": false
+        }
+      ],
+      "units": [
+        {
+          "segment_id": 1,
+          "text": "这是一个本地语音识别测试。请记住一、二、三、四、五。",
+          "skipped": false,
+          "generation_ms": 348,
+          "final_to_first_text_seconds": 0.17,
+          "final_to_done_seconds": 0.348
+        }
+      ],
+      "stop_to_ready_seconds": 0.425,
+      "stop_to_translations_done_seconds": 0.772
+    },
+    {
+      "fixture": "english",
+      "target": "日本語",
+      "finals": [
+        {
+          "segment_id": 1,
+          "text": "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+          "forced_cut": false
+        }
+      ],
+      "units": [
+        {
+          "segment_id": 1,
+          "text": "これはローカルスピーキング認識テストです。1、2、3、4、5を覚えましょう。",
+          "skipped": false,
+          "generation_ms": 417,
+          "final_to_first_text_seconds": 0.165,
+          "final_to_done_seconds": 0.417
+        }
+      ],
+      "stop_to_ready_seconds": 0.42,
+      "stop_to_translations_done_seconds": 0.837
+    },
+    {
+      "fixture": "chinese",
+      "target": "English",
+      "finals": [
+        {
+          "segment_id": 1,
+          "text": "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+          "forced_cut": false
+        }
+      ],
+      "units": [
+        {
+          "segment_id": 1,
+          "text": "Hello, this is a local speech recognition test. We will have a meeting at three in the afternoon, please remember the numbers one two three four five.",
+          "skipped": false,
+          "generation_ms": 471,
+          "final_to_first_text_seconds": 0.173,
+          "final_to_done_seconds": 0.471
+        }
+      ],
+      "stop_to_ready_seconds": 0.389,
+      "stop_to_translations_done_seconds": 0.86
+    },
+    {
+      "fixture": "mixed",
+      "target": "English",
+      "finals": [
+        {
+          "segment_id": 1,
+          "text": "今天我们测试Python和Swift，所有音频都在本地处理。谢谢，谢谢。",
+          "forced_cut": false
+        }
+      ],
+      "units": [
+        {
+          "segment_id": 1,
+          "text": "Today we are testing Python and Swift, all audio is processed locally. Thank you, thank you.",
+          "skipped": false,
+          "generation_ms": 369,
+          "final_to_first_text_seconds": 0.173,
+          "final_to_done_seconds": 0.369
+        }
+      ],
+      "stop_to_ready_seconds": 0.35,
+      "stop_to_translations_done_seconds": 0.718
+    },
+    {
+      "fixture": "chinese",
+      "target": "简体中文",
+      "finals": [
+        {
+          "segment_id": 1,
+          "text": "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+          "forced_cut": false
+        }
+      ],
+      "units": [],
+      "stop_to_ready_seconds": 0.384,
+      "stop_to_translations_done_seconds": 0.384
+    }
+  ],
+  "forced_cut_session": {
+    "fixture": "chinese",
+    "target": "English",
+    "finals": [
+      {
+        "segment_id": 1,
+        "text": "你好，这是一个本地语音识别测试。今天下午三点。",
+        "forced_cut": true
+      },
+      {
+        "segment_id": 2,
+        "text": "开会，请记住数字一二三四五。",
+        "forced_cut": false
+      }
+    ],
+    "units": [
+      {
+        "segment_id": 1,
+        "text": "Hello, this is a local voice recognition test.",
+        "skipped": false,
+        "generation_ms": 275,
+        "final_to_first_text_seconds": 0.173,
+        "final_to_done_seconds": 0.275
+      },
+      {
+        "segment_id": 2,
+        "text": "We'll have a meeting at three in the afternoon, please remember the numbers one, two, three, four, five.",
+        "skipped": false,
+        "generation_ms": 401,
+        "final_to_first_text_seconds": 0.159,
+        "final_to_done_seconds": 0.401
+      }
+    ],
+    "stop_to_ready_seconds": 0.23,
+    "stop_to_translations_done_seconds": 0.632
+  },
+  "exit_code": 0
+}

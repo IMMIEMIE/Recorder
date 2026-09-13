@@ -1,0 +1,37 @@
+{
+  "platform": "macOS-26.5.1-arm64-arm-64bit",
+  "architecture": "arm64",
+  "model_path": "/Users/liu/Documents/Recorder/models/models--mlx-community--Qwen3-ASR-1.7B-bf16/snapshots/e1f6c266914abc5a46e8756e02580f834a6cf8a7",
+  "revision": "e1f6c266914abc5a46e8756e02580f834a6cf8a7",
+  "load_seconds": 0.7204556250003407,
+  "warmup_seconds": 0.1590055830001802,
+  "peak_rss_bytes": 4322770944,
+  "mlx_peak_bytes": 5172307744,
+  "versions": {
+    "mlx": "0.32.2",
+    "mlx-audio": "0.5.1",
+    "transformers": "5.16.1",
+    "huggingface-hub": "1.30.0",
+    "webrtcvad-wheels": "2.0.14"
+  },
+  "results": [
+    {
+      "file": "chinese.aiff",
+      "audio_seconds": 8.005625,
+      "elapsed_ms": 504.71037500028615,
+      "text": "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。"
+    },
+    {
+      "file": "english.aiff",
+      "audio_seconds": 5.1880625,
+      "elapsed_ms": 487.4214579999716,
+      "text": "This is a local speech recognition test. Please remember the number one, two, three, four, five."
+    },
+    {
+      "file": "mixed.aiff",
+      "audio_seconds": 6.5996875,
+      "elapsed_ms": 392.462291999891,
+      "text": "今天我们测试 Python 和 Swift，所有音频都在本地处理。谢谢，谢谢。"
+    }
+  ]
+}

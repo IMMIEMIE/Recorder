@@ -1,0 +1,24 @@
+{
+  "offline": true,
+  "switches": [
+    {
+      "architecture": "qwen3_asr",
+      "load_and_warmup_seconds": 9.952669082999819,
+      "text": "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+      "elapsed_ms": 475.26645899961295
+    },
+    {
+      "architecture": "whisper",
+      "load_and_warmup_seconds": 2.401120874999833,
+      "text": "你好,这是一个本地语音识别测试,今天下午三点开会,请记住数字12345。",
+      "elapsed_ms": 485.22062499978347
+    },
+    {
+      "architecture": "qwen3_asr",
+      "load_and_warmup_seconds": 0.39825520799968217,
+      "text": "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+      "elapsed_ms": 462.302500000078
+    }
+  ],
+  "global_cache_released": true
+}
