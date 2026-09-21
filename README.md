@@ -1,97 +1,148 @@
-# 声笺 · Local Recorder 0.3.1
+# 声笺 · Local Recorder
 
-Apple Silicon macOS 本地语音转写。SwiftUI 界面、AVAudioEngine 采集、独立 Python / MLX 推理进程。
+> Local-first, real-time speech transcription and translation for Apple Silicon Macs.
+> 面向 Apple Silicon Mac 的本地优先实时语音转写与翻译工具。
 
-## 安装
+![A microphone feeding a waveform into multilingual transcripts and subtitles](assets/readme/hero.png)
 
-打开 `dist/声笺-0.3.1-arm64.dmg`，先退出旧版，再将「声笺.app」拖到 Applications。应用内置 Python 和推理依赖，无需另装环境；**不包含模型权重**。当前是本机临时签名试用版，尚未公证。
+[![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-000000?logo=apple)](https://www.apple.com/macos/)
+[![Architecture](https://img.shields.io/badge/architecture-Apple%20Silicon-555555)](#requirements--环境要求)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-旧版模型缓存和配置继续复用，不需要重新下载已有模型。
+## What it does / 项目简介
 
-## 使用
+**声笺 (Shengjian)** turns microphone, audio-file, or system-audio input into near-real-time text on your Mac. Recognition runs locally with MLX models; the app can also show a floating subtitle window and translate completed sentences with either a local model or an OpenAI-compatible API.
 
-1. 打开「设置」，选择识别模型。
-2. 首次使用点击「下载模型」；下载完成后自动加载。已有缓存时点击「加载 / 切换」。
-3. 在主窗口的「音源」选择麦克风、音频文件或系统声音，然后点击「开始转写」。麦克风按系统提示授权；文件先点击「选择音频文件…」；系统声音首次使用需允许屏幕与系统音频录制权限。
-4. 临时文字会更新，最终文字逐段追加。停止后会处理尾句，再恢复就绪。
-5. 点击「另存为…」将已定稿文本保存为 UTF-8 TXT，也可复制到剪贴板。退出应用会丢弃当前会话文字。
-6. 点击「AI 提问」，在主窗口「设置 → AI 服务」填写 Base URL、模型 ID 和 API Key，点击「保存并使用」。支持 DeepSeek、OpenAI 及兼容接口。选择摘要、翻译或自定义提问，再点击发送。翻译默认简体中文，可自由修改目标语言。原文发送前可编辑，结果流式显示，可停止、复制或另存为。
-7. 实时翻译：在「设置 → 翻译」选择「本地模型」或「API 服务」，选择目标语言并开启。使用 API 时先在「AI 服务」页保存 Base URL、模型 ID 和 API Key，再到翻译页选择已保存的服务。每段停顿定稿后先显示原文，再请求翻译；译文流式显示在原文下方，预览文字不发送给 API。使用本地模型时首次需下载翻译模型。翻译方式、API 服务选择、目标语言与开关都会保存，重启后恢复。「另存为…」和复制会附带译文，「AI 提问」仍只使用原文。
+**声笺**可将麦克风、音频文件或系统声音近实时转写为文本。识别使用本机 MLX 模型；应用还支持悬浮字幕窗口，以及通过本地模型或兼容 OpenAI 的 API 对定稿句子进行翻译。
 
-文件音源支持系统可解码的音频格式（如 WAV、AIFF、M4A、MP3），按原始语速读取，不播放声音；读到末尾后自动定稿，手动停止也会处理已读尾句。系统声音采集其他应用的播放音频，不使用麦克风，也不保存屏幕画面。切换音源前需停止当前转写。三种音源均支持停顿定稿、实时翻译和字幕模式。
+Local transcription does not upload audio. Model downloads, optional AI prompts, and optional API translation require network access; see [Privacy / 隐私](#privacy--隐私) for the exact boundary.
 
-点击主窗口工具栏的「字幕模式」图标，或菜单栏中的「字幕模式」，可打开可拖动、可调整大小的半透明置顶字幕窗。字幕显示最新定稿、实时预览及对应译文；右上角可调整字号、背景透明度和译文显示，样式和位置会保存。关闭字幕窗不会停止转写。
+本地转写不会上传音频。模型下载、可选 AI 提问和可选 API 翻译需要联网；准确的数据边界见[隐私](#privacy--隐私)。
 
-默认快捷键为 **Control + Option + Space**；设置里可改为 R / D，并启用「按住说话」。菜单栏支持录音控制和重新打开窗口。图钉可将窗口置顶。
+## Highlights / 特性
 
-API 配置按 Base URL 独立持久保存，地址和模型在本地配置文件中，密钥在系统钥匙串中。重新打开设置时密钥输入框保持空白，并显示保存状态；留空保存不会清除密钥。损坏的单个配置文件会提示并跳过，不影响其他服务恢复。API 实时翻译会将定稿文本发送给所选服务，费用由服务商计收；不会上传录音。
+- **Three audio sources** — microphone, audio file (WAV, AIFF, M4A, MP3, and other system-decodable formats), or system audio.
+  **三种音源** — 麦克风、音频文件（WAV、AIFF、M4A、MP3 等系统可解码格式）和系统声音。
+- **Local, near-real-time transcription** — Qwen3-ASR 1.7B by default; Whisper Large v3 Turbo is also available.
+  **本地近实时识别** — 默认 Qwen3-ASR 1.7B，也可切换至 Whisper Large v3 Turbo。
+- **Smart endpointing** — reuses previews and conservatively detects sentence endings to reduce duplicate inference and awkward cutoffs.
+  **智能定稿** — 复用预览结果并保守判断句末，减少重复推理与生硬断句。
+- **Live translation** — local Qwen3/Hunyuan models or saved OpenAI-compatible API profiles, with nine target languages.
+  **实时翻译** — 可用本地 Qwen3/Hunyuan 模型或已保存的 OpenAI 兼容 API 服务，并内置九种目标语言。
+- **Subtitle and workflow tools** — always-on-top subtitles, text copy/export, menu-bar controls, and configurable shortcuts.
+  **字幕与工作流工具** — 置顶字幕、复制与导出文本、菜单栏控制及可配置快捷键。
 
-## 模型切换
+## Requirements / 环境要求
 
-| 预设 | 模型 ID | 下载大小（约） |
-| --- | --- | --- |
-| Qwen3-ASR 1.7B（默认） | `mlx-community/Qwen3-ASR-1.7B-bf16` | 4.08 GB |
-| Whisper Large v3 Turbo | `mlx-community/whisper-large-v3-turbo` | 1.61 GB |
+| Requirement / 要求 | Details / 说明 |
+| --- | --- |
+| Hardware / 硬件 | Apple Silicon Mac |
+| Operating system / 系统 | macOS 14 Sonoma 或更高版本 |
+| Build tools / 构建工具 | Xcode Command Line Tools |
+| Disk & network / 磁盘与网络 | Model weights are downloaded separately; the default ASR model is about 4.08 GB / 模型权重需另行下载；默认识别模型约 4.08 GB |
 
-在设置中选择另一项，点击「加载 / 切换」即可。录音时不能切换。下载可以取消和重试，成功的缓存会保留。切换失败不会覆盖已保存配置；重新连接可恢复上次成功配置。
+> The app is currently locally signed and not notarized, so macOS may require manual approval on first launch.
+> 当前应用为本地签名、未公证版本；首次启动时 macOS 可能要求手动允许。
 
-「自定义模型…」支持兼容的 MLX Qwen3-ASR 或 MLX Whisper ID、本地模型目录。本地目录优先，需包含对应架构的配置和权重；不支持任意 Hugging Face 模型或直接使用 PyTorch/Transformers 格式权重。上面两个预设已经实测，其余模型需要单独验证。
+## Quick start / 快速开始
 
-版本、预览频率和分段参数位于「高级」。语言和高级参数点击加载后生效。模型配置仅在加载及预热成功后原子保存。
-
-## 实时翻译
-
-| 预设 | 模型 ID | 下载大小（约） |
-| --- | --- | --- |
-| Qwen3 4B Instruct（默认） | `mlx-community/Qwen3-4B-Instruct-2507-4bit` | 2.26 GB |
-| Hunyuan-MT 7B（翻译专用） | `mlx-community/Hunyuan-MT-7B-4bit` | 4.22 GB |
-
-目标语言：简体中文、繁體中文、English、日本語、한국어、Français、Deutsch、Español、Русский。更换目标语言无需重新加载，对之后的句子生效。关闭翻译会卸载翻译模型并释放内存。
-
-只翻译定稿文字，不翻译识别中的临时文字。每次停顿结束的一段为一个翻译单元。长语音在停顿后于后端分块识别，合并为一段原文并显示后再翻译。本地翻译与识别共用一个推理线程：识别定稿始终优先，翻译在逐个 token 之间让出；积压超过 4 句时跳过最早的译文并提示，不影响原文和录音。中文、日文、韩文、俄文原文已是目标语言时直接跳过，不占用 GPU；拉丁字母语言在生成后比对，结果与原文相同则不显示。
-
-API 翻译使用独立的串行网络队列，每段定稿固定其服务、模型与目标语言，结果始终回到原会话对应的文字行。最多保留 4 段等待请求，超出后跳过最早等待的译文并提示。关闭翻译、切换翻译方式、清空文字或退出时取消未完成请求；请求失败不会影响录音与原文，后续段落仍可继续翻译。
-
-Qwen3 4B 预设已用合成样本实测，见 `docs/translation-verification.json`。Hunyuan-MT 7B 和「自定义模型…」（MLX 格式的 Qwen、Hunyuan、Llama、Mistral 文本模型）未经实测。Hunyuan-MT 使用腾讯混元社区许可协议，使用前请确认条款。4B 模型译文质量有限，专有名词和部分语种可能译得不准确。
-
-## 离线和隐私
-
-「下载模型」「下载翻译模型」、主动发送 AI 提问以及开启 API 实时翻译会联网。本地实时翻译不上传文字，API 实时翻译仅发送定稿文本；翻译方式与设置保存在 `LocalRecorder/translation.json`。AI 提问仅发送面板中的原文和任务，可能产生服务商费用；每个 Base URL 对应一份独立 JSON 配置，位于 LocalRecorder/AIProfiles；密钥按 Base URL 保存在系统钥匙串，当前配置选择保存在 UserDefaults。普通加载和转写强制使用 Hugging Face / Transformers 离线模式，不上传音频，没有云端回退。不保存原始录音或文字历史，复制操作会替换剪贴板。
-
-配置和模型缓存位于 `~/Library/Application Support/LocalRecorder/`。快捷键存储在 macOS UserDefaults。模型与 App 分开，不影响更新安装。使用外部模型目录时，通过「选择…」选取目录，按系统要求授予该目录访问。
-
-后台只监听 0600 权限的 Unix socket。音频实际重采样为 16 kHz 单声道 PCM16；20 ms WebRTC VAD，无辅助 VAD 下载。默认 240 ms 前置缓冲，启用「智能定稿」：连续两次预览一致、有可信句末标点且覆盖全部有声输入时，停顿 500 ms 可定稿；仅有一次有效句末结果时等待 1 秒；结果变化、未完句或覆盖不足时等待 1.8 秒。恢复讲话会取消停顿候选。无需设置秒数，可在设置中切换「固定停顿」，再于高级设置调整 0.3–2 秒；下次开始转写时生效。旧配置默认迁移为智能模式，原有手动时长保留。持续讲话时默认每 1200 ms 请求预览，但不按固定时长定稿；点击停止也会处理最后一段。识别与翻译耗时另计。预览间隔仍可在高级设置中调整；旧配置中的最长分段仅限制每次模型推理的音频长度，不触发定稿。
-
-静音期间不会为同一有声输入重复请求预览，完整预览可直接复用为定稿。长语音缓存已识别的完整音频块，只重算变化中的尾块；缓存不跨模型或会话复用。智能判断不增加模型或 API 请求，也不保证语义判断完全准确。
-
-这是连续采集、分段识别的近实时方案，不是原生跨块增量解码。单个推理任务执行，最终段优先，只保留一个待执行预览。最终队列过载时会停止采集并完成已接收音频；传输过载的未发送块可能丢失，会明确提示。停止时排空重采样器并处理尾句。
-
-## 构建和打包
-
-需要 Apple Silicon macOS 和 Xcode Command Line Tools：
+### Build from source / 从源码构建
 
 ```bash
+git clone https://github.com/IMMIEMIE/Recorder.git
+cd Recorder
 ./scripts/setup.sh
 ./scripts/build.sh
+open "dist/声笺.app"
+```
+
+`setup.sh` creates a project-local Python 3.12.14 environment and installs locked dependencies. `build.sh` produces `dist/声笺.app`. To make a DMG as well:
+
+`setup.sh` 会创建项目内的 Python 3.12.14 环境并安装锁定依赖；`build.sh` 生成 `dist/声笺.app`。如需 DMG，可继续运行：
+
+```bash
 ./scripts/package.sh
 ```
 
-固定 Python 3.12.14，依赖全量锁定在 `requirements.lock`，启动时不安装或升级。脚本只操作项目构建；同名 DMG 已存在时会停止，避免覆盖旧安装包。打包验证签名与磁盘映像，并输出 SHA-256。
+### First transcription / 第一次转写
 
-图标：`assets/AppIcon.png` 和 `assets/AppIcon.icns`。更换原图后运行 `python3 scripts/make_icon.py` 再构建。
+1. In **Settings → Transcription**, choose an ASR model and select **Download model**.
+   在**设置 → 转写**选择识别模型，再点击**下载模型**。
+2. Choose microphone, audio file, or system audio in the main window.
+   在主窗口选择麦克风、音频文件或系统声音。
+3. Click **Start transcription** and grant the requested macOS permission.
+   点击**开始转写**，按提示授予 macOS 权限。
+4. Stop to process the final phrase; then copy or export the transcript.
+   停止后会处理尾句；随后可复制或导出文本。
 
-## 测试与限制
+The default shortcut is `Control + Option + Space`. Open subtitle mode from the toolbar or menu bar.
+默认快捷键为 `Control + Option + Space`；可从工具栏或菜单栏打开字幕模式。
+
+## Models and translation / 模型与翻译
+
+### Speech recognition / 语音识别
+
+| Preset / 预设 | Model ID | Approx. download / 约下载大小 |
+| --- | --- | --- |
+| Qwen3-ASR 1.7B (default / 默认) | `mlx-community/Qwen3-ASR-1.7B-bf16` | 4.08 GB |
+| Whisper Large v3 Turbo | `mlx-community/whisper-large-v3-turbo` | 1.61 GB |
+
+Custom MLX-compatible Qwen3-ASR or Whisper IDs and local model directories are supported. Arbitrary Hugging Face and raw PyTorch/Transformers checkpoints are not directly supported.
+支持兼容 MLX 的自定义 Qwen3-ASR / Whisper ID 与本地模型目录；不直接支持任意 Hugging Face 模型或原始 PyTorch/Transformers 权重。
+
+### Live translation / 实时翻译
+
+Translation runs only after a segment is finalized, never on transient preview text. Choose **Local model** or **API service** in **Settings → Translation**.
+翻译只处理定稿文本，不会发送识别中的预览文字。在**设置 → 翻译**中选择**本地模型**或 **API 服务**。
+
+| Local preset / 本地预设 | Model ID | Approx. download / 约下载大小 |
+| --- | --- | --- |
+| Qwen3 4B Instruct (default / 默认) | `mlx-community/Qwen3-4B-Instruct-2507-4bit` | 2.26 GB |
+| Hunyuan-MT 7B | `mlx-community/Hunyuan-MT-7B-4bit` | 4.22 GB |
+
+Targets are Simplified Chinese, Traditional Chinese, English, Japanese, Korean, French, German, Spanish, and Russian. API translation sends only finalized text to the saved service; fees are determined by that provider.
+
+目标语言包括简体中文、繁體中文、英语、日语、韩语、法语、德语、西班牙语和俄语。API 翻译仅将定稿文本发送给已保存服务；费用由服务商决定。
+
+## Privacy / 隐私
+
+| Activity / 操作 | Data location / 数据位置 |
+| --- | --- |
+| Local transcription & translation / 本地转写与翻译 | Runs locally; audio is not uploaded / 在本机运行，不上传音频 |
+| Model download / 模型下载 | Downloads selected model weights / 下载所选模型权重 |
+| API live translation / API 实时翻译 | Sends finalized text only—not audio or preview text / 仅发送定稿文本，不发送音频或预览文字 |
+| AI prompt / AI 提问 | Sends the text in the prompt panel and the requested task / 发送提问面板中的文字及任务 |
+| Credentials / 凭据 | API keys are stored in macOS Keychain; profile metadata lives in `~/Library/Application Support/LocalRecorder/` / 密钥保存在 macOS 钥匙串，配置元数据位于上述目录 |
+
+The app does not retain raw recordings or transcript history. System-audio capture uses macOS screen-and-system-audio permission but does not save screen images.
+应用不保存原始录音或文字历史。系统声音采集需要 macOS 的屏幕与系统音频录制权限，但不会保存屏幕画面。
+
+## Development / 开发与测试
+
+After `./scripts/setup.sh`, run:
 
 ```bash
 ./scripts/test_ai.sh
 .venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python scripts/verify_model.py --model /absolute/model/snapshot --audio tests/fixtures/chinese.aiff
-.venv/bin/python scripts/verify_switching.py --qwen /absolute/qwen/snapshot --whisper /absolute/whisper/snapshot
-.venv/bin/python scripts/verify_translation.py   # 需要 models/ 中已缓存默认识别模型和翻译模型
 ```
 
-真实推理需要可访问 Metal GPU 的本机环境。验证脚本只使用明确指定的测试文件，不录制麦克风。
+Model-dependent verification requires cached weights and Metal access:
 
-参见 `docs/RELEASE-0.3.1.md`；0.1.0 历史验证保存在 `docs/VALIDATION.md`。当前未完成 30 分钟连续真人录音、干净机器安装、全部外设拔插/睡眠唤醒/快捷键冲突等验收。合成样本不能代表真人或噪声下识别质量。
+```bash
+.venv/bin/python scripts/verify_endpoints.py
+.venv/bin/python scripts/verify_translation.py
+```
 
-强制分段使用相邻不重叠音频，避免文本去重误删真实重复词，跨切点词语仍可能受影响。未实现系统输入、文字历史、说话人分离或精确字级时间戳。
+Synthetic samples and local test servers are regression checks, not guarantees of recognition quality in every real-world environment. Read [docs/SMART-ENDPOINTS.md](docs/SMART-ENDPOINTS.md) and [docs/VALIDATION.md](docs/VALIDATION.md) for measurements and limitations.
+
+合成样本和本地测试服务适合回归检查，但不代表所有真实环境下的识别质量。测试结果与限制请参阅 [docs/SMART-ENDPOINTS.md](docs/SMART-ENDPOINTS.md) 和 [docs/VALIDATION.md](docs/VALIDATION.md)。
+
+## Contributing / 参与贡献
+
+Issues and pull requests are welcome. Keep changes focused, include tests when practical, and do not commit model weights, virtual environments, or API credentials.
+欢迎提交 Issue 和 Pull Request。请保持改动聚焦；尽可能附带测试；不要提交模型权重、虚拟环境或 API 凭据。
+
+## License / 许可证
+
+Licensed under the [Apache License 2.0](LICENSE).
+本项目采用 [Apache License 2.0](LICENSE) 开源。
