@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import Carbon
+import UniformTypeIdentifiers
 
 struct TranslationPart {
     var text: String
@@ -19,6 +20,8 @@ struct Transcript: Identifiable {
 }
 
 final class AppModel: ObservableObject {
+    @Published private(set) var subtitleMode = false
+    private var subtitleWindow: SubtitleWindowController?
     @Published var state = "connecting"
     @Published var detail = "正在启动本地推理服务…"
     @Published var error = ""
@@ -26,6 +29,10 @@ final class AppModel: ObservableObject {
     @Published var partial = ""
     @Published var level: Float = 0
     @Published var microphones: [Microphone] = []
+    @Published var audioSource = "microphone"
+    @Published var audioFileURL: URL?
+    private let additionalInput = AdditionalAudioInput()
+    private var startAttempt = UUID()
     @Published var device: AudioDeviceID = 0
     @Published var permission = "尚未请求"
     @Published var modelID = "mlx-community/Qwen3-ASR-1.7B-bf16"
@@ -37,7 +44,8 @@ final class AppModel: ObservableObject {
     @Published var revision = ""
     @Published var language = "auto"
     @Published var previewInterval = 1200
-    @Published var silence = 760
+    @Published var endpointMode = "smart"
+    @Published var silence = 1000
     @Published var maxSegment = 18
     @Published var progress = 0.0
     @Published var progressLabel = ""
@@ -45,6 +53,9 @@ final class AppModel: ObservableObject {
     static let translatorHunyuanID = "mlx-community/Hunyuan-MT-7B-4bit"
     /// Must match TRANSLATION_TARGETS in backend/core.py.
     static let translationTargets = ["简体中文", "繁體中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]
+    @Published var translationProvider = "local"
+    @Published var translationAPIProfile = ""
+    private let apiTranslations = APITranslationQueue()
     @Published var translationEnabled = false
     @Published var translationTarget = "简体中文"
     @Published var translatorPreset = AppModel.translatorQwenID
@@ -80,11 +91,12 @@ final class AppModel: ObservableObject {
     private var hotKey: EventHotKeyRef?
     private var hotHandler: EventHandlerRef?
     private var sleepObserver: NSObjectProtocol?
-    private var pendingStart = false
+    @Published private var pendingStart = false
     private var generation = UUID()
     private var socketPath = ""
 
     var busy: Bool { !["idle", "ready", "error"].contains(state) }
+    var inputBusy: Bool { busy || pendingStart }
     var recording: Bool { state == "recording" }
     var joinedText: String { finalText.map(\.text).joined(separator: "\n") }
     var exportText: String {
@@ -106,6 +118,11 @@ final class AppModel: ObservableObject {
         }
     }
     var translationSummary: String {
+        if translationProvider == "api" {
+            guard translationEnabled else { return "已关闭" }
+            let profile = AIProfiles.shared.profiles.first { $0.id == translationAPIProfile }
+            return profile.map { "API · \($0.modelID) → \(translationTarget)" } ?? "请在翻译设置中选择 API 服务"
+        }
         if translatorState == "downloading" { return "正在下载翻译模型…" }
         if ["loading", "warming"].contains(translatorState) { return "正在加载翻译模型…" }
         guard translationEnabled else { return "已关闭" }
@@ -118,6 +135,13 @@ final class AppModel: ObservableObject {
     }
 
     init() {
+        apiTranslations.onUpdate = { [weak self] id, text, done in
+            guard let self, let index = self.rows[id], self.finalText.indices.contains(index) else { return }
+            // Negative unit IDs are reserved for frontend API translations.
+            self.finalText[index].translations[-1] = done && text.isEmpty ? nil : TranslationPart(text: text, revision: 1, done: done)
+            self.translationTick += 1
+        }
+        apiTranslations.onError = { [weak self] message in self?.error = message }
         refreshDevices()
         updatePermission()
         capture.onFailure = { [weak self] message in DispatchQueue.main.async { self?.stop(); self?.error = message } }
@@ -125,6 +149,19 @@ final class AppModel: ObservableObject {
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.stop() }
         registerShortcut()
         launch()
+    }
+
+    func setSubtitleMode(_ enabled: Bool) {
+        subtitleMode = enabled
+        if enabled {
+            if subtitleWindow == nil {
+                subtitleWindow = SubtitleWindowController(model: self) { [weak self] in self?.subtitleMode = false }
+            }
+            subtitleWindow?.show()
+        } else {
+            subtitleWindow?.close()
+            subtitleWindow = nil
+        }
     }
 
     func refreshDevices() { microphones = AudioCapture.microphones() }
@@ -182,7 +219,7 @@ final class AppModel: ObservableObject {
         process.standardError = stderr
         process.terminationHandler = { [weak self] child in DispatchQueue.main.async {
             guard let self, self.generation == currentGeneration else { return }
-            self.capture.stop(); self.state = "error"
+            self.stopInputs(); self.state = "error"
             self.diagnosticLock.lock(); let diagnostic = self.backendDiagnostic; self.diagnosticLock.unlock()
             self.error = "推理服务退出（代码 \(child.terminationStatus)）。点击重新连接恢复。\n" + diagnostic
         } }
@@ -202,7 +239,7 @@ final class AppModel: ObservableObject {
                         } }
                         channel.onFailure = { [weak self] message in DispatchQueue.main.async {
                             guard let self, self.generation == currentGeneration else { return }
-                            self.capture.stop(); self.state = "error"; self.error = message
+                            self.stopInputs(); self.state = "error"; self.error = message
                         } }
                         self.command("hello")
                     }
@@ -217,9 +254,10 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        cancelLiveTranslations()
         generation = UUID()
         pendingStart = false
-        capture.stop()
+        stopInputs()
         audioLock.lock(); accepting = false; audioLock.unlock()
         transport?.close(); transport = nil
         if let process, process.isRunning { process.terminate() }
@@ -238,7 +276,7 @@ final class AppModel: ObservableObject {
     var config: [String:Any] {
         ["schema_version":1, "model_id":modelID, "local_model_path":localPath,
          "revision":revision, "language":language, "preview_interval_ms":previewInterval,
-         "endpoint_silence_ms":silence, "max_segment_seconds":maxSegment]
+         "endpoint_mode":endpointMode, "endpoint_silence_ms":silence, "max_segment_seconds":maxSegment]
     }
     func load(download: Bool = false) {
         error = ""; progress = 0
@@ -264,13 +302,46 @@ final class AppModel: ObservableObject {
 
     var translationConfig: [String:Any] {
         ["schema_version":1, "enabled":translationEnabled, "target_language":translationTarget,
+         "provider":translationProvider, "api_profile":translationAPIProfile,
          "model_id":translatorModelID, "revision":translatorRevision]
     }
     func setTranslation(enabled: Bool) {
         guard !translatorBusy, enabled != translationEnabled else { return }
         error = ""
         translationEnabled = enabled
+        if !enabled { cancelLiveTranslations() }
         command("translation_settings", extra: ["enabled": enabled])
+    }
+    private func cancelLiveTranslations() {
+        apiTranslations.cancel()
+        for index in finalText.indices {
+            finalText[index].translations = finalText[index].translations.filter { $0.value.done }
+        }
+    }
+    func setTranslationProvider(_ provider: String) {
+        guard !translatorBusy, ["local", "api"].contains(provider), provider != translationProvider else { return }
+        cancelLiveTranslations()
+        translationProvider = provider
+        if provider == "api", translationAPIProfile.isEmpty {
+            translationAPIProfile = AIProfiles.shared.selectedID
+        }
+        command("translation_settings", extra: ["provider":provider, "api_profile":translationAPIProfile])
+    }
+    func setTranslationAPIProfile(_ id: String) {
+        translationAPIProfile = id
+        command("translation_settings", extra: ["api_profile":id])
+    }
+    private func translateFinal(id: String, text: String) {
+        guard translationEnabled, translationProvider == "api" else { return }
+        do {
+            guard let profile = AIProfiles.shared.profiles.first(where: { $0.id == translationAPIProfile }) else {
+                throw AIError.message("请在设置 → AI 服务中保存配置，并在翻译设置中选择该服务")
+            }
+            guard let key = try APIKeyStore.read(endpoint: profile.baseURL), !key.isEmpty else {
+                throw AIError.message("请在设置 → AI 服务中保存该服务的 API Key")
+            }
+            apiTranslations.enqueue(.init(id:id, text:text, target:translationTarget, config:profile.configuration, key:key))
+        } catch { self.error = "API 翻译未启动：\(error.localizedDescription)。原文仍保留。" }
     }
     func setTranslationTarget(_ target: String) {
         guard target != translationTarget else { return }
@@ -294,27 +365,71 @@ final class AppModel: ObservableObject {
     func showPermissionSettings() { NSWorkspace.shared.open(URL(string:"x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!) }
 
     func toggle() { recording || pendingStart ? stop() : start() }
+    func chooseAudioFile() {
+        guard !busy, !pendingStart else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK { audioFileURL = panel.url }
+    }
     func start() {
         guard state == "ready", !pendingStart else { return }
+        if audioSource == "file", audioFileURL == nil { error = "请先选择音频文件"; return }
         error = ""; pendingStart = true
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in DispatchQueue.main.async {
-            guard let self else { return }
-            self.updatePermission()
-            guard self.pendingStart else { return }
+        startAttempt = UUID()
+        let attempt = startAttempt
+        let begin = { [weak self] (granted: Bool) in
+            guard let self, self.pendingStart, self.startAttempt == attempt else { return }
             guard granted else { self.pendingStart = false; self.error = "请在系统设置中允许麦克风访问"; return }
             guard self.state == "ready" else { self.pendingStart = false; return }
             self.session = UUID().uuidString
             self.partial = ""; self.revisions.removeAll()
-            self.command("start")
-        } }
+            self.command("start", extra: ["endpoint_mode": self.endpointMode, "endpoint_silence_ms": self.silence])
+        }
+        if audioSource == "microphone" {
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in DispatchQueue.main.async {
+                self?.updatePermission(); begin(granted)
+            } }
+        } else { begin(true) }
     }
 
     private func beginCapture() {
         guard pendingStart else { command("stop"); return }
         pendingStart = false
         audioLock.lock(); sequence = 0; samples = 0; accepting = true; audioLock.unlock()
-        do { try capture.start(device: device) }
-        catch { stop(); self.error = error.localizedDescription }
+        let currentSession = session
+        additionalInput.onPCM = { [weak self] pcm, rms in self?.audio(pcm, rms: rms) }
+        additionalInput.onEnd = { [weak self] in DispatchQueue.main.async {
+            guard let self, self.session == currentSession, self.recording else { return }
+            self.stop()
+        } }
+        additionalInput.onFailure = { [weak self] message in DispatchQueue.main.async {
+            guard let self, self.session == currentSession, self.recording else { return }
+            self.stop(); self.error = message
+        } }
+        do {
+            switch audioSource {
+            case "file":
+                guard let url = audioFileURL else { throw AIError.message("请先选择音频文件") }
+                try additionalInput.startFile(url)
+            case "system":
+                Task { @MainActor [weak self] in
+                    guard let self, self.session == currentSession, self.recording else { return }
+                    do { try await self.additionalInput.startSystem() }
+                    catch {
+                        guard self.session == currentSession, self.recording else { return }
+                        self.stop()
+                        self.error = "无法采集系统声音：\(error.localizedDescription)。请在系统设置 → 隐私与安全性中允许声笺录制屏幕与系统音频。"
+                    }
+                }
+            default: try capture.start(device: device)
+            }
+        } catch { stop(); self.error = error.localizedDescription }
+    }
+
+    private func stopInputs() {
+        capture.stop()
+        additionalInput.stop()
     }
 
     private func audio(_ pcm: Data, rms: Float) {
@@ -331,8 +446,9 @@ final class AppModel: ObservableObject {
     }
 
     func stop() {
+        startAttempt = UUID()
         pendingStart = false
-        capture.stop()
+        stopInputs()
         audioLock.lock(); accepting = false; audioLock.unlock()
         level = 0
         if state == "recording" { state = "finalizing"; command("stop") }
@@ -349,11 +465,12 @@ final class AppModel: ObservableObject {
             preset = localPath.isEmpty && [Self.qwenID, Self.whisperID].contains(modelID) ? modelID : "custom"
             language = c["language"] as? String ?? "auto"
             previewInterval = c["preview_interval_ms"] as? Int ?? 1200
-            silence = c["endpoint_silence_ms"] as? Int ?? 760
+            endpointMode = c["endpoint_mode"] as? String ?? "smart"
+            silence = c["endpoint_silence_ms"] as? Int ?? 1000
             maxSegment = c["max_segment_seconds"] as? Int ?? 18
         case "status":
             let next = event["state"] as? String ?? "idle"
-            if next != "recording", recording { capture.stop(); audioLock.lock(); accepting = false; audioLock.unlock(); level = 0 }
+            if next != "recording", recording { stopInputs(); audioLock.lock(); accepting = false; audioLock.unlock(); level = 0 }
             state = next; detail = event["detail"] as? String ?? ""
             if next == "recording" { beginCapture() }
             if next == "ready" { partial = "" }
@@ -369,10 +486,12 @@ final class AppModel: ObservableObject {
                 if !text.isEmpty {
                     rows[id] = finalText.count
                     finalText.append(Transcript(id:id, text:text, seconds:Double(event["start_sample"] as? Int ?? 0) / 16000))
+                    translateFinal(id: id, text: text)
                 }
                 partial = ""
             } else { partial = text }
         case "translation":
+            guard translationProvider == "local", translationEnabled else { return }
             // Translations may finish after a new session starts; they still belong to their original rows.
             guard let sessionID = event["session_id"] as? String, let segment = event["segment_id"] as? Int,
                   let unit = event["unit_id"] as? Int, let rev = event["revision"] as? Int,
@@ -388,6 +507,8 @@ final class AppModel: ObservableObject {
             translatorDetail = event["detail"] as? String ?? ""
             activeTranslatorID = event["active_model"] as? String ?? ""
             guard let c = event["config"] as? [String:Any] else { return }
+            translationProvider = c["provider"] as? String ?? "local"
+            translationAPIProfile = c["api_profile"] as? String ?? ""
             translationEnabled = c["enabled"] as? Bool ?? false
             translationTarget = c["target_language"] as? String ?? "简体中文"
             // Keep an unsaved model choice in Settings until a load commits one.
@@ -410,7 +531,7 @@ final class AppModel: ObservableObject {
         TextExport.save(exportText) { [weak self] message in self?.error = message }
     }
     func copyText() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(exportText, forType: .string) }
-    func clear() { guard !busy else { return }; finalText.removeAll(); rows.removeAll(); seen.removeAll(); revisions.removeAll(); partial = "" }
+    func clear() { guard !busy else { return }; cancelLiveTranslations(); finalText.removeAll(); rows.removeAll(); seen.removeAll(); revisions.removeAll(); partial = "" }
 
     func registerShortcut() {
         if let hotKey { UnregisterEventHotKey(hotKey); self.hotKey = nil }

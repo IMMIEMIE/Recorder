@@ -28,16 +28,24 @@ struct AIProfileFiles {
         let digest = SHA256.hash(data: Data(baseURL.utf8)).map { String(format: "%02x", $0) }.joined()
         return directory.appendingPathComponent(digest + ".json")
     }
-    func load() throws -> [AIProfile] {
+    func load(reportInvalid: (String) -> Void = { _ in }) throws -> [AIProfile] {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "json" }.map { try JSONDecoder().decode(AIProfile.self, from: Data(contentsOf: $0)) }
+            .filter { $0.pathExtension == "json" }.compactMap { url -> AIProfile? in
+                do {
+                    let profile = try JSONDecoder().decode(AIProfile.self, from: Data(contentsOf: url))
+                    guard try AIProfile.normalize(profile.baseURL) == profile.baseURL else { throw AIError.message("配置地址无效") }
+                    _ = try profile.configuration.url()
+                    return profile
+                } catch { reportInvalid(url.lastPathComponent); return nil }
+            }
             .sorted { $0.baseURL < $1.baseURL }
     }
     func save(_ profile: AIProfile) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(profile).write(to: file(for: profile.baseURL), options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file(for: profile.baseURL).path)
     }
     func remove(_ profile: AIProfile) throws { try FileManager.default.removeItem(at: file(for: profile.baseURL)) }
 }
@@ -48,28 +56,32 @@ final class AIProfiles: ObservableObject {
     @Published private(set) var selectedID = ""
     @Published var message = ""
     private let files: AIProfileFiles
+    private let defaults: UserDefaults
     var selected: AIProfile? { profiles.first { $0.id == selectedID } }
-    init() {
-        files = AIProfileFiles(directory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    init(directory: URL? = nil, defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        files = AIProfileFiles(directory: directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LocalRecorder/AIProfiles", isDirectory: true))
         do {
-            profiles = try files.load()
+            var invalid: [String] = []
+            profiles = try files.load { invalid.append($0) }
+            if !invalid.isEmpty { message = "有 \(invalid.count) 个配置文件无法读取，其余配置已恢复。" }
             // Migrate the previous single-endpoint configuration once, without removing its key.
-            if profiles.isEmpty, let data = UserDefaults.standard.data(forKey: "ai.configuration.v1") {
+            if profiles.isEmpty, let data = defaults.data(forKey: "ai.configuration.v1") {
                 let old = try JSONDecoder().decode(AIServiceConfiguration.self, from: data)
                 let base = try AIProfile.normalize(old.endpoint)
                 let profile = AIProfile(baseURL: base, modelID: old.model)
                 if let key = try APIKeyStore.read(endpoint: old.endpoint) { try APIKeyStore.save(key, endpoint: base) }
                 try files.save(profile); profiles = [profile]
-                UserDefaults.standard.removeObject(forKey: "ai.configuration.v1")
+                defaults.removeObject(forKey: "ai.configuration.v1")
             }
-            let saved = UserDefaults.standard.string(forKey: "ai.selectedBaseURL") ?? ""
+            let saved = defaults.string(forKey: "ai.selectedBaseURL") ?? ""
             selectedID = profiles.contains { $0.id == saved } ? saved : profiles.first?.id ?? ""
         } catch { message = "读取 AI 配置失败：\(error.localizedDescription)" }
     }
     func select(_ id: String) {
         guard profiles.contains(where: { $0.id == id }) else { return }
-        selectedID = id; UserDefaults.standard.set(id, forKey: "ai.selectedBaseURL")
+        selectedID = id; defaults.set(id, forKey: "ai.selectedBaseURL")
     }
     func save(base: String, model: String, key: String) throws -> AIProfile {
         let normalized = try AIProfile.normalize(base)
@@ -87,7 +99,7 @@ final class AIProfiles: ObservableObject {
         try files.remove(profile)
         profiles.removeAll { $0.id == profile.id }
         selectedID = profiles.first?.id ?? ""
-        UserDefaults.standard.set(selectedID, forKey: "ai.selectedBaseURL")
+        defaults.set(selectedID, forKey: "ai.selectedBaseURL")
         message = "已删除配置及密钥"
     }
 }
@@ -99,9 +111,15 @@ struct AISettingsView: View {
     @State private var model = "deepseek-v4-flash"
     @State private var key = ""
     @State private var message = ""
+    @State private var keyStatus = ""
     private func edit(_ profile: AIProfile?) {
         editingID = profile?.id ?? ""
         base = profile?.baseURL ?? ""; model = profile?.modelID ?? ""; key = ""; message = ""
+        keyStatus = "尚未保存密钥"
+        if let profile {
+            do { keyStatus = try APIKeyStore.read(endpoint: profile.baseURL)?.isEmpty == false ? "密钥已保存，重启后可继续使用" : "尚未保存密钥" }
+            catch { keyStatus = error.localizedDescription }
+        }
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -118,10 +136,11 @@ struct AISettingsView: View {
                 Button("DeepSeek") { edit(profiles.profiles.first { $0.id == "https://api.deepseek.com" }); base = "https://api.deepseek.com"; if model.isEmpty { model = "deepseek-v4-flash" } }
                 Button("OpenAI") { edit(profiles.profiles.first { $0.id == "https://api.openai.com/v1" }); base = "https://api.openai.com/v1" }
             }
-            LabeledContent("Base URL") { TextField("https://api.example.com/v1", text: $base).onChange(of: base) { _, _ in key = "" } }
+            LabeledContent("Base URL") { TextField("https://api.example.com/v1", text: Binding(get: { base }, set: { base = $0; key = ""; keyStatus = "保存时将使用此地址对应的密钥" })) }
             LabeledContent("模型 ID") { TextField("模型 ID", text: $model) }
             LabeledContent("API Key") { SecureField("留空保留该 Base URL 已保存的密钥", text: $key) }
-            Text("每个 Base URL 独立保存，自动追加 /chat/completions。密钥存于系统钥匙串。").font(.caption).foregroundStyle(.secondary)
+            Text("地址、模型和当前选择会持久保存，重启后自动恢复。密钥存于系统钥匙串；输入框留空不会清除已保存密钥。").font(.caption).foregroundStyle(.secondary)
+            Text(keyStatus).font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("保存并使用") {
                     do { let saved = try profiles.save(base: base, model: model, key: key); edit(saved); message = "已保存并设为当前配置" }

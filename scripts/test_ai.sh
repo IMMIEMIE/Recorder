@@ -15,5 +15,5 @@ export RECORDER_MOCK_URL="http://127.0.0.1:$(cat "$port_file")"
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache"
 mkdir -p .build/feature-tests
-swiftc -parse-as-library -module-cache-path "$PWD/.build/module-cache" Sources/Recorder/AIClient.swift Sources/Recorder/AIProfiles.swift Tests/AIClientTests.swift -o .build/feature-tests/ai-tests
+swiftc -parse-as-library -module-cache-path "$PWD/.build/module-cache" Sources/Recorder/AIClient.swift Sources/Recorder/AIProfiles.swift Sources/Recorder/APITranslationQueue.swift tests/AIClientTests.swift -o .build/feature-tests/ai-tests
 .build/feature-tests/ai-tests

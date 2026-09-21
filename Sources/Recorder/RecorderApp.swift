@@ -31,6 +31,7 @@ struct MenuContent: View {
         Button(model.recording ? "停止转写" : "开始转写") { model.toggle() }
             .disabled(!model.recording && model.state != "ready")
         Button("显示转写窗口") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
+        Toggle("字幕模式", isOn: Binding(get: { model.subtitleMode }, set: { model.setSubtitleMode($0) }))
         Button("文本另存为…") { model.saveText() }.disabled(model.finalText.isEmpty)
         Button("复制文字") { model.copyText() }.disabled(model.finalText.isEmpty)
         Divider()
@@ -58,15 +59,28 @@ struct MainView: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(13).background(accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
                 VStack(alignment: .leading, spacing: 12) {
                     Text("音频输入").font(.caption).foregroundStyle(.secondary)
+                    Picker("音源", selection: $model.audioSource) {
+                        Text("麦克风").tag("microphone")
+                        Text("音频文件").tag("file")
+                        Text("系统声音").tag("system")
+                    }.disabled(model.inputBusy)
+                    if model.audioSource == "microphone" {
                     Picker("麦克风", selection: $model.device) {
                         Text("系统默认麦克风").tag(UInt32(0))
                         ForEach(model.microphones) { Text($0.name).tag($0.id) }
-                    }.labelsHidden().disabled(model.busy)
+                    }.labelsHidden().disabled(model.inputBusy)
                     HStack { Circle().fill(model.permission == "已允许" ? accent : .orange).frame(width: 6, height: 6); Text("麦克风权限：\(model.permission)").font(.caption2).foregroundStyle(.secondary) }
+                    } else if model.audioSource == "file" {
+                        Button("选择音频文件…") { model.chooseAudioFile() }.disabled(model.inputBusy)
+                        Text(model.audioFileURL?.lastPathComponent ?? "尚未选择文件").font(.caption).lineLimit(2)
+                        Text("按原始语速转写，不播放声音；文件结束后自动处理尾句。").font(.caption2).foregroundStyle(.secondary)
+                    } else {
+                        Text("采集其他应用播放的声音，不使用麦克风。首次使用需允许屏幕与系统音频录制权限。").font(.caption).foregroundStyle(.secondary)
+                    }
                     HStack(spacing: 3) {
                         ForEach(0..<24) { i in Capsule().fill(Float(i)/24 < model.level ? accent : accent.opacity(0.12)).frame(height: 5 + CGFloat(i % 4) * 3) }
                     }.frame(height: 22)
-                    Button("刷新设备") { model.refreshDevices() }.buttonStyle(.link).font(.caption)
+                    if model.audioSource == "microphone" { Button("刷新设备") { model.refreshDevices() }.buttonStyle(.link).font(.caption) }
                 }
                 Divider()
                 VStack(alignment: .leading, spacing: 9) {
@@ -84,6 +98,8 @@ struct MainView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center) {
                     Spacer()
+                    Button { model.setSubtitleMode(!model.subtitleMode) } label: { Image(systemName: model.subtitleMode ? "captions.bubble.fill" : "captions.bubble") }
+                        .help(model.subtitleMode ? "关闭字幕模式" : "打开字幕模式").accessibilityLabel("字幕模式")
                     Button { floating.toggle(); NSApp.keyWindow?.level = floating ? .floating : .normal } label: { Image(systemName: floating ? "pin.fill" : "pin") }.help("窗口置顶")
                     Menu {
                         Toggle("实时翻译", isOn: Binding(get: { model.translationEnabled }, set: { model.setTranslation(enabled: $0) }))
@@ -211,12 +227,18 @@ struct SettingsView: View {
             }.disabled(model.busy)
             Picker("快捷键：Control + Option +", selection: $model.shortcutKey) { Text("Space").tag("Space"); Text("R").tag("R"); Text("D").tag("D") }
             Toggle("按住说话", isOn: $model.holdToTalk)
+            Picker("定稿方式", selection: $model.endpointMode) {
+                Text("智能定稿（默认）").tag("smart")
+                Text("固定停顿").tag("fixed")
+            }.disabled(model.inputBusy)
+            Text("智能模式结合停顿、句末标点和文字稳定性自动定稿；无需设置秒数。修改在下次转写时生效。").font(.caption).foregroundStyle(.secondary)
             DisclosureGroup("高级", isExpanded: $advanced) {
                 VStack(alignment: .leading, spacing: 12) {
+                    if model.endpointMode == "fixed" {
+                        Stepper("停顿定稿：\(Double(model.silence) / 1000, specifier: "%.2f") 秒", value: $model.silence, in: 300...2000, step: 20)
+                    }
                     TextField("Revision（可选）", text: $model.revision)
                     Stepper("预览间隔：\(model.previewInterval) ms", value: $model.previewInterval, in: 800...10000, step: 200)
-                    Stepper("停顿定稿：\(model.silence) ms", value: $model.silence, in: 300...2000, step: 20)
-                    Stepper("最长分段：\(model.maxSegment) 秒", value: $model.maxSegment, in: 5...25)
                     Text("语言和高级参数在加载后生效。").font(.caption).foregroundStyle(.secondary)
                 }.padding(.top, 8).disabled(model.busy)
             }
@@ -227,42 +249,59 @@ struct SettingsView: View {
 
 struct TranslationSettingsView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject private var profiles = AIProfiles.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("实时翻译").font(.title2.bold())
+            Picker("翻译服务", selection: Binding(get: { model.translationProvider }, set: { model.setTranslationProvider($0) })) {
+                Text("本地模型").tag("local")
+                Text("API 服务").tag("api")
+            }.disabled(model.translatorBusy)
             Toggle("启用实时翻译", isOn: Binding(get: { model.translationEnabled }, set: { model.setTranslation(enabled: $0) }))
                 .disabled(model.translatorBusy)
             Picker("目标语言", selection: Binding(get: { model.translationTarget }, set: { model.setTranslationTarget($0) })) {
                 ForEach(AppModel.translationTargets, id: \.self) { Text($0).tag($0) }
             }
-            Text("每句话定稿后在本机逐句翻译，译文显示在原文下方；原文已是目标语言时不显示译文。更换目标语言对之后的句子生效。")
+            Text("停顿定稿后逐句翻译，译文显示在原文下方；预览文字不翻译。服务、模型和目标语言的更改对之后定稿的句子生效。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Divider()
-            Picker("翻译模型", selection: Binding(get: { model.translatorPreset }, set: { model.selectTranslatorPreset($0) })) {
-                Text("Qwen3 4B Instruct（默认）").tag(AppModel.translatorQwenID)
-                Text("Hunyuan-MT 7B（翻译专用）").tag(AppModel.translatorHunyuanID)
-                Text("自定义模型…").tag("custom")
-            }.disabled(model.translatorBusy)
-            if model.translatorPreset == "custom" {
-                TextField("Hugging Face 模型 ID（MLX 格式）", text: Binding(get: { model.translatorModelID }, set: { model.translatorModelID = $0; model.translatorRevision = "" }))
-                    .disabled(model.translatorBusy)
+            if model.translationProvider == "api" {
+                Picker("已保存 API 服务", selection: Binding(get: { model.translationAPIProfile }, set: { model.setTranslationAPIProfile($0) })) {
+                    Text("请选择服务").tag("")
+                    ForEach(profiles.profiles) { Text("\($0.baseURL) · \($0.modelID)").tag($0.id) }
+                }
+                if !profiles.profiles.contains(where: { $0.id == model.translationAPIProfile }) {
+                    Text("请先在「AI 服务」页保存地址、模型和 API Key，再在这里选择。").font(.caption).foregroundStyle(.orange)
+                }
+                Text("开启后，定稿文本会发送到所选 API 服务并流式显示译文，可能产生服务商费用。录音和预览文字不会发送。选择与开关会自动保存。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Picker("翻译模型", selection: Binding(get: { model.translatorPreset }, set: { model.selectTranslatorPreset($0) })) {
+                    Text("Qwen3 4B Instruct（默认）").tag(AppModel.translatorQwenID)
+                    Text("Hunyuan-MT 7B（翻译专用）").tag(AppModel.translatorHunyuanID)
+                    Text("自定义模型…").tag("custom")
+                }.disabled(model.translatorBusy)
+                if model.translatorPreset == "custom" {
+                    TextField("Hugging Face 模型 ID（MLX 格式）", text: Binding(get: { model.translatorModelID }, set: { model.translatorModelID = $0; model.translatorRevision = "" }))
+                        .disabled(model.translatorBusy)
+                }
+                HStack {
+                    Button("加载 / 切换") { model.loadTranslator() }.buttonStyle(.borderedProminent)
+                    Button("下载翻译模型") { model.loadTranslator(download: true) }
+                    Spacer()
+                    Text(model.translatorStatusTitle).font(.caption).foregroundStyle(.secondary)
+                }.disabled(model.translatorBusy)
+                if model.translatorState == "downloading" {
+                    ProgressView(value: model.translatorProgress)
+                    HStack { Text(model.translatorProgressLabel).font(.caption).lineLimit(1); Spacer(); Button("取消") { model.cancelDownload() } }
+                }
+                if !model.translatorDetail.isEmpty {
+                    Text(model.translatorDetail).font(.caption).foregroundStyle(model.translatorState == "error" ? Color.orange : Color.secondary)
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }
+                Text("下载大小约：Qwen3 4B 2.3 GB，Hunyuan-MT 7B 4.2 GB。识别和翻译模型同时加载时，Qwen3 4B 需约 8 GB 以上可用内存，Hunyuan-MT 7B 需约 10 GB 以上。只有下载模型时联网。Hunyuan-MT 使用腾讯混元社区许可协议，使用前请确认其条款。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            HStack {
-                Button("加载 / 切换") { model.loadTranslator() }.buttonStyle(.borderedProminent)
-                Button("下载翻译模型") { model.loadTranslator(download: true) }
-                Spacer()
-                Text(model.translatorStatusTitle).font(.caption).foregroundStyle(.secondary)
-            }.disabled(model.translatorBusy)
-            if model.translatorState == "downloading" {
-                ProgressView(value: model.translatorProgress)
-                HStack { Text(model.translatorProgressLabel).font(.caption).lineLimit(1); Spacer(); Button("取消") { model.cancelDownload() } }
-            }
-            if !model.translatorDetail.isEmpty {
-                Text(model.translatorDetail).font(.caption).foregroundStyle(model.translatorState == "error" ? Color.orange : Color.secondary)
-                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-            }
-            Text("下载大小约：Qwen3 4B 2.3 GB，Hunyuan-MT 7B 4.2 GB。识别和翻译模型同时加载时，Qwen3 4B 需约 8 GB 以上可用内存，Hunyuan-MT 7B 需约 10 GB 以上。只有下载模型时联网。Hunyuan-MT 使用腾讯混元社区许可协议，使用前请确认其条款。")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if !model.error.isEmpty { Text(model.error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
         }
     }
 }

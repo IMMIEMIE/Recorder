@@ -1,0 +1,53 @@
+{
+  "runtime": ".venv/bin/python",
+  "paced_audio": true,
+  "offline_environment": true,
+  "sessions": [
+    {
+      "boundaries": [
+        {
+          "start_sample": 12160,
+          "end_sample": 174400,
+          "vad_speech_to_final_ms": 1785.4771669994084,
+          "text": "你好,这是一个本地语音识别测试,今天下午三点开会,请记住数字12345。"
+        }
+      ],
+      "fixture": "chinese",
+      "partials": 7,
+      "finals": 1,
+      "text": "你好,这是一个本地语音识别测试,今天下午三点开会,请记住数字12345。",
+      "stop_to_ready_seconds": 0.0004090410002390854
+    },
+    {
+      "boundaries": [
+        {
+          "start_sample": 12160,
+          "end_sample": 128640,
+          "vad_speech_to_final_ms": 1785.0697080000461,
+          "text": "This is a local speech recognition test. Please remember the number 12345."
+        }
+      ],
+      "fixture": "english",
+      "partials": 5,
+      "finals": 1,
+      "text": "This is a local speech recognition test. Please remember the number 12345.",
+      "stop_to_ready_seconds": 0.0004789579998032423
+    },
+    {
+      "boundaries": [
+        {
+          "start_sample": 13120,
+          "end_sample": 151680,
+          "vad_speech_to_final_ms": 1784.387457999692,
+          "text": "今天我们测试Python和Swift,所有音频都在本地处理,谢谢,谢谢。"
+        }
+      ],
+      "fixture": "mixed",
+      "partials": 6,
+      "finals": 1,
+      "text": "今天我们测试Python和Swift,所有音频都在本地处理,谢谢,谢谢。",
+      "stop_to_ready_seconds": 0.00023483299992221873
+    }
+  ],
+  "exit_code": 0
+}

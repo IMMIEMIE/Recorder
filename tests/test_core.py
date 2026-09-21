@@ -16,7 +16,7 @@ PCM = b'\x01\x02' * FRAME
 
 class CoreTests(unittest.TestCase):
     def test_invalid_config_and_atomic_save(self):
-        for value in ({'schema_version':2}, {'preview_interval_ms':1}, {'max_segment_seconds':300}, {'save_audio':True}, {'language':'bogus'}, {'model_id':'bad'}):
+        for value in ({'schema_version':2}, {'preview_interval_ms':1}, {'max_segment_seconds':300}, {'endpoint_silence_ms':299}, {'endpoint_silence_ms':2001}, {'endpoint_silence_ms':True}, {'save_audio':True}, {'language':'bogus'}, {'model_id':'bad'}):
             with self.assertRaises(ValueError): Config.parse(value)
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / 'config.json'
@@ -42,25 +42,39 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(events[0]['end_sample'],23*FRAME)
         self.assertEqual(len(events[0]['pcm']),15*FRAME*2)
 
-    def test_preview_revisions_and_endpoint(self):
-        events=[]; s=Segmenter(Config(),events.append)
-        for _ in range(130): s.feed(PCM,True)
-        for _ in range(38): s.feed(PCM,False)
-        self.assertEqual([e['final'] for e in events],[False,False,True])
-        self.assertEqual([e['revision'] for e in events],[1,2,3])
-        self.assertEqual({e['segment_id'] for e in events},{1})
+    def test_pause_threshold_and_short_pause_reset(self):
+        for threshold in (300, 1000, 1500, 2000):
+            events = []
+            s = Segmenter(Config(endpoint_mode="fixed", endpoint_silence_ms=threshold, preview_interval_ms=10000), events.append)
+            for _ in range(130): s.feed(PCM, True)
+            for _ in range(threshold // 20 - 1): s.feed(PCM, False)
+            self.assertEqual(events, [])
+            s.feed(PCM, True)  # Resumed speech resets the silence timer.
+            for _ in range(threshold // 20 - 1): s.feed(PCM, False)
+            self.assertEqual(events, [])
+            s.feed(PCM, False)
+            self.assertEqual(len(events), 1)
+            self.assertTrue(events[0]['final'])
+            self.assertFalse(events[0]['forced_cut'])
+            s.flush()
+            self.assertEqual(len(events), 1)
 
-    def test_long_speech_ranges_contiguous_and_bounded(self):
-        events=[]; s=Segmenter(Config(max_segment_seconds=5),events.append)
-        for _ in range(800):
-            s.feed(PCM,True)
-            self.assertLess(len(s.frames),250)
+    def test_long_speech_previews_but_waits_for_pause_to_finalize(self):
+        events = []
+        s = Segmenter(Config(endpoint_mode="fixed", max_segment_seconds=5), events.append)
+        for _ in range(1600): s.feed(PCM, True)
+        self.assertTrue(events)
+        self.assertTrue(all(not e["final"] for e in events))  # Previews only, beyond 32 seconds.
+        for _ in range(50): s.feed(PCM, False)
+        events[:] = [e for e in events if e["final"]]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]['pcm'], PCM * 1650)
+        self.assertFalse(events[0]['forced_cut'])
+        for _ in range(10): s.feed(PCM, True)
         s.flush()
-        finals=[e for e in events if e['final']]
-        self.assertEqual(len(finals),4)
-        self.assertEqual([e['forced_cut'] for e in finals],[True,True,True,False])
-        self.assertEqual(b''.join(e['pcm'] for e in finals),PCM*800)
-        for left,right in zip(finals,finals[1:]): self.assertEqual(left['end_sample'],right['start_sample'])
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]['end_sample'], events[1]['start_sample'])
+        self.assertEqual(b''.join(e['pcm'] for e in events), PCM * 1660)
 
     def test_framing_fragmented_and_bounds(self):
         a,b=socket.socketpair()
@@ -109,6 +123,19 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(finals[0]['session_id'],'test')
         self.command('stop')
         self.assertEqual(self.s.state,'ready')
+    def test_start_applies_and_saves_pause_without_model_reload(self):
+        self.command('start', endpoint_mode='fixed', endpoint_silence_ms=1500)
+        self.assertEqual(self.event()['state'], 'recording')
+        self.assertEqual(self.s.segmenter.config.endpoint_mode, 'fixed')
+        self.assertEqual(self.s.segmenter.config.endpoint_silence_ms, 1500)
+        self.assertEqual(json.loads(self.s.config_path.read_text())['endpoint_silence_ms'], 1500)
+
+    def test_invalid_pause_does_not_start_recording(self):
+        self.command('start', endpoint_silence_ms=0)
+        self.assertEqual(self.event()['type'], 'error')
+        self.assertEqual(self.s.state, 'ready')
+        self.assertEqual(self.s.config.endpoint_silence_ms, 1000)
+
     def test_audio_gap_stops_and_reports(self):
         self.command('start'); self.event()
         h=json.dumps({'session_id':'test','sequence':2,'start_sample':0}).encode()

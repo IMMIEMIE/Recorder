@@ -22,7 +22,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(TranslationConfig.parse(asdict(c)), c)
 
     def test_invalid_values_rejected_and_save_atomic(self):
-        for value in ({'schema_version': 2}, {'enabled': 1}, {'target_language': 'Klingon'},
+        for value in ({'schema_version': 2}, {'enabled': 1}, {'provider':'unknown'}, {'api_profile':12}, {'target_language': 'Klingon'},
                       {'model_id': 'bad'}, {'model_id': 'owner/'}, {'extra': True}):
             with self.assertRaises(ValueError): TranslationConfig.parse(value)
         with tempfile.TemporaryDirectory() as d:
@@ -173,6 +173,7 @@ class TranslationServerTests(unittest.TestCase):
         with patch('server.Adapter', FakeAdapter), patch('server.Translator', FakeTranslator):
             self.s = Server(self.a, self.tmp.name)
         self.s.state = 'ready'
+        self.s.config.endpoint_mode = 'fixed'
         self.s.translation = TranslationConfig(enabled=True, target_language='English')
         self.thread = threading.Thread(target=self.s.run); self.thread.start()
     def tearDown(self):
@@ -205,6 +206,63 @@ class TranslationServerTests(unittest.TestCase):
         revisions = [e['revision'] for e in translations]
         self.assertEqual(revisions, sorted(set(revisions)))
         self.assertEqual(self.s.translator.calls[0][:2], ('这是测试', 'English'))
+
+    def test_long_utterance_recognized_only_after_pause_then_translated_once(self):
+        self.s.config.max_segment_seconds = 5
+        # Isolate the pause path here; periodic previews are tested separately.
+        self.s.config.preview_interval_ms = 10000
+        calls = []
+        def transcribe(pcm):
+            calls.append(pcm)
+            return '这是测试', 1
+        self.s.adapter.transcribe = transcribe
+        self.command('start'); self.assertEqual(self.event()['state'], 'recording')
+        for _ in range(300): self.s.segmenter.feed(PCM, True)
+        for _ in range(49): self.s.segmenter.feed(PCM, False)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.s.translator.calls, [])
+        self.s.segmenter.feed(PCM, False)
+        events = self.events_until(lambda e: e['type'] == 'translation' and e['done'])
+        self.assertEqual(events[0]['type'], 'final')
+        self.assertEqual(events[0]['text'], '这是测试' * 2)
+        self.assertEqual(len([e for e in events if e['type'] == 'final']), 1)
+        self.assertFalse(any(e['type'] == 'partial' for e in events))
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(len(pcm) <= 5 * 16000 * 2 for pcm in calls))
+        self.assertEqual(b''.join(calls), PCM * 350)
+        self.assertEqual(len(self.s.translator.calls), 1)
+        self.assertEqual(self.s.translator.calls[0][0], events[0]['text'])
+        self.assertEqual(self.s.state, 'recording')
+
+    def test_periodic_preview_does_not_translate_before_pause(self):
+        self.command('start'); self.assertEqual(self.event()['state'], 'recording')
+        for _ in range(60): self.s.segmenter.feed(PCM, True)
+        preview = self.event()
+        self.assertEqual(preview['type'], 'partial')
+        self.assertEqual(self.s.translator.calls, [])
+        for _ in range(49): self.s.segmenter.feed(PCM, False)
+        self.assertEqual(self.s.translator.calls, [])
+        self.s.segmenter.feed(PCM, False)
+        events = self.events_until(lambda e: e['type'] == 'translation' and e['done'])
+        self.assertEqual(events[0]['type'], 'final')
+        self.assertEqual(len(self.s.translator.calls), 1)
+
+    def test_smart_final_reuses_preview_and_translates_once(self):
+        self.s.config.endpoint_mode = 'smart'
+        calls = []
+        def transcribe(pcm):
+            calls.append(pcm)
+            return '这是测试。', 1
+        self.s.adapter.transcribe = transcribe
+        self.command('start'); self.event()
+        for _ in range(60): self.s.segmenter.feed(PCM, True)
+        self.assertEqual(self.event()['type'], 'partial')
+        for _ in range(50): self.s.segmenter.feed(PCM, False)
+        events = self.events_until(lambda e: e['type'] == 'translation' and e['done'])
+        self.assertEqual(len([e for e in events if e['type'] == 'final']), 1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(self.s.translator.calls), 1)
+        self.assertFalse(self.s.recognition.entries)
 
     def test_asr_final_preempts_running_translation(self):
         injected = []
@@ -242,6 +300,27 @@ class TranslationServerTests(unittest.TestCase):
         events = self.events_until(lambda e: e['type'] == 'translator' and e['state'] == 'error')
         self.assertIn('尚未下载', events[-1]['detail'])
         self.assertFalse(events[-1]['config']['enabled'])
+
+    def test_api_provider_persists_and_never_calls_local_translator(self):
+        self.command('translation_settings', provider='api', api_profile='https://example.com/v1', enabled=True)
+        events = self.events_until(lambda e: e['type'] == 'translator' and e.get('detail') == '实时翻译已关闭')
+        self.assertTrue(events[-1]['config']['enabled'])
+        self.assertEqual(events[-1]['config']['provider'], 'api')
+        saved = TranslationConfig.parse(json.loads(self.s.translation_path.read_text()))
+        self.assertEqual(saved.provider, 'api')
+        self.assertEqual(saved.api_profile, 'https://example.com/v1')
+        self.assertIsNone(self.s.translator.model)
+        self.speak_and_stop()
+        events = self.events_until(lambda e: e.get('state') == 'ready')
+        self.assertTrue(any(e['type'] == 'final' for e in events))
+        self.assertFalse(any(e['type'] == 'translation' for e in events))
+        self.assertEqual(self.s.translator.calls, [])
+        self.command('load', role='translator')
+        self.assertEqual(self.event()['type'], 'error')
+        self.command('translation_settings', enabled=False)
+        event = self.event()
+        self.assertFalse(event['config']['enabled'])
+        self.assertEqual(event['config']['api_profile'], saved.api_profile)
 
     def test_invalid_target_rejected_without_changing_config(self):
         self.command('translation_settings', target_language='Klingon')

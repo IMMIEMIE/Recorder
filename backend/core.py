@@ -2,6 +2,8 @@
 import json
 import os
 import struct
+import re
+import threading
 from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -46,8 +48,10 @@ class Config:
     local_model_path: str = ''
     revision: str = ''
     language: str = 'auto'
+    # max_segment_seconds bounds inference chunks, never finalization.
     preview_interval_ms: int = 1200
-    endpoint_silence_ms: int = 760
+    endpoint_mode: str = 'smart'
+    endpoint_silence_ms: int = 1000
     max_segment_seconds: int = 18
 
     @classmethod
@@ -64,6 +68,8 @@ class Config:
             v = getattr(c, key)
             if type(v) is not int or not low <= v <= high:
                 raise ValueError(f'{key} 必须在 {low}–{high} 范围内')
+        if c.endpoint_mode not in ('smart', 'fixed'):
+            raise ValueError('不支持的定稿模式')
         if c.language not in ('auto', 'Chinese', 'English', 'Cantonese', 'Japanese', 'Korean'):
             raise ValueError('不支持的语言选项')
         for key in ('model_id', 'local_model_path', 'revision'):
@@ -82,6 +88,8 @@ class TranslationConfig:
     """Saved separately from the ASR config so each model role commits atomically on its own."""
     schema_version: int = 1
     enabled: bool = False
+    provider: str = 'local'
+    api_profile: str = ''
     target_language: str = '简体中文'
     model_id: str = DEFAULT_TRANSLATOR
     revision: str = ''
@@ -96,6 +104,10 @@ class TranslationConfig:
         c = cls(**values)
         if c.schema_version != 1:
             raise ValueError('不支持的翻译配置版本')
+        if c.provider not in ('local', 'api'):
+            raise ValueError('不支持的翻译服务')
+        if not isinstance(c.api_profile, str):
+            raise ValueError('API 配置标识必须为字符串')
         if type(c.enabled) is not bool:
             raise ValueError('enabled 必须为布尔值')
         if c.target_language not in TRANSLATION_TARGETS:
@@ -133,32 +145,47 @@ def encode_message(kind, payload):
     return struct.pack('!I', len(payload) + 1) + kind + payload
 
 
-class Segmenter:
-    """Non-overlapping final ranges preserve intentional repetitions without text dedup.
+def sentence_complete(text):
+    """Conservative terminal punctuation hint, never a semantic guarantee."""
+    text = text.strip().rstrip('”’"\'」』）)]').rstrip()
+    if not text or text.endswith(('...', '…')):
+        return False
+    if text.endswith(('。', '！', '？', '!', '?')):
+        return True
+    if not text.endswith('.'):
+        return False
+    # Avoid numeric endings, initials, dotted abbreviations and common honorifics.
+    word = text.split()[-1]
+    if re.search(r'\d\.$', text) or word.count('.') > 1:
+        return False
+    if re.fullmatch(r'[A-Za-z]\.', word):
+        return False
+    return word.lower() not in {'mr.', 'mrs.', 'ms.', 'dr.', 'prof.', 'sr.', 'jr.', 'etc.', 'vs.', 'e.g.', 'i.e.'}
 
-    Pre-roll applies only after silence. Forced cuts are exact contiguous boundaries.
-    Every sample is owned by at most one final segment.
-    """
-    def __init__(self, config, emit):
+
+class Segmenter:
+    """One lock guards audio boundaries and asynchronous recognition feedback."""
+    def __init__(self, config, emit, lock=None):
         self.config, self.emit = config, emit
+        self.lock = lock or threading.RLock()
         self.preroll = deque(maxlen=12)
         self.frames = []
-        self.position = 0
-        self.start = 0
-        self.segment = 0
-        self.revision = 0
-        self.silent = 0
-        self.voiced = 0
-        self.last_preview = 0
-        self.continuing = False
+        self.position = self.start = self.segment = self.revision = 0
+        self.silent = self.voiced = self.last_preview = 0
+        self.last_voiced = self.snapshot_voiced = 0
+        self.results = []
 
     def feed(self, pcm, voiced):
+        with self.lock:
+            self._feed(pcm, voiced)
+
+    def _feed(self, pcm, voiced):
         if len(pcm) != FRAME * 2:
             raise ValueError('VAD 要求 20 ms PCM16 音频帧')
         at = self.position
         self.position += FRAME
         if not self.frames:
-            if not voiced and not self.continuing:
+            if not voiced:
                 self.preroll.append((at, pcm))
                 return
             self.start = self.preroll[0][0] if self.preroll else at
@@ -166,32 +193,59 @@ class Segmenter:
             self.preroll.clear()
             self.segment += 1
             self.revision = 0
-            self.continuing = False
+            self.results = []
         self.frames.append(pcm)
         self.voiced += int(voiced)
+        if voiced:
+            self.last_voiced = self.position
         self.silent = 0 if voiced else self.silent + 1
-        elapsed = len(self.frames) * 20
-        if self.silent * 20 >= self.config.endpoint_silence_ms:
+        if self.silent * 20 >= self.threshold():
             self.finish()
-        elif elapsed >= self.config.max_segment_seconds * 1000:
-            self.finish(forced=True)
-            self.continuing = True
-        elif self.voiced >= 3 and elapsed - self.last_preview >= self.config.preview_interval_ms:
+        elif (self.voiced >= 3 and self.last_voiced > self.snapshot_voiced
+              and len(self.frames) * 20 - self.last_preview >= self.config.preview_interval_ms):
             self.snapshot(False)
-            self.last_preview = elapsed
+            self.snapshot_voiced = self.last_voiced
+            self.last_preview = len(self.frames) * 20
 
-    def snapshot(self, final, forced_cut=False):
+    def threshold(self):
+        if self.config.endpoint_mode == 'fixed':
+            return self.config.endpoint_silence_ms
+        if not self.results:
+            return 1800
+        latest = self.results[-1]
+        if latest['last_voiced_sample'] != self.last_voiced or not sentence_complete(latest['text']):
+            return 1800
+        if len(self.results) == 1:
+            return 1000
+        return 500 if self.results[-2]['text'] == latest['text'] else 1800
+
+    def accept_preview(self, item, text):
+        with self.lock:
+            if (not self.frames or item['segment_id'] != self.segment
+                    or item['start_sample'] != self.start
+                    or (self.results and item['revision'] <= self.results[-1]['revision'])):
+                return
+            self.results.append({**{k: item[k] for k in ('revision', 'last_voiced_sample')}, 'text': text.strip()})
+            self.results = self.results[-2:]
+            if self.silent * 20 >= self.threshold():
+                self.finish()
+
+    def snapshot(self, final):
         self.revision += 1
         self.emit(dict(segment_id=self.segment, revision=self.revision, start_sample=self.start,
-                       end_sample=self.position, final=final, forced_cut=forced_cut, pcm=b''.join(self.frames)))
+                       end_sample=self.position, last_voiced_sample=self.last_voiced,
+                       final=final, forced_cut=False, pcm=b''.join(self.frames)))
 
-    def finish(self, forced=False):
-        if self.frames and self.voiced >= 2:
-            self.snapshot(True, forced)
-        self.frames = []
-        self.silent = self.voiced = self.last_preview = 0
-        self.continuing = False
+    def finish(self):
+        with self.lock:
+            if self.frames and self.voiced >= 2:
+                self.snapshot(True)
+            self.frames = []
+            self.results = []
+            self.silent = self.voiced = self.last_preview = 0
+            self.last_voiced = self.snapshot_voiced = 0
 
     def flush(self):
-        self.finish()
-        self.preroll.clear()
+        with self.lock:
+            self.finish()
+            self.preroll.clear()

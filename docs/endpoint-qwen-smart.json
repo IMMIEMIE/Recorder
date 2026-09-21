@@ -1,0 +1,53 @@
+{
+  "runtime": ".venv/bin/python",
+  "paced_audio": true,
+  "offline_environment": true,
+  "sessions": [
+    {
+      "boundaries": [
+        {
+          "start_sample": 12160,
+          "end_sample": 174400,
+          "vad_speech_to_final_ms": 1784.9896660003656,
+          "text": "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。"
+        }
+      ],
+      "fixture": "chinese",
+      "partials": 7,
+      "finals": 1,
+      "text": "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+      "stop_to_ready_seconds": 0.0007389160000457196
+    },
+    {
+      "boundaries": [
+        {
+          "start_sample": 12160,
+          "end_sample": 128640,
+          "vad_speech_to_final_ms": 1784.4720410000807,
+          "text": "This is a local speech recognition test. Please remember the number one, two, three, four, five."
+        }
+      ],
+      "fixture": "english",
+      "partials": 5,
+      "finals": 1,
+      "text": "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+      "stop_to_ready_seconds": 0.0003141669994874974
+    },
+    {
+      "boundaries": [
+        {
+          "start_sample": 13120,
+          "end_sample": 151680,
+          "vad_speech_to_final_ms": 1786.4137079998911,
+          "text": "今天我们测试 Python 和 Swift，所有音频都在本地处理。谢谢，谢谢。"
+        }
+      ],
+      "fixture": "mixed",
+      "partials": 6,
+      "finals": 1,
+      "text": "今天我们测试 Python 和 Swift，所有音频都在本地处理。谢谢，谢谢。",
+      "stop_to_ready_seconds": 0.00027091699939774117
+    }
+  ],
+  "exit_code": 0
+}

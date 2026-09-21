@@ -13,7 +13,7 @@ actor Output {
     func append(_ text: String) { value += text }
 }
 @main struct Tests {
-    static func main() async throws {
+    @MainActor static func main() async throws {
         for endpoint in ["http://example.com/v1/chat/completions", "https://user:password@example.com/chat", "https://example.com/chat?key=x", "file:///tmp/test", "https://example.com/"] {
             try rejects { _ = try AIServiceConfiguration(endpoint: endpoint, model: "model").url() }
         }
@@ -33,6 +33,19 @@ actor Output {
         try expect(reloaded.first { $0.baseURL == normalizedBase }?.modelID == "updated", "persistent model update")
         try files.remove(AIProfile(baseURL: normalizedBase, modelID: "updated"))
         try expect(try files.load().count == 1, "independent profile deletion")
+        let suite = "recorder.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let profiles = AIProfiles(directory: folder, defaults: defaults)
+        _ = try profiles.save(base: normalizedBase, model: "persisted-model", key: "")
+        let restored = AIProfiles(directory: folder, defaults: defaults)
+        try expect(restored.selectedID == normalizedBase, "selected API service survives restart")
+        try expect(restored.selected?.modelID == "persisted-model", "model survives restart")
+        try Data("invalid json".utf8).write(to: folder.appendingPathComponent("broken.json"))
+        let recovered = AIProfiles(directory: folder, defaults: defaults)
+        try expect(recovered.profiles.count == 2, "one corrupt file must not hide healthy services")
+        try expect(!recovered.message.isEmpty, "corrupt profile is reported")
+        try expect(recovered.selectedID == normalizedBase, "selection survives corrupt adjacent file")
         let request = try AIClient.request(config: .init(), key: "test-secret", instruction: "翻译", text: "Hello\n你好 \"quoted\"")
         try expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-secret", "authorization header")
         try expect(!request.url!.absoluteString.contains("test-secret"), "key in URL")
@@ -69,6 +82,47 @@ actor Output {
         var cancelled = false
         do { try await task.value } catch { cancelled = true }
         try expect(cancelled, "cancellation")
+        let queue = APITranslationQueue()
+        var updates: [(String, String, Bool)] = []
+        var errors: [String] = []
+        queue.onUpdate = { updates.append(($0, $1, $2)) }
+        queue.onError = { errors.append($0) }
+        func job(_ id: String, path: String = "/ok", text: String = "Hello") -> APITranslationQueue.Job {
+            .init(id: id, text: text, target: "简体中文", config: config(path), key: "mock-key")
+        }
+        func waitFor(_ condition: () -> Bool) async throws {
+            for _ in 0..<500 {
+                if condition() { return }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            throw TestFailure(message: "API translation queue timed out")
+        }
+        queue.enqueue(job("session-one:1"))
+        queue.enqueue(job("session-two:1"))
+        try await waitFor { updates.filter { $0.2 }.count == 2 }
+        try expect(updates.filter { $0.2 }.map { $0.0 } == ["session-one:1", "session-two:1"], "FIFO across sessions")
+        try expect(updates.filter { $0.2 }.allSatisfy { $0.1 == "你好，世界🌏" }, "streamed translations reach correct rows")
+        queue.enqueue(job("same", text: "你好，世界🌏"))
+        try await waitFor { updates.contains { $0.0 == "same" && $0.2 } }
+        try expect(updates.last?.1 == "", "identical translation hidden")
+        queue.enqueue(job("failure", path: "/unauthorized"))
+        queue.enqueue(job("after-failure"))
+        try await waitFor { updates.contains { $0.0 == "after-failure" && $0.2 } }
+        try expect(errors.count == 1, "API failure reported without blocking next final")
+        updates.removeAll(); errors.removeAll()
+        queue.enqueue(job("cancelled", path: "/slow"))
+        try await Task.sleep(nanoseconds: 100_000_000)
+        for i in 0..<5 { queue.enqueue(job("pending-\(i)")) }
+        try expect(errors.count == 1, "bounded translation backlog")
+        try expect(updates.contains { $0.0 == "pending-0" && $0.2 }, "oldest pending translation dropped")
+        queue.cancel()
+        let countAfterCancel = updates.count
+        try await Task.sleep(nanoseconds: 300_000_000)
+        try expect(updates.count == countAfterCancel, "cancelled stream cannot revive old rows")
+        queue.enqueue(job("after-cancel"))
+        try await waitFor { updates.contains { $0.0 == "after-cancel" && $0.2 } }
+        try expect(APITranslationQueue.instruction(target: "English").contains("English"), "translation target in prompt")
+        print("PASS: persistent API profiles, corruption recovery, translation queue ordering, streaming, failures, backlog and cancellation")
         print("PASS: endpoint validation, credential isolation, request encoding, input bounds, SSE parser, Unicode streaming, HTTP errors, redirect rejection, malformed/truncated responses, output limit and cancellation")
     }
 }

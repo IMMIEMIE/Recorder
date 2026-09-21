@@ -15,6 +15,7 @@ from core import Config, encode_message, read_message
 from dataclasses import asdict
 import numpy as np
 import soundfile as sf
+import webrtcvad
 from scipy.signal import resample_poly
 from math import gcd
 p=argparse.ArgumentParser(); p.add_argument('--model',required=True); p.add_argument('--runtime',default='.venv/bin/python'); p.add_argument('--server'); p.add_argument('--output',default='docs/pipeline-verification.json'); a=p.parse_args()
@@ -52,23 +53,35 @@ with tempfile.TemporaryDirectory(prefix='recorder-check-',dir='/tmp') as temp:
             audio,sr=sf.read(root/f'tests/fixtures/{fixture}.aiff',dtype='float32')
             if audio.ndim>1: audio=audio.mean(axis=1)
             g=gcd(sr,16000); audio=resample_poly(audio,16000//g,sr//g)
-            # One second leading silence verifies no hallucinated quiet output.
-            audio=np.concatenate([np.zeros(16000,dtype=np.float32),audio])
+            # Leading silence checks quiet input; trailing silence triggers pause finalization.
+            audio=np.concatenate([np.zeros(16000,dtype=np.float32),audio,np.zeros(32000,dtype=np.float32)])
             pcm=(audio*32767).astype('<i2').tobytes()
+            vad = webrtcvad.Vad(2)
+            voiced_ends = [offset // 2 + 320 for offset in range(0, len(pcm), 640)
+                           if vad.is_speech(pcm[offset:offset+640].ljust(640, b'\0'), 16000)]
             begin=time.monotonic()
             for seq,offset in enumerate(range(0,len(pcm),640)):
                 header=json.dumps({'session_id':session,'sequence':seq,'start_sample':offset//2,'sample_rate':16000,'channels':1,'format':'s16le'}).encode()
                 sock.sendall(encode_message(b'A',struct.pack('!I',len(header))+header+pcm[offset:offset+640]))
                 time.sleep(max(0,begin+(seq+1)*.02-time.monotonic()))
+            wait_for(lambda e:e.get('type')=='final' and e.get('session_id')==session)
             stopped=time.monotonic()-started
             command('stop',session_id=session)
             wait_for(lambda e:e.get('state')=='ready' and e.get('session_id')==session)
             result=[e for e in events if e.get('session_id')==session and e['type'] in ('partial','final')]
             finals=[e for e in result if e['type']=='final']
             assert finals, events[-5:]
+            assert not any(e.get('forced_cut') for e in result), result
             assert len({e['segment_id'] for e in finals})==len(finals)
             assert not any(e['type']=='error' for e in events),events
-            reports.append({'fixture':fixture,'partials':len(result)-len(finals),'finals':len(finals),'text':'\n'.join(e['text'] for e in finals),'stop_to_ready_seconds':events[-1]['received_at']-stopped})
+            boundaries = []
+            for event in finals:
+                voiced_end = max((position for position in voiced_ends
+                                  if event['start_sample'] < position <= event['end_sample']), default=event['start_sample'])
+                boundaries.append({'start_sample':event['start_sample'], 'end_sample':event['end_sample'],
+                                   'vad_speech_to_final_ms':(event['received_at'] - (begin - started) - voiced_end / 16000) * 1000,
+                                   'text':event['text']})
+            reports.append({'boundaries':boundaries, 'fixture':fixture,'partials':len(result)-len(finals),'finals':len(finals),'text':'\n'.join(e['text'] for e in finals),'stop_to_ready_seconds':events[-1]['received_at']-stopped})
         command('shutdown')
         proc.wait(timeout=10)
         report={'runtime':a.runtime,'paced_audio':True,'offline_environment':True,'sessions':reports,'exit_code':proc.returncode}

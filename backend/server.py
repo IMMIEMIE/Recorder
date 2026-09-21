@@ -12,6 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 from core import Config, FRAME, RATE, TranslationConfig, read_message, encode_message, Segmenter
 from adapter import Adapter
+from recognition import RecognitionCache
 from translation import CONTEXT_PAIRS, TranslationPlanner, Translator, already_in_target, same_text, validate_translator
 
 MAX_PENDING_TRANSLATIONS = 4
@@ -31,6 +32,7 @@ class Server:
         self.request = ''
         self.config = Config()
         self.adapter = Adapter()
+        self.recognition = RecognitionCache()
         self.downloader = None
         self.download_role = 'asr'
         self.pending = bytearray()
@@ -131,6 +133,7 @@ class Server:
                     if not path:
                         from model_cache import resolve_cached_model
                         path, config.revision = resolve_cached_model(config, self.root / 'models')
+                    self.recognition.clear()
                     self.adapter.load(config, path)
                     self.status('warming', '正在预热模型…')
                     self.adapter.warmup()
@@ -138,19 +141,28 @@ class Server:
                     self.config = config
                     self.send(type='config', config=asdict(config))
                     self.status('ready', '模型已就绪 · 本地推理')
-                    if self.translation.enabled and self.translator.model is None and self.translator_state not in TRANSLATOR_BUSY:
+                    if self.translation.enabled and self.translation.provider == 'local' and self.translator.model is None and self.translator_state not in TRANSLATOR_BUSY:
                         self.queue_translator_load(TranslationConfig(**asdict(self.translation)))
                 elif kind == 'infer':
-                    text, duration = self.adapter.transcribe(value['pcm'])
+                    def obsolete():
+                        with self.cv:
+                            return (value['session_id'] != self.session or
+                                    (not value['final'] and value['segment_id'] in self.final_segments))
+                    text, duration = self.recognition.transcribe(self.adapter, self.config, value, obsolete)
                     with self.cv:
                         valid = value['session_id'] == self.session
                         valid &= value['final'] or value['segment_id'] not in self.final_segments
                     if valid:
                         self.send(type='final' if value['final'] else 'partial', text=text,
-                                  elapsed_ms=duration, **{k:v for k,v in value.items() if k not in ('pcm','final')})
+                                  elapsed_ms=duration, **{k:v for k,v in value.items() if k not in ('pcm','final','last_voiced_sample')})
                         if value['final']:
                             self.plan_translation(value, text)
+                        else:
+                            with self.cv:
+                                if self.segmenter is not None and value['session_id'] == self.session:
+                                    self.segmenter.accept_preview(value, text)
                     if value['final']:
+                        self.recognition.forget(value)
                         with self.cv:
                             self.final_segments.discard(value['segment_id'])
                 elif kind == 'finish':
@@ -159,6 +171,7 @@ class Server:
                         self.status('ready', '尾句处理完成')
             except Exception as e:
                 with self.cv:
+                    self.recognition.clear()
                     dropped = list(self.jobs)
                     self.jobs.clear()
                     self.preview = None
@@ -212,7 +225,7 @@ class Server:
             self.translator_status('ready' if self.translator.model is not None else 'error', f'{label}：{e}')
 
     def plan_translation(self, value, text):
-        if self.translation.enabled and self.translator.model is not None:
+        if self.translation.enabled and self.translation.provider == 'local' and self.translator.model is not None:
             unit = self.planner.add(value['session_id'], value['segment_id'], text, value.get('forced_cut', False))
             self.queue_unit(value['session_id'], unit)
 
@@ -243,7 +256,7 @@ class Server:
             job = self.translating
         if job is None:
             return
-        if job.get('cancelled') or not self.translation.enabled or self.translator.model is None:
+        if job.get('cancelled') or not self.translation.enabled or self.translation.provider != 'local' or self.translator.model is None:
             return self.finish_translation(job)
         if 'stream' not in job:
             target = self.translation.target_language
@@ -358,6 +371,8 @@ class Server:
             if self.translator_state in TRANSLATOR_BUSY:
                 raise ValueError('请等待翻译模型操作结束')
             config = TranslationConfig.parse({**asdict(self.translation), **message.get('translation', {})})
+            if config.provider != 'local':
+                raise ValueError('请先选择本地模型翻译')
             if cmd == 'download':
                 if self.downloader:
                     raise ValueError('请等待当前下载结束')
@@ -384,16 +399,16 @@ class Server:
                     self.cv.notify()
         elif cmd == 'translation_settings':
             values = asdict(self.translation)
-            values.update({key: message[key] for key in ('enabled', 'target_language') if key in message})
+            values.update({key: message[key] for key in ('enabled', 'target_language', 'provider', 'api_profile') if key in message})
             config = TranslationConfig.parse(values)
             busy = self.translator_state in TRANSLATOR_BUSY
-            if busy and config.enabled != self.translation.enabled:
+            if busy and (config.enabled != self.translation.enabled or config.provider != self.translation.provider):
                 raise ValueError('请等待翻译模型操作结束')
             config.save(self.translation_path)
             self.translation = config
             if busy:
                 self.translator_status(self.translator_state, self.translator_detail)
-            elif not config.enabled:
+            elif not config.enabled or config.provider == 'api':
                 self.drop_pending_translations()
                 if self.translator.model is None:
                     self.translator_status('idle')
@@ -417,13 +432,19 @@ class Server:
         elif cmd == 'start':
             if self.state != 'ready':
                 raise ValueError('模型尚未就绪')
+            config = Config.parse({**asdict(self.config),
+                                   'endpoint_mode': message.get('endpoint_mode', self.config.endpoint_mode),
+                                   'endpoint_silence_ms': message.get('endpoint_silence_ms', self.config.endpoint_silence_ms)})
+            if config != self.config:
+                config.save(self.config_path)
+                self.config = config
             import webrtcvad
             self.vad = webrtcvad.Vad(2)
             self.session = message['session_id']
             self.final_segments.clear()
             self.pending.clear()
             self.seq = self.samples = 0
-            self.segmenter = Segmenter(self.config, self.enqueue)
+            self.segmenter = Segmenter(self.config, self.enqueue, self.cv)
             self.status('recording', '正在聆听…')
         elif cmd == 'stop':
             if message.get('session_id') == self.session:
@@ -458,7 +479,7 @@ class Server:
         with self.cv:
             overloaded = len(self.jobs) >= 6
         if overloaded:
-            self.send(type='error', message='推理落后：已自动停止录音，正在完成已接收语音。请减少预览频率。')
+            self.send(type='error', message='推理落后：已自动停止录音，正在完成已接收语音。请等待处理完成后再开始。')
             self.flush()
 
     def run(self):
