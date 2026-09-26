@@ -4,6 +4,7 @@ import os
 import struct
 import re
 import threading
+from urllib.parse import urlsplit
 from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -53,6 +54,10 @@ class Config:
     endpoint_mode: str = 'smart'
     endpoint_silence_ms: int = 1000
     max_segment_seconds: int = 18
+    provider: str = 'local'
+    api_base_url: str = ''
+    api_model: str = ''
+    api_protocol: str = 'openai'
 
     @classmethod
     def parse(cls, values):
@@ -72,10 +77,22 @@ class Config:
             raise ValueError('不支持的定稿模式')
         if c.language not in ('auto', 'Chinese', 'English', 'Cantonese', 'Japanese', 'Korean'):
             raise ValueError('不支持的语言选项')
-        for key in ('model_id', 'local_model_path', 'revision'):
+        if c.provider not in ('local', 'api'):
+            raise ValueError('不支持的识别服务')
+        if c.api_protocol not in ('openai', 'qwen_realtime'):
+            raise ValueError('不支持的识别 API 类型')
+        for key in ('model_id', 'local_model_path', 'revision', 'api_base_url', 'api_model'):
             if not isinstance(getattr(c, key), str):
                 raise ValueError(f'{key} 必须为字符串')
-        if not c.local_model_path and not valid_model_id(c.model_id):
+        if c.provider == 'api':
+            url = urlsplit(c.api_base_url)
+            secure_scheme = 'wss' if c.api_protocol == 'qwen_realtime' else 'https'
+            if (not url.hostname or url.username or url.password or url.query or url.fragment or
+                (url.scheme != secure_scheme and not (c.api_protocol == 'openai' and url.scheme == 'http' and url.hostname in ('localhost', '127.0.0.1', '::1'))) or
+                c.api_base_url.endswith('/') or not c.api_model.strip() or
+                '\n' in c.api_model or '\r' in c.api_model):
+                raise ValueError('请填写有效的 API Base URL 和模型 ID（远程服务须使用 HTTPS）')
+        elif not c.local_model_path and not valid_model_id(c.model_id):
             raise ValueError('请输入 owner/model 格式的模型 ID')
         return c
 

@@ -4,7 +4,7 @@ import SwiftUI
 struct RecorderApp: App {
     @StateObject private var model = AppModel()
     var body: some Scene {
-        WindowGroup("声笺 · 本地转写", id: "main") {
+        WindowGroup("声笺 · 实时转写", id: "main") {
             MainView(model: model)
                 .frame(minWidth: 800, minHeight: 570)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.shutdown() }
@@ -14,6 +14,7 @@ struct RecorderApp: App {
             TabView {
                 ScrollView { SettingsView(model: model).padding(24) }.tabItem { Label("转写", systemImage: "waveform") }
                 ScrollView { TranslationSettingsView(model: model).padding(24) }.tabItem { Label("翻译", systemImage: "character.bubble") }
+                ScrollView { LiveTranslateSettingsView(model: model).padding(24) }.tabItem { Label("LiveTranslate", systemImage: "globe") }
                 AISettingsView().tabItem { Label("AI 服务", systemImage: "sparkles") }
             }.frame(width: 640, height: 600)
         }
@@ -28,8 +29,8 @@ struct MenuContent: View {
     @Environment(\.openWindow) var openWindow
     var body: some View {
         Text(model.statusTitle)
-        Button(model.recording ? "停止转写" : "开始转写") { model.toggle() }
-            .disabled(!model.recording && model.state != "ready")
+        Button(model.canStop ? "停止转写" : "开始转写") { model.toggle() }
+            .disabled(!model.canStop && !model.canStart)
         Button("显示转写窗口") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
         Toggle("字幕模式", isOn: Binding(get: { model.subtitleMode }, set: { model.setSubtitleMode($0) }))
         Button("文本另存为…") { model.saveText() }.disabled(model.finalText.isEmpty)
@@ -102,18 +103,22 @@ struct MainView: View {
                         .help(model.subtitleMode ? "关闭字幕模式" : "打开字幕模式").accessibilityLabel("字幕模式")
                     Button { floating.toggle(); NSApp.keyWindow?.level = floating ? .floating : .normal } label: { Image(systemName: floating ? "pin.fill" : "pin") }.help("窗口置顶")
                     Menu {
+                        if model.liveEnabled {
+                            Text("LiveTranslate → \(model.liveConfiguration.languageName)")
+                        } else {
                         Toggle("实时翻译", isOn: Binding(get: { model.translationEnabled }, set: { model.setTranslation(enabled: $0) }))
                             .disabled(model.translatorBusy)
                         Picker("翻译为", selection: Binding(get: { model.translationTarget }, set: { model.setTranslationTarget($0) })) {
                             ForEach(AppModel.translationTargets, id: \.self) { Text($0).tag($0) }
                         }
+                        }
                         Divider()
                         SettingsLink { Text("翻译设置…") }
                     } label: {
-                        Label(model.translationEnabled ? "译为\(model.translationTarget)" : "翻译", systemImage: "character.bubble")
+                        Label(model.liveEnabled ? "译为\(model.liveConfiguration.languageName)" : (model.translationEnabled ? "译为\(model.translationTarget)" : "翻译"), systemImage: "character.bubble")
                     }.fixedSize().help(model.translationSummary)
                     Button { ai.prepare(text: model.joinedText); showAI = true } label: { Label("AI 提问", systemImage: "sparkles") }
-                        .disabled(model.finalText.isEmpty)
+                        .disabled(model.finalText.isEmpty || model.liveEnabled)
                     Button { model.saveText() } label: { Label("另存为…", systemImage: "square.and.arrow.down") }
                         .disabled(model.finalText.isEmpty).help("将已确认文本保存为 TXT")
                     Button { model.copyText() } label: { Label("复制", systemImage: "doc.on.doc") }.disabled(model.finalText.isEmpty)
@@ -133,6 +138,8 @@ struct MainView: View {
                                 HStack(alignment: .top, spacing: 18) {
                                     Text(String(format:"%02d:%02d", Int(item.seconds) / 60, Int(item.seconds) % 60)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).frame(width: 38).padding(.top, 6)
                                     VStack(alignment: .leading, spacing: 6) {
+                                        if item.incomplete { Text("连接结束，此句可能不完整").font(.caption2).foregroundStyle(.orange) }
+                                        else if !item.sourceDone { Text("识别中…").font(.caption2).foregroundStyle(.secondary) }
                                         Text(item.text).font(.system(size: 17)).lineSpacing(7).textSelection(.enabled)
                                         if !item.translation.isEmpty {
                                             Text(item.translation).font(.system(size: 15)).lineSpacing(5).foregroundStyle(.secondary).textSelection(.enabled)
@@ -176,20 +183,27 @@ struct MainView: View {
                             }
                         }
                         Spacer()
-                        if ["idle", "error"].contains(model.state) {
+                        if model.liveEnabled {
+                            Button { model.toggle() } label: {
+                                Label(model.canStop ? "停止转写" : "开始转写", systemImage: model.canStop ? "stop.fill" : "mic.fill")
+                            }.buttonStyle(.borderedProminent).tint(model.canStop ? .red : accent).disabled(!model.canStart && !model.canStop)
+                        } else if ["idle", "error"].contains(model.state) {
                             Button("重新连接") { model.launch() }
-                            Button("加载模型") { model.load() }
-                            Button("下载模型") { model.load(download: true) }.buttonStyle(.borderedProminent).tint(accent)
+                            Button(model.asrProvider == "api" ? "连接 API" : "加载模型") { model.load() }
+                            if model.asrProvider == "local" {
+                                Button("下载模型") { model.load(download: true) }.buttonStyle(.borderedProminent).tint(accent)
+                            }
                         } else {
                             Button { model.toggle() } label: {
-                                Label(model.recording ? "停止转写" : "开始转写", systemImage: model.recording ? "stop.fill" : "mic.fill").padding(.horizontal, 14).padding(.vertical, 5)
-                            }.buttonStyle(.borderedProminent).tint(model.recording ? .red : accent).disabled(model.state != "ready" && !model.recording)
+                                Label(model.canStop ? "停止转写" : "开始转写", systemImage: model.recording ? "stop.fill" : "mic.fill").padding(.horizontal, 14).padding(.vertical, 5)
+                            }.buttonStyle(.borderedProminent).tint(model.recording ? .red : accent).disabled(!model.canStart && !model.canStop)
                         }
                     }
                     Text("⌃ ⌥ \(model.shortcutKey)  ·  \(model.holdToTalk ? "按住说话，松开停止" : "开始 / 停止")").font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
                 }.padding(24).background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
             }.background(Color(nsColor: .textBackgroundColor))
         }.tint(accent).sheet(isPresented: $showAI) { AIWorkspaceView(ai: ai) }
+            .onChange(of: model.liveEnabled) { _, enabled in if enabled { ai.cancel(); showAI = false } }
     }
 }
 
@@ -198,23 +212,60 @@ struct SettingsView: View {
     @State private var advanced = false
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            if model.liveEnabled { Text("当前由 LiveTranslate 同时完成转写与翻译。请前往 LiveTranslate 页管理；关闭该模式后恢复此处设置。").font(.callout).foregroundStyle(.secondary) }
+            Group {
             Text("设置").font(.title2.bold())
-            Picker("识别模型", selection: Binding(get: { model.preset }, set: { model.selectPreset($0) })) {
-                Text("Qwen3-ASR 1.7B").tag(AppModel.qwenID)
-                Text("Whisper Large v3 Turbo").tag(AppModel.whisperID)
-                Text("自定义模型…").tag("custom")
-            }.disabled(model.busy)
-            if model.preset == "custom" {
-                TextField("Hugging Face 模型 ID", text: Binding(get: { model.modelID }, set: { model.modelID = $0; model.revision = "" }))
-                HStack { TextField("本地目录（可选）", text: $model.localPath); Button("选择…") { model.chooseFolder() } }
+            Picker("识别服务", selection: Binding(get: { model.asrProvider }, set: { model.setASRProvider($0) })) {
+                Text("本地模型").tag("local")
+                Text("API 服务").tag("api")
+            }.disabled(model.inputBusy)
+            if model.asrProvider == "local" {
+                Picker("识别模型", selection: Binding(get: { model.preset }, set: { model.selectPreset($0) })) {
+                    Text("Qwen3-ASR 1.7B").tag(AppModel.qwenID)
+                    Text("Whisper Large v3 Turbo").tag(AppModel.whisperID)
+                    Text("自定义模型…").tag("custom")
+                }.disabled(model.busy)
+                if model.preset == "custom" {
+                    TextField("Hugging Face 模型 ID", text: Binding(get: { model.modelID }, set: { model.modelID = $0; model.revision = "" }))
+                    HStack { TextField("本地目录（可选）", text: $model.localPath); Button("选择…") { model.chooseFolder() } }
+                }
+            } else {
+                Group {
+                Picker("API 类型", selection: Binding(get: { model.asrAPIProtocol }, set: { model.setASRAPIProtocol($0) })) {
+                    Text("OpenAI 兼容音频转写").tag("openai")
+                    Text("千问实时语音（Qwen Audio）").tag("qwen_realtime")
+                }
+                TextField(model.qwenASR ? "WebSocket 地址（wss://…/api-ws/v1/realtime）" : "Base URL，例如 https://api.openai.com/v1", text: $model.asrAPIBaseURL)
+                    .textContentType(.URL)
+                TextField(model.qwenASR ? "模型 ID，例如 qwen-audio-3.1-realtime-plus" : "音频转写模型 ID", text: $model.asrAPIModel)
+                SecureField("API Key（留空使用已保存的密钥）", text: $model.asrAPIKeyInput)
+                }.disabled(model.inputBusy)
+                if model.qwenASR {
+                    Text("已预填千问平台地址与模型。填写该平台的 API Key 后点击「保存 / 启用」。停顿后提交语音片段，只显示输入语音的转写；不会请求模型回答或播放语音。")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Button("测试连接") { model.testASRConnection() }.disabled(model.inputBusy)
+                        if model.asrTesting { ProgressView().controlSize(.small) }
+                    }
+                    if !model.asrConnectionMessage.isEmpty { Text(model.asrConnectionMessage).font(.caption).textSelection(.enabled) }
+                    Text("测试只建立并配置会话，不发送音频。转写时语音片段会发送到千问服务，可能产生费用；密钥存于钥匙串。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                Text("使用兼容 OpenAI /audio/transcriptions 的服务。加载后，语音片段会发送到此地址，可能产生费用；密钥保存在钥匙串，音频不存盘。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
             HStack {
-                Button("加载 / 切换") { model.load() }.buttonStyle(.borderedProminent)
-                Button("下载模型") { model.load(download: true) }.disabled(!model.localPath.isEmpty)
+                Button(model.qwenASR ? "保存 / 启用" : model.asrProvider == "api" ? "连接 / 切换" : "加载 / 切换") { model.load() }.buttonStyle(.borderedProminent)
+                if model.asrProvider == "local" {
+                    Button("下载模型") { model.load(download: true) }.disabled(!model.localPath.isEmpty)
+                }
                 Spacer()
                 Text(model.statusTitle).font(.caption).foregroundStyle(.secondary)
-            }.disabled(model.busy)
-            Text("首次使用先下载，之后可离线切换。").font(.caption).foregroundStyle(.secondary)
+            }.disabled(model.busy || model.asrTesting)
+            if model.asrProvider == "local" {
+                Text("首次使用先下载，之后可离线切换。").font(.caption).foregroundStyle(.secondary)
+            }
             if model.state == "downloading" {
                 ProgressView(value: model.progress)
                 HStack { Text(model.progressLabel).font(.caption).lineLimit(1); Spacer(); Button("取消") { model.cancelDownload() } }
@@ -227,23 +278,35 @@ struct SettingsView: View {
             }.disabled(model.busy)
             Picker("快捷键：Control + Option +", selection: $model.shortcutKey) { Text("Space").tag("Space"); Text("R").tag("R"); Text("D").tag("D") }
             Toggle("按住说话", isOn: $model.holdToTalk)
+            if !model.qwenASR {
             Picker("定稿方式", selection: $model.endpointMode) {
                 Text("智能定稿（默认）").tag("smart")
                 Text("固定停顿").tag("fixed")
             }.disabled(model.inputBusy)
             Text("智能模式结合停顿、句末标点和文字稳定性自动定稿；无需设置秒数。修改在下次转写时生效。").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Stepper("停顿提交：\(Double(model.silence) / 1000, specifier: "%.2f") 秒", value: $model.silence, in: 300...2000, step: 20)
+                    .disabled(model.inputBusy)
+            }
             DisclosureGroup("高级", isExpanded: $advanced) {
                 VStack(alignment: .leading, spacing: 12) {
-                    if model.endpointMode == "fixed" {
+                    if model.endpointMode == "fixed" && !model.qwenASR {
                         Stepper("停顿定稿：\(Double(model.silence) / 1000, specifier: "%.2f") 秒", value: $model.silence, in: 300...2000, step: 20)
                     }
+                    if !model.qwenASR {
                     TextField("Revision（可选）", text: $model.revision)
                     Stepper("预览间隔：\(model.previewInterval) ms", value: $model.previewInterval, in: 800...10000, step: 200)
+                    }
                     Text("语言和高级参数在加载后生效。").font(.caption).foregroundStyle(.secondary)
                 }.padding(.top, 8).disabled(model.busy)
             }
             Button("麦克风权限…") { model.showPermissionSettings() }.buttonStyle(.link)
+            }.disabled(model.liveEnabled)
         }
+        .onChange(of: model.asrAPIBaseURL) { _, _ in
+            model.asrAPIKeyInput = ""; model.asrConnectionMessage = ""
+        }
+        .onChange(of: model.asrAPIModel) { _, _ in model.asrConnectionMessage = "" }
     }
 }
 
@@ -252,6 +315,8 @@ struct TranslationSettingsView: View {
     @ObservedObject private var profiles = AIProfiles.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            if model.liveEnabled { Text("当前由 LiveTranslate 同时完成转写与翻译。请前往 LiveTranslate 页管理；关闭该模式后恢复此处设置。").font(.callout).foregroundStyle(.secondary) }
+            Group {
             Text("实时翻译").font(.title2.bold())
             Picker("翻译服务", selection: Binding(get: { model.translationProvider }, set: { model.setTranslationProvider($0) })) {
                 Text("本地模型").tag("local")
@@ -302,6 +367,7 @@ struct TranslationSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if !model.error.isEmpty { Text(model.error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
+            }.disabled(model.liveEnabled)
         }
     }
 }

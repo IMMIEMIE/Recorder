@@ -11,13 +11,13 @@
 
 ## What it does / 项目简介
 
-**声笺 (Shengjian)** turns microphone, audio-file, or system-audio input into near-real-time text on your Mac. Recognition runs locally with MLX models; the app can also show a floating subtitle window and translate completed sentences with either a local model or an OpenAI-compatible API.
+**声笺 (Shengjian)** turns microphone, audio-file, or system-audio input into near-real-time text on your Mac. Recognition can use local MLX models, an OpenAI-compatible audio transcription API, or Qwen Audio realtime WebSocket; the app can also show a floating subtitle window and translate completed sentences with either a local model or an API.
 
-**声笺**可将麦克风、音频文件或系统声音近实时转写为文本。识别使用本机 MLX 模型；应用还支持悬浮字幕窗口，以及通过本地模型或兼容 OpenAI 的 API 对定稿句子进行翻译。
+**声笺**可将麦克风、音频文件或系统声音近实时转写为文本。识别可使用本机 MLX 模型、兼容 OpenAI 音频转写接口的 API 或千问 Qwen Audio 实时 WebSocket；应用还支持悬浮字幕窗口，以及通过本地模型或 API 对定稿句子进行翻译。
 
-Local transcription does not upload audio. Model downloads, optional AI prompts, and optional API translation require network access; see [Privacy / 隐私](#privacy--隐私) for the exact boundary.
+Local transcription does not upload audio. LiveTranslate streams audio to the selected service. API transcription sends speech segments to the selected service. Model downloads, optional AI prompts, and optional API translation also require network access; see [Privacy / 隐私](#privacy--隐私) for the exact boundary.
 
-本地转写不会上传音频。模型下载、可选 AI 提问和可选 API 翻译需要联网；准确的数据边界见[隐私](#privacy--隐私)。
+本地转写不会上传音频。LiveTranslate 会持续发送音频到所选服务。API 识别会将语音片段发送到所选服务。模型下载、可选 AI 提问和可选 API 翻译也需要联网；准确的数据边界见[隐私](#privacy--隐私)。
 
 ## Highlights / 特性
 
@@ -25,6 +25,8 @@ Local transcription does not upload audio. Model downloads, optional AI prompts,
   **三种音源** — 麦克风、音频文件（WAV、AIFF、M4A、MP3 等系统可解码格式）和系统声音。
 - **Local, near-real-time transcription** — Qwen3-ASR 1.7B by default; Whisper Large v3 Turbo is also available.
   **本地近实时识别** — 默认 Qwen3-ASR 1.7B，也可切换至 Whisper Large v3 Turbo。
+- **API transcription** — OpenAI-compatible audio transcription or Qwen Audio realtime WebSocket, with configurable address, model ID, and API key.
+  **API 识别** — 支持 OpenAI 兼容音频转写和千问 Qwen Audio 实时 WebSocket，可配置地址、模型 ID 与 API Key。
 - **Smart endpointing** — reuses previews and conservatively detects sentence endings to reduce duplicate inference and awkward cutoffs.
   **智能定稿** — 复用预览结果并保守判断句末，减少重复推理与生硬断句。
 - **Live translation** — local Qwen3/Hunyuan models or saved OpenAI-compatible API profiles, with nine target languages.
@@ -66,8 +68,8 @@ open "dist/声笺.app"
 
 ### First transcription / 第一次转写
 
-1. In **Settings → Transcription**, choose an ASR model and select **Download model**.
-   在**设置 → 转写**选择识别模型，再点击**下载模型**。
+1. In **Settings → Transcription**, choose a local ASR model and select **Download model**, or choose **API service** and enter its base URL, audio transcription model ID, and API key before selecting **Connect / Switch**.
+   在**设置 → 转写**选择本地识别模型并点击**下载模型**，或选择 **API 服务**，填写 Base URL、音频转写模型 ID 和 API Key 后点击**连接 / 切换**。
 2. Choose microphone, audio file, or system audio in the main window.
    在主窗口选择麦克风、音频文件或系统声音。
 3. Click **Start transcription** and grant the requested macOS permission.
@@ -90,7 +92,26 @@ The default shortcut is `Control + Option + Space`. Open subtitle mode from the 
 Custom MLX-compatible Qwen3-ASR or Whisper IDs and local model directories are supported. Arbitrary Hugging Face and raw PyTorch/Transformers checkpoints are not directly supported.
 支持兼容 MLX 的自定义 Qwen3-ASR / Whisper ID 与本地模型目录；不直接支持任意 Hugging Face 模型或原始 PyTorch/Transformers 权重。
 
-### Live translation / 实时翻译
+For API recognition, enter the base URL such as `https://api.example.com/v1` and a model that supports `POST /audio/transcriptions`. The app sends WAV speech segments, including provisional previews, to that service; preview requests can increase usage and fees. API recognition requires a connection and does not download model weights.
+API 识别请填写 Base URL（如 `https://api.example.com/v1`）和支持 `POST /audio/transcriptions` 的模型。应用会将 WAV 语音片段（包括预览片段）发送给该服务；预览请求可能增加用量和费用。API 识别无需下载模型，但需要联网。
+
+#### Qwen Audio 3.1 Realtime / 千问实时语音
+
+在**设置 → 转写**选择 **API 服务 → 千问实时语音（Qwen Audio）**，地址和模型会自动填好：
+
+| 配置 | 值 |
+| --- | --- |
+| WebSocket 地址 | `wss://maas.qianwenaiapi.com/api-ws/v1/realtime` |
+| 模型 ID | `qwen-audio-3.1-realtime-plus` |
+| API Key | 填写千问平台中可访问该模型的密钥 |
+
+点击**保存 / 启用**，可先用**测试连接**确认权限和会话配置，再回到主窗口开始转写。若已开启 LiveTranslate 独立模式，先在 LiveTranslate 页将它关闭。测试连接只建立会话，不采集或发送音频。
+
+此模型使用 WebSocket，不能填入 OpenAI 音频转写的 Base URL。应用在本机检测停顿后提交一次语音片段，显示输入音频的 ASR 转写增量和最终文本；采用手动提交，不发送 `response.create`，不生成对话回答或语音。默认停顿 1 秒，可在转写设置调整。长语音会按现有识别窗口分块处理，窗口不会强制定稿。千问密钥只在原生客户端使用，不发送给 Python 后端或写入配置文件。
+
+协议依据：[模型页面](https://www.qianwenai.com/models/qwen-audio-3.1-realtime-plus)、[客户端事件](https://platform.qianwenai.com/docs/api-reference/qwen-audio-realtime/client-events)、[服务端事件](https://platform.qianwenai.com/docs/api-reference/qwen-audio-realtime/server-events)。
+
+### Sentence translation / 逐句翻译
 
 Translation runs only after a segment is finalized, never on transient preview text. Choose **Local model** or **API service** in **Settings → Translation**.
 翻译只处理定稿文本，不会发送识别中的预览文字。在**设置 → 翻译**中选择**本地模型**或 **API 服务**。
@@ -104,15 +125,30 @@ Targets are Simplified Chinese, Traditional Chinese, English, Japanese, Korean, 
 
 目标语言包括简体中文、繁體中文、英语、日语、韩语、法语、德语、西班牙语和俄语。API 翻译仅将定稿文本发送给已保存服务；费用由服务商决定。
 
+### LiveTranslate 独立实时翻译
+
+在**设置 → LiveTranslate**填写专用 API Key，选择目标语言，点击**保存**和**测试连接**，然后开启**使用 LiveTranslate 独立转写与翻译**。返回主窗口选择音源并开始转写，无需下载识别或翻译模型。
+
+- 固定模型：`qwen3.8-livetranslate-flash-realtime`；默认地址为 `wss://maas.qianwenaiapi.com/api-ws/v1/realtime`。也可填写账户对应的工作空间 WSS 地址，例如 `wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime`；密钥须与地址所属区域和工作空间匹配。
+- 麦克风、系统声音和音频文件均支持；原文和译文边生成边显示，可使用悬浮字幕、复制和 TXT 导出。仅输出文字，不播放译音。
+- 目标语言：中文、英语、日语、韩语、法语、德语、西班牙语、俄语。默认中文使用 `zh`，不进行简繁转换。
+- 启用后关闭本地推理进程，停用其他识别、翻译及 AI 提问入口；下次启动直接进入 LiveTranslate 模式。关闭该模式可恢复原有服务配置。
+- 停止采集后等待尾句处理，最长 30 秒；录音及处理尾句期间不能修改连接或目标语言。连接出错时保留收到的文字，未完成句子会标注，不自动切换其他模型。
+- 服务地址、语言和开关保存在应用偏好设置；专用 API Key 按地址分别存入钥匙串，留空保存会保留已有密钥。音频持续上传至所选服务并可能产生费用；**测试连接只配置会话，不发送音频**。
+
+协议依据：[模型页面](https://www.qianwenai.com/models/qwen3.8-livetranslate-flash-realtime)、[客户端事件](https://help.aliyun.com/en/model-studio/live-translator-client-events)、[服务端事件](https://help.aliyun.com/en/model-studio/live-translator-server-events)。模拟测试验证客户端行为；实际模型权限、翻译效果与延迟仍需使用有效 API Key 验证。
+
 ## Privacy / 隐私
 
 | Activity / 操作 | Data location / 数据位置 |
 | --- | --- |
 | Local transcription & translation / 本地转写与翻译 | Runs locally; audio is not uploaded / 在本机运行，不上传音频 |
+| API transcription / API 识别 | Sends speech segments; OpenAI mode also sends provisional previews / 将语音片段发送给所选服务；OpenAI 模式也发送临时预览 |
 | Model download / 模型下载 | Downloads selected model weights / 下载所选模型权重 |
 | API live translation / API 实时翻译 | Sends finalized text only—not audio or preview text / 仅发送定稿文本，不发送音频或预览文字 |
+| LiveTranslate | Sends the selected audio stream for cloud transcription and translation; does not save recordings / 将所选音频流发送至云端转写翻译，不保存录音 |
 | AI prompt / AI 提问 | Sends the text in the prompt panel and the requested task / 发送提问面板中的文字及任务 |
-| Credentials / 凭据 | API keys are stored in macOS Keychain; profile metadata lives in `~/Library/Application Support/LocalRecorder/` / 密钥保存在 macOS 钥匙串，配置元数据位于上述目录 |
+| Credentials / 凭据 | API keys are stored in macOS Keychain; LiveTranslate configuration lives in app preferences; other profile metadata lives in `~/Library/Application Support/LocalRecorder/` / 密钥保存在 macOS 钥匙串；LiveTranslate 配置保存在应用偏好设置，其他配置元数据位于上述目录 |
 
 The app does not retain raw recordings or transcript history. System-audio capture uses macOS screen-and-system-audio permission but does not save screen images.
 应用不保存原始录音或文字历史。系统声音采集需要 macOS 的屏幕与系统音频录制权限，但不会保存屏幕画面。
@@ -123,6 +159,8 @@ After `./scripts/setup.sh`, run:
 
 ```bash
 ./scripts/test_ai.sh
+./scripts/test_audio.sh
+./scripts/test_livetranslate.sh
 .venv/bin/python -m unittest discover -s tests -v
 ```
 

@@ -1,4 +1,5 @@
 import json
+import base64
 import socket
 import struct
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
 from core import Config, Segmenter, FRAME, read_message, encode_message
+from asr_api import APIRecognizer
 from server import Server
 
 PCM = b'\x01\x02' * FRAME
@@ -23,6 +25,41 @@ class CoreTests(unittest.TestCase):
             Config().save(p)
             self.assertEqual(Config.parse(json.loads(p.read_text())), Config())
             self.assertFalse(p.with_suffix('.tmp').exists())
+
+    def test_api_config_validates_address_without_saving_key(self):
+        values = {'provider':'api', 'api_base_url':'https://example.com/v1', 'api_model':'speech-model'}
+        self.assertEqual(Config.parse(values).provider, 'api')
+        for bad in ('http://example.com/v1', 'https://user:pass@example.com/v1',
+                    'https://example.com/v1?key=secret', 'https://example.com/v1/'):
+            with self.assertRaises(ValueError): Config.parse({**values, 'api_base_url':bad})
+        with self.assertRaises(ValueError): Config.parse({**values, 'api_key':'secret'})
+        qwen = {**values, 'api_protocol':'qwen_realtime', 'api_base_url':'wss://maas.qianwenaiapi.com/api-ws/v1/realtime'}
+        self.assertEqual(Config.parse(qwen).api_protocol, 'qwen_realtime')
+        for bad in ('https://example.com/realtime', 'ws://example.com/realtime', 'wss://example.com/realtime?key=secret'):
+            with self.assertRaises(ValueError): Config.parse({**qwen, 'api_base_url':bad})
+
+    def test_api_request_is_wav_multipart_and_never_follows_redirect(self):
+        config = Config(provider='api', api_base_url='https://example.com/v1', api_model='speech-model', language='Chinese')
+        client = APIRecognizer(); client.load(config, 'secret')
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, limit): return b'{"text":"\xe4\xbd\xa0\xe5\xa5\xbd"}'
+        class Opener:
+            def open(self, request, timeout):
+                self_request = request
+                self.assertions(self_request)
+                return Response()
+            def assertions(self, request):
+                self_outer.assertEqual(request.full_url, 'https://example.com/v1/audio/transcriptions')
+                self_outer.assertIn(b'name="model"\r\n\r\nspeech-model', request.data)
+                self_outer.assertIn(b'name="language"\r\n\r\nzh', request.data)
+                self_outer.assertIn(b'RIFF', request.data)
+                self_outer.assertEqual(request.get_header('Authorization'), 'Bearer secret')
+        self_outer = self
+        client.opener = Opener()
+        self.assertEqual(client.transcribe(PCM)[0], '你好')
 
     def test_silence_never_emits(self):
         events=[]; s=Segmenter(Config(),events.append)
@@ -93,6 +130,7 @@ class CoreTests(unittest.TestCase):
 class FakeAdapter:
     def __init__(self): self.model=True
     def transcribe(self,pcm): return '重复重复', 1
+    def unload(self): self.model=None
 
 class ServerTests(unittest.TestCase):
     def setUp(self):
@@ -150,5 +188,63 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(self.s.preview['revision'],99)
             self.assertEqual(len(self.s.jobs),0)
             self.s.preview=None
+
+    def test_api_load_uses_memory_key_and_persists_only_settings(self):
+        config = Config(provider='api', api_base_url='https://example.com/v1', api_model='speech-model')
+        self.command('load', config=config.__dict__, api_key='top-secret')
+        events=[]
+        while True:
+            event=self.event(); events.append(event)
+            if event.get('state')=='ready': break
+        self.assertEqual(self.s.api_recognizer.key, 'top-secret')
+        self.assertEqual(self.s.config.provider, 'api')
+        self.assertNotIn('top-secret', self.s.config_path.read_text())
+        self.assertTrue(any(e['type']=='config' for e in events))
+
+    def test_api_recognition_uses_existing_final_event(self):
+        config = Config(provider='api', api_base_url='https://example.com/v1', api_model='speech-model')
+        self.command('load', config=config.__dict__, api_key='top-secret')
+        while self.event().get('state') != 'ready': pass
+        sent=[]
+        def transcribe(pcm):
+            sent.append(pcm)
+            return 'API 转写', 5
+        self.s.api_recognizer.transcribe = transcribe
+        self.command('start'); self.assertEqual(self.event()['state'], 'recording')
+        for _ in range(8): self.s.segmenter.feed(PCM, True)
+        self.command('stop')
+        events=[]
+        while True:
+            event=self.event(); events.append(event)
+            if event.get('state')=='ready': break
+        self.assertEqual(len(sent), 1)
+        self.assertEqual([e['text'] for e in events if e['type']=='final'], ['API 转写'])
+
+    def test_qwen_bridge_final_is_drained_before_ready_without_previews_or_key(self):
+        config = Config(provider='api', api_protocol='qwen_realtime',
+                        api_base_url='wss://maas.qianwenaiapi.com/api-ws/v1/realtime',
+                        api_model='qwen-audio-3.1-realtime-plus')
+        self.command('load', config=config.__dict__)
+        while self.event().get('state') != 'ready': pass
+        self.assertEqual(self.s.api_recognizer.key, '')
+        self.command('start'); self.assertEqual(self.event()['state'], 'recording')
+        self.assertEqual(self.s.config.endpoint_mode, 'fixed')
+        for _ in range(130): self.s.segmenter.feed(PCM, True)
+        self.command('stop')
+        events=[]; audio=bytearray(); replied=False
+        while True:
+            event=self.event(); events.append(event)
+            if event['type']=='asr_api_audio':
+                audio.extend(base64.b64decode(event['audio']))
+                if event['done']:
+                    self.assertEqual(self.s.state, 'finalizing')
+                    self.command('asr_api_result', call_id='stale', text='必须忽略')
+                    self.command('asr_api_result', call_id=event['call_id'], text='千问转写')
+                    replied=True
+            if event.get('state')=='ready': break
+        self.assertTrue(replied)
+        self.assertEqual(audio, PCM * 130)
+        self.assertFalse(any(e['type']=='partial' for e in events))
+        self.assertEqual([e['text'] for e in events if e['type']=='final'], ['千问转写'])
 
 if __name__=='__main__': unittest.main()

@@ -11,8 +11,10 @@ struct TranslationPart {
 
 struct Transcript: Identifiable {
     let id: String
-    let text: String
-    let seconds: Double
+    var text: String
+    var seconds: Double
+    var sourceDone = true
+    var incomplete = false
     /// Keyed by backend unit id; a sentence carried past a forced cut can anchor a second unit here.
     var translations: [Int: TranslationPart] = [:]
     var translation: String { translations.keys.sorted().compactMap { translations[$0]?.text }.filter { !$0.isEmpty }.joined(separator: " ") }
@@ -36,6 +38,21 @@ final class AppModel: ObservableObject {
     @Published var device: AudioDeviceID = 0
     @Published var permission = "尚未请求"
     @Published var modelID = "mlx-community/Qwen3-ASR-1.7B-bf16"
+    @Published var asrProvider = "local"
+    @Published var asrAPIBaseURL = "https://api.openai.com/v1"
+    @Published var asrAPIModel = ""
+    @Published var asrAPIKeyInput = ""
+    @Published var asrAPIProtocol = "openai"
+    @Published var asrConnectionMessage = ""
+    @Published private(set) var asrTesting = false
+    private var asrAudio: [String:Data] = [:]
+    private var asrTask: Task<Void, Never>?
+    private var asrTestTask: Task<Void, Never>?
+    private var activeASRProvider = "local"
+    private var activeAPIBaseURL = ""
+    private var activeAPIModel = ""
+    private var activeAPIProtocol = "openai"
+    private var activeASRLanguage = "auto"
     static let qwenID = "mlx-community/Qwen3-ASR-1.7B-bf16"
     static let whisperID = "mlx-community/whisper-large-v3-turbo"
     @Published var activeModelID = "mlx-community/Qwen3-ASR-1.7B-bf16"
@@ -94,10 +111,32 @@ final class AppModel: ObservableObject {
     @Published private var pendingStart = false
     private var generation = UUID()
     private var socketPath = ""
+    @Published private(set) var liveConfiguration = LiveTranslateConfiguration()
+    @Published var liveEndpoint = LiveTranslateConfiguration().endpoint
+    @Published var liveLanguage = "zh"
+    @Published var liveKeyInput = ""
+    @Published var liveMessage = ""
+    @Published private(set) var liveTesting = false
+    private let liveClientFactory: () -> LiveTranslateClient
+    private let liveKeyReader: (String) throws -> String?
+    private let liveDefaults: UserDefaults
+    private var liveClient: LiveTranslateClient?
+    private var liveEvents = LiveTranslateEvents()
+    private var liveAttempt = UUID()
+    var liveEnabled: Bool { liveConfiguration.enabled }
+    var liveSettingsBusy: Bool { recording || pendingStart || state == "finalizing" || liveTesting }
+    var canStop: Bool { recording || pendingStart || (liveEnabled && state == "connecting") }
+
 
     var busy: Bool { !["idle", "ready", "error"].contains(state) }
-    var inputBusy: Bool { busy || pendingStart }
+    var inputBusy: Bool { busy || pendingStart || liveTesting || asrTesting }
+    var qwenASR: Bool { asrProvider == "api" && asrAPIProtocol == "qwen_realtime" }
     var recording: Bool { state == "recording" }
+    var canStart: Bool {
+        if liveEnabled { return state == "ready" && !liveTesting }
+        return state == "ready" && !asrTesting && asrProvider == activeASRProvider &&
+        (asrProvider != "api" || (asrAPIBaseURL == activeAPIBaseURL && asrAPIModel == activeAPIModel && asrAPIProtocol == activeAPIProtocol))
+    }
     var joinedText: String { finalText.map(\.text).joined(separator: "\n") }
     var exportText: String {
         let translated = finalText.contains { !$0.translation.isEmpty }
@@ -118,6 +157,7 @@ final class AppModel: ObservableObject {
         }
     }
     var translationSummary: String {
+        if liveEnabled { return "LiveTranslate → \(liveConfiguration.languageName)" }
         if translationProvider == "api" {
             guard translationEnabled else { return "已关闭" }
             let profile = AIProfiles.shared.profiles.first { $0.id == translationAPIProfile }
@@ -134,7 +174,13 @@ final class AppModel: ObservableObject {
         ["connecting":"连接服务", "idle":"等待模型", "downloading":"下载模型", "loading":"加载模型", "warming":"模型预热", "ready":"准备就绪", "recording":"正在聆听", "finalizing":"处理尾句", "error":"需要处理"][state] ?? state
     }
 
-    init() {
+    init(defaults: UserDefaults = .standard, integrateSystem: Bool = true,
+         liveClientFactory: @escaping () -> LiveTranslateClient = { LiveTranslateClient() },
+         liveKeyReader: @escaping (String) throws -> String? = { try APIKeyStore.read(endpoint: $0) }) {
+        self.liveClientFactory = liveClientFactory; self.liveKeyReader = liveKeyReader
+        liveDefaults = defaults
+        liveConfiguration = LiveTranslateConfiguration.load(defaults: defaults)
+        liveEndpoint = liveConfiguration.endpoint; liveLanguage = liveConfiguration.language
         apiTranslations.onUpdate = { [weak self] id, text, done in
             guard let self, let index = self.rows[id], self.finalText.indices.contains(index) else { return }
             // Negative unit IDs are reserved for frontend API translations.
@@ -142,12 +188,13 @@ final class AppModel: ObservableObject {
             self.translationTick += 1
         }
         apiTranslations.onError = { [weak self] message in self?.error = message }
-        refreshDevices()
-        updatePermission()
+        if integrateSystem { refreshDevices(); updatePermission() }
         capture.onFailure = { [weak self] message in DispatchQueue.main.async { self?.stop(); self?.error = message } }
         capture.onPCM = { [weak self] pcm, rms in self?.audio(pcm, rms: rms) }
+        if integrateSystem {
         sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.stop() }
         registerShortcut()
+        }
         launch()
     }
 
@@ -175,6 +222,7 @@ final class AppModel: ObservableObject {
 
     func launch() {
         shutdown()
+        if liveEnabled { state = "ready"; detail = "LiveTranslate 已就绪"; error = ""; return }
         generation = UUID()
         let currentGeneration = generation
         state = "connecting"; error = ""
@@ -254,11 +302,16 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        asrTask?.cancel(); asrTask = nil; asrTestTask?.cancel(); asrTestTask = nil
+        asrAudio.removeAll(); asrTesting = false
+        liveAttempt = UUID()
+        liveClient?.cancel(); liveClient = nil; liveTesting = false
+        settleLiveRows()
         cancelLiveTranslations()
         generation = UUID()
         pendingStart = false
-        stopInputs()
         audioLock.lock(); accepting = false; audioLock.unlock()
+        stopInputs()
         transport?.close(); transport = nil
         if let process, process.isRunning { process.terminate() }
         process = nil
@@ -268,6 +321,7 @@ final class AppModel: ObservableObject {
     }
 
     private func command(_ name: String, extra: [String:Any] = [:]) {
+        guard !liveEnabled else { return }
         var value: [String:Any] = ["command":name, "protocol_version":1, "request_id":UUID().uuidString, "session_id":session]
         value.merge(extra) { _, new in new }
         transport?.send(value)
@@ -276,13 +330,35 @@ final class AppModel: ObservableObject {
     var config: [String:Any] {
         ["schema_version":1, "model_id":modelID, "local_model_path":localPath,
          "revision":revision, "language":language, "preview_interval_ms":previewInterval,
-         "endpoint_mode":endpointMode, "endpoint_silence_ms":silence, "max_segment_seconds":maxSegment]
+         "endpoint_mode":endpointMode, "endpoint_silence_ms":silence, "max_segment_seconds":maxSegment,
+         "provider":asrProvider, "api_base_url":asrAPIBaseURL, "api_model":asrAPIModel, "api_protocol":asrAPIProtocol]
     }
     func load(download: Bool = false) {
+        guard !liveEnabled, !asrTesting else { return }
         error = ""; progress = 0
-        command(download ? "download" : "load", extra:["config":config])
+        if asrProvider == "api" {
+            do {
+                let base = try normalizedASREndpoint()
+                guard !asrAPIModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw AIError.message("请填写支持音频转写的模型 ID")
+                }
+                asrAPIBaseURL = base
+                asrAPIModel = asrAPIModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                let account = "asr:" + base
+                let input = asrAPIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !input.isEmpty { try APIKeyStore.save(input, endpoint: account); asrAPIKeyInput = "" }
+                guard let key = try APIKeyStore.read(endpoint: account), !key.isEmpty else {
+                    throw AIError.message("请填写识别 API Key")
+                }
+                var extra: [String:Any] = ["config":config]
+                if !qwenASR { extra["api_key"] = key }
+                command("load", extra:extra)
+            } catch { self.error = error.localizedDescription }
+        } else { command(download ? "download" : "load", extra:["config":config]) }
     }
     var activeModelName: String {
+        if liveEnabled { return "Qwen3.8 LiveTranslate" }
+        if activeASRProvider == "api" { return "API · \(activeAPIModel)" }
         switch activeModelID {
         case Self.qwenID: return "Qwen3-ASR 1.7B"
         case Self.whisperID: return "Whisper Large v3 Turbo"
@@ -298,6 +374,47 @@ final class AppModel: ObservableObject {
             revision = ""
         }
     }
+    func setASRProvider(_ provider: String) {
+        guard !busy, !asrTesting, ["local", "api"].contains(provider) else { return }
+        asrProvider = provider
+    }
+    func setASRAPIProtocol(_ value: String) {
+        guard !inputBusy, ["openai", "qwen_realtime"].contains(value), value != asrAPIProtocol else { return }
+        asrAPIProtocol = value; asrAPIKeyInput = ""; asrConnectionMessage = ""
+        if value == "qwen_realtime" {
+            asrAPIBaseURL = QwenRealtimeASRConfiguration.endpoint
+            asrAPIModel = QwenRealtimeASRConfiguration.model
+            endpointMode = "fixed"
+        } else { asrAPIBaseURL = "https://api.openai.com/v1"; asrAPIModel = "" }
+    }
+    private func normalizedASREndpoint() throws -> String {
+        if qwenASR {
+            return try QwenRealtimeASRConfiguration(endpoint:asrAPIBaseURL, model:asrAPIModel, language:language).normalizedEndpoint()
+        }
+        var base = asrAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        while base.hasSuffix("/") { base.removeLast() }
+        if base.hasSuffix("/audio/transcriptions") { base.removeLast("/audio/transcriptions".count) }
+        return try AIProfile.normalize(base)
+    }
+    func testASRConnection() {
+        guard qwenASR, !liveEnabled, !inputBusy else { return }
+        do {
+            let base = try normalizedASREndpoint()
+            let keyInput = asrAPIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !keyInput.isEmpty { try APIKeyStore.save(keyInput, endpoint:"asr:" + base); asrAPIKeyInput = "" }
+            let key = try APIKeyStore.read(endpoint:"asr:" + base) ?? ""
+            let configuration = QwenRealtimeASRConfiguration(endpoint:base, model:asrAPIModel, language:language)
+            let currentGeneration = generation
+            asrTesting = true; asrConnectionMessage = "正在连接千问并确认手动转写模式…"
+            asrTestTask = Task { @MainActor [weak self] in
+                var message = "连接成功，已确认转写模式；测试未发送音频"
+                do { _ = try await QwenRealtimeASRClient().transcribe(configuration:configuration, key:key, pcm:nil) }
+                catch { message = error.localizedDescription }
+                guard let self, self.generation == currentGeneration, !Task.isCancelled else { return }
+                self.asrTesting = false; self.asrTestTask = nil; self.asrConnectionMessage = message
+            }
+        } catch { asrConnectionMessage = error.localizedDescription }
+    }
     func cancelDownload() { command("cancel_download") }
 
     var translationConfig: [String:Any] {
@@ -306,6 +423,7 @@ final class AppModel: ObservableObject {
          "model_id":translatorModelID, "revision":translatorRevision]
     }
     func setTranslation(enabled: Bool) {
+        guard !liveEnabled else { return }
         guard !translatorBusy, enabled != translationEnabled else { return }
         error = ""
         translationEnabled = enabled
@@ -319,6 +437,7 @@ final class AppModel: ObservableObject {
         }
     }
     func setTranslationProvider(_ provider: String) {
+        guard !liveEnabled else { return }
         guard !translatorBusy, ["local", "api"].contains(provider), provider != translationProvider else { return }
         cancelLiveTranslations()
         translationProvider = provider
@@ -328,11 +447,12 @@ final class AppModel: ObservableObject {
         command("translation_settings", extra: ["provider":provider, "api_profile":translationAPIProfile])
     }
     func setTranslationAPIProfile(_ id: String) {
+        guard !liveEnabled else { return }
         translationAPIProfile = id
         command("translation_settings", extra: ["api_profile":id])
     }
     private func translateFinal(id: String, text: String) {
-        guard translationEnabled, translationProvider == "api" else { return }
+        guard !liveEnabled, translationEnabled, translationProvider == "api" else { return }
         do {
             guard let profile = AIProfiles.shared.profiles.first(where: { $0.id == translationAPIProfile }) else {
                 throw AIError.message("请在设置 → AI 服务中保存配置，并在翻译设置中选择该服务")
@@ -344,11 +464,13 @@ final class AppModel: ObservableObject {
         } catch { self.error = "API 翻译未启动：\(error.localizedDescription)。原文仍保留。" }
     }
     func setTranslationTarget(_ target: String) {
+        guard !liveEnabled else { return }
         guard target != translationTarget else { return }
         translationTarget = target
         command("translation_settings", extra: ["target_language": target])
     }
     func loadTranslator(download: Bool = false) {
+        guard !liveEnabled else { return }
         guard !translatorBusy else { return }
         error = ""; translatorProgress = 0
         command(download ? "download" : "load", extra: ["role":"translator", "translation":translationConfig])
@@ -364,7 +486,7 @@ final class AppModel: ObservableObject {
     }
     func showPermissionSettings() { NSWorkspace.shared.open(URL(string:"x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!) }
 
-    func toggle() { recording || pendingStart ? stop() : start() }
+    func toggle() { canStop ? stop() : start() }
     func chooseAudioFile() {
         guard !busy, !pendingStart else { return }
         let panel = NSOpenPanel()
@@ -373,7 +495,10 @@ final class AppModel: ObservableObject {
         if panel.runModal() == .OK { audioFileURL = panel.url }
     }
     func start() {
-        guard state == "ready", !pendingStart else { return }
+        guard canStart, !pendingStart else {
+            if state == "ready" { error = "识别服务设置已更改，请先点击「连接 / 切换」使其生效" }
+            return
+        }
         if audioSource == "file", audioFileURL == nil { error = "请先选择音频文件"; return }
         error = ""; pendingStart = true
         startAttempt = UUID()
@@ -384,6 +509,7 @@ final class AppModel: ObservableObject {
             guard self.state == "ready" else { self.pendingStart = false; return }
             self.session = UUID().uuidString
             self.partial = ""; self.revisions.removeAll()
+            if self.liveEnabled { self.connectLive(test: false); return }
             self.command("start", extra: ["endpoint_mode": self.endpointMode, "endpoint_silence_ms": self.silence])
         }
         if audioSource == "microphone" {
@@ -435,13 +561,15 @@ final class AppModel: ObservableObject {
     private func audio(_ pcm: Data, rms: Float) {
         audioLock.lock()
         guard accepting else { audioLock.unlock(); return }
-        let sent = transport?.audio(pcm, session: session, sequence: sequence, start: samples) ?? false
+        let audioSession = session
+        let sent = liveEnabled ? (liveClient?.append(pcm) ?? false) : (transport?.audio(pcm, session: session, sequence: sequence, start: samples) ?? false)
         if sent { sequence += 1; samples += pcm.count / 2 }
         else { accepting = false }
         audioLock.unlock()
         DispatchQueue.main.async { [weak self] in
-            self?.level = min(1, rms * 8)
-            if !sent { self?.stop(); self?.error = "音频传输积压，已停止采集并处理已排队音频；最后一个未发送音频块未能保留。" }
+            guard let self, self.session == audioSession, self.recording else { return }
+            self.level = min(1, rms * 8)
+            if !sent { self.stop(); self.error = "音频传输积压，已停止采集并处理已排队音频；最后一个未发送音频块未能保留。" }
         }
     }
 
@@ -451,23 +579,41 @@ final class AppModel: ObservableObject {
         stopInputs()
         audioLock.lock(); accepting = false; audioLock.unlock()
         level = 0
-        if state == "recording" { state = "finalizing"; command("stop") }
+        if liveEnabled {
+            if state == "recording" { state = "finalizing"; liveClient?.finish() }
+            else if state == "connecting" {
+                liveAttempt = UUID(); liveClient?.cancel(); liveClient = nil; state = "ready"
+            }
+        } else if state == "recording" { state = "finalizing"; command("stop") }
     }
 
     private func handle(_ event: [String:Any]) {
+        guard !liveEnabled else { return }
         switch event["type"] as? String {
         case "config":
             guard let c = event["config"] as? [String:Any] else { return }
+            asrProvider = c["provider"] as? String ?? "local"
+            asrAPIProtocol = c["api_protocol"] as? String ?? "openai"
+            activeAPIProtocol = asrAPIProtocol
+            activeASRProvider = asrProvider
+            asrAPIBaseURL = c["api_base_url"] as? String ?? "https://api.openai.com/v1"
+            if asrAPIBaseURL.isEmpty { asrAPIBaseURL = "https://api.openai.com/v1" }
+            asrAPIModel = c["api_model"] as? String ?? ""
+            activeAPIBaseURL = asrAPIBaseURL
+            activeAPIModel = asrAPIModel
             modelID = c["model_id"] as? String ?? modelID
             activeModelID = modelID
             localPath = c["local_model_path"] as? String ?? ""
             revision = c["revision"] as? String ?? ""
             preset = localPath.isEmpty && [Self.qwenID, Self.whisperID].contains(modelID) ? modelID : "custom"
             language = c["language"] as? String ?? "auto"
+            activeASRLanguage = language
             previewInterval = c["preview_interval_ms"] as? Int ?? 1200
             endpointMode = c["endpoint_mode"] as? String ?? "smart"
             silence = c["endpoint_silence_ms"] as? Int ?? 1000
             maxSegment = c["max_segment_seconds"] as? Int ?? 18
+        case "asr_api_audio":
+            receiveQwenAudio(event)
         case "status":
             let next = event["state"] as? String ?? "idle"
             if next != "recording", recording { stopInputs(); audioLock.lock(); accepting = false; audioLock.unlock(); level = 0 }
@@ -527,6 +673,39 @@ final class AppModel: ObservableObject {
         default: break
         }
     }
+    private func receiveQwenAudio(_ event: [String:Any]) {
+        guard activeASRProvider == "api", activeAPIProtocol == "qwen_realtime",
+              event["session_id"] as? String == session, let call = event["call_id"] as? String,
+              let encoded = event["audio"] as? String, let data = Data(base64Encoded:encoded) else { return }
+        var pcm = asrAudio[call] ?? Data(); pcm.append(data)
+        guard pcm.count <= 800_000 else {
+            asrAudio[call] = nil
+            command("asr_api_result", extra:["call_id":call, "error":"千问音频片段过长"])
+            return
+        }
+        asrAudio[call] = pcm
+        guard event["done"] as? Bool == true else { return }
+        asrAudio[call] = nil
+        guard asrTask == nil else {
+            command("asr_api_result", extra:["call_id":call, "error":"千问识别请求仍在处理中"]); return
+        }
+        let currentGeneration = generation, currentSession = session
+        let configuration = QwenRealtimeASRConfiguration(endpoint:activeAPIBaseURL, model:activeAPIModel, language:activeASRLanguage)
+        asrTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var result: [String:Any] = ["call_id":call]
+            do {
+                let key = try APIKeyStore.read(endpoint:"asr:" + configuration.endpoint) ?? ""
+                result["text"] = try await QwenRealtimeASRClient().transcribe(configuration:configuration, key:key, pcm:pcm) { [weak self] text in
+                    guard let self, self.generation == currentGeneration, self.session == currentSession else { return }
+                    self.partial = text
+                }
+            } catch { result["error"] = error.localizedDescription }
+            guard self.generation == currentGeneration, self.session == currentSession, !Task.isCancelled else { return }
+            self.asrTask = nil
+            self.command("asr_api_result", extra:result)
+        }
+    }
     func saveText() {
         TextExport.save(exportText) { [weak self] message in self?.error = message }
     }
@@ -549,5 +728,145 @@ final class AppModel: ObservableObject {
         let code = shortcutKey == "R" ? kVK_ANSI_R : shortcutKey == "D" ? kVK_ANSI_D : kVK_Space
         let result = RegisterEventHotKey(UInt32(code), UInt32(controlKey | optionKey), EventHotKeyID(signature: 0x4C415352, id: 1), GetApplicationEventTarget(), 0, &hotKey)
         if result != noErr { error = "快捷键已被占用，请更换按键" }
+    }
+}
+
+
+extension AppModel {
+    @discardableResult
+    func saveLiveSettings(enabled: Bool? = nil) -> Bool {
+        guard !liveSettingsBusy else { return false }
+        do {
+            var next = LiveTranslateConfiguration(enabled: enabled ?? liveEnabled, endpoint: liveEndpoint, language: liveLanguage)
+            next = try next.normalized()
+            let key = liveKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !key.isEmpty { try APIKeyStore.save(key, endpoint: next.keyAccount) }
+            try next.save(defaults: liveDefaults)
+            let changedMode = next.enabled != liveEnabled
+            // Stop the old service before publishing the new selection.
+            if changedMode { shutdown() }
+            liveConfiguration = next; liveEndpoint = next.endpoint; liveLanguage = next.language; liveKeyInput = ""
+            liveMessage = key.isEmpty ? "设置已保存；保留此地址已有的密钥" : "设置已保存；专用 API Key 已存入钥匙串"
+            if changedMode { launch() }
+            return true
+        } catch { liveMessage = error.localizedDescription; return false }
+    }
+    func setLiveEnabled(_ enabled: Bool) {
+        guard !liveSettingsBusy, enabled != liveEnabled else { return }
+        if enabled { _ = saveLiveSettings(enabled: true) }
+        else {
+            // Leaving the mode must work even if the settings editor contains an invalid draft.
+            do {
+                var next = liveConfiguration; next.enabled = false; try next.save(defaults: liveDefaults)
+                shutdown(); liveConfiguration = next; launch()
+            } catch { liveMessage = error.localizedDescription }
+        }
+    }
+    func testLiveConnection() {
+        guard !inputBusy, !liveSettingsBusy, saveLiveSettings() else { return }
+        connectLive(test: true)
+    }
+    private func connectLive(test: Bool) {
+        let attempt = UUID(); liveAttempt = attempt
+        let currentSession = session
+        let client = liveClientFactory()
+        liveClient = client; liveTesting = test
+        if !test { state = "connecting"; detail = "正在连接 LiveTranslate…"; liveEvents = LiveTranslateEvents() }
+        liveMessage = "正在连接并确认会话配置…"
+        client.onReady = { [weak self, weak client] in
+            guard let self, self.liveAttempt == attempt, self.liveClient === client else { return }
+            if test { client?.finish() }
+            else {
+                guard self.pendingStart else { client?.cancel(); return }
+                self.state = "recording"; self.beginCapture()
+            }
+        }
+        client.onEvent = { [weak self] event in
+            guard let self, !test, self.liveAttempt == attempt, self.session == currentSession else { return }
+            self.liveEvents.apply(event)
+            self.publishLiveRows()
+        }
+        client.onEnd = { [weak self] message in
+            guard let self, self.liveAttempt == attempt else { return }
+            self.liveAttempt = UUID()
+            if !test {
+                self.audioLock.lock(); self.accepting = false; self.audioLock.unlock()
+                self.stopInputs()
+                self.pendingStart = false; self.level = 0
+                self.preserveUnmatchedLiveOutput()
+                self.settleLiveRows()
+                self.state = "ready"
+                if let message { self.error = message }
+                else if self.liveEvents.hasUnmatchedOutput { self.error = "部分译文未收到对应句子信息，请重新连接服务" }
+            }
+            self.liveTesting = false; self.liveClient = nil
+            self.liveMessage = message ?? (test ? "连接成功，已确认文本输出与目标语言" : "本次会话已结束")
+        }
+        do {
+            let key = try liveKeyReader(liveConfiguration.keyAccount) ?? ""
+            try client.connect(configuration: liveConfiguration, key: key)
+        } catch {
+            client.cancel(); liveClient = nil; liveTesting = false; pendingStart = false
+            liveMessage = error.localizedDescription
+            if !test { state = "ready"; self.error = error.localizedDescription }
+        }
+    }
+    private func publishLiveRows() {
+        var changed = false
+        for sourceID in liveEvents.order {
+            guard let row = liveEvents.rows[sourceID] else { continue }
+            let translation = liveEvents.translation(for: row)
+            guard !row.source.text.isEmpty || !translation.text.isEmpty else { continue }
+            let id = "\(session):live:\(sourceID)"
+            let index: Int
+            if let existing = rows[id] { index = existing }
+            else {
+                index = finalText.count; rows[id] = index
+                finalText.append(Transcript(id: id, text: "", seconds: row.seconds))
+            }
+            let previous = finalText[index]
+            guard previous.text != row.source.text || previous.seconds != row.seconds || previous.sourceDone != row.source.done ||
+                    previous.translations[-2]?.text != translation.text || previous.translations[-2]?.done != translation.done else { continue }
+            var updated = previous
+            updated.text = row.source.text; updated.seconds = row.seconds; updated.sourceDone = row.source.done
+            updated.translations[-2] = TranslationPart(text: translation.text, revision: 0, done: translation.done)
+            finalText[index] = updated; changed = true
+        }
+        if changed {
+            // Late ASR/translation must not move an earlier spoken sentence behind a newer one.
+            let prefix = "\(session):live:"
+            let orderedIDs = liveEvents.order.enumerated().sorted {
+                let left = liveEvents.rows[$0.element]?.seconds ?? 0
+                let right = liveEvents.rows[$1.element]?.seconds ?? 0
+                return left == right ? $0.offset < $1.offset : left < right
+            }.map { prefix + $0.element }
+            let currentIDs = finalText.filter { $0.id.hasPrefix(prefix) }.map(\.id)
+            let visibleIDs = orderedIDs.filter { rows[$0] != nil }
+            if currentIDs != visibleIDs {
+                let current = Dictionary(uniqueKeysWithValues: finalText.filter { $0.id.hasPrefix(prefix) }.map { ($0.id, $0) })
+                finalText = finalText.filter { !$0.id.hasPrefix(prefix) } + visibleIDs.compactMap { current[$0] }
+                rows = Dictionary(uniqueKeysWithValues: finalText.enumerated().map { ($0.element.id, $0.offset) })
+            }
+            translationTick += 1
+        }
+    }
+    private func preserveUnmatchedLiveOutput() {
+        for (outputID, part) in liveEvents.unmatchedOutputs {
+            let id = "\(session):live:unmatched:\(outputID)"
+            guard rows[id] == nil else { continue }
+            rows[id] = finalText.count
+            var row = Transcript(id: id, text: "", seconds: 0, sourceDone: false, incomplete: true)
+            row.translations[-2] = TranslationPart(text: part.text, revision: 0, done: true)
+            finalText.append(row)
+        }
+    }
+    private func settleLiveRows() {
+        for index in finalText.indices where finalText[index].id.hasPrefix("\(session):live:") {
+            if !finalText[index].sourceDone || finalText[index].translating { finalText[index].incomplete = true }
+            if var part = finalText[index].translations[-2] {
+                part.done = true; finalText[index].translations[-2] = part
+            }
+        }
+        translationTick += 1
     }
 }

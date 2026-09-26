@@ -29,7 +29,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSScreenCaptureUsageDescription</key><string>声笺仅在你选择系统声音并开始转写时采集系统音频，不保存屏幕画面。</string>
-<key>NSMicrophoneUsageDescription</key><string>声笺仅在你主动开始转写时使用麦克风，在本机识别语音，不保存或上传录音。</string>
+<key>NSMicrophoneUsageDescription</key><string>声笺仅在你主动开始转写时使用麦克风；本地识别不上传音频，选择 API 识别或 LiveTranslate 时会发送音频到所选服务。应用不保存录音。</string>
 </dict></plist>
 PLIST
 # Pin the locally verified revision; weights live in Application Support, never the bundle.

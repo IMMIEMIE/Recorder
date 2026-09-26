@@ -89,6 +89,7 @@ struct SubtitleView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         if let latest = model.finalText.last {
                             VStack(alignment: .leading, spacing: 8) {
+                                if latest.incomplete { Text("此句可能不完整").font(.caption).foregroundStyle(.orange) }
                                 Text(latest.text).foregroundStyle(.white)
                                 if showTranslation && !latest.translation.isEmpty {
                                     Text(latest.translation).foregroundStyle(Color(red: 0.65, green: 0.88, blue: 1))

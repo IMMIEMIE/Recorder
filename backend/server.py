@@ -12,6 +12,8 @@ from dataclasses import asdict
 from pathlib import Path
 from core import Config, FRAME, RATE, TranslationConfig, read_message, encode_message, Segmenter
 from adapter import Adapter
+from asr_api import APIRecognizer
+from asr_bridge import NativeASRBridge
 from recognition import RecognitionCache
 from translation import CONTEXT_PAIRS, TranslationPlanner, Translator, already_in_target, same_text, validate_translator
 
@@ -32,6 +34,8 @@ class Server:
         self.request = ''
         self.config = Config()
         self.adapter = Adapter()
+        self.api_recognizer = APIRecognizer()
+        self.qwen_recognizer = NativeASRBridge(self.send, lambda: self.alive)
         self.recognition = RecognitionCache()
         self.downloader = None
         self.download_role = 'asr'
@@ -86,6 +90,8 @@ class Server:
 
     def enqueue(self, item):
         with self.cv:
+            if self.config.provider == 'api' and self.config.api_protocol == 'qwen_realtime' and not item['final']:
+                return  # Submit each finalized segment once; no repeated paid preview requests.
             item['session_id'] = self.session
             if item['final']:
                 self.final_segments.add(item['segment_id'])
@@ -127,6 +133,20 @@ class Server:
             try:
                 if kind in ('load_translator', 'unload_translator', 'translate'):
                     self.translator_job(kind, value)
+                elif kind == 'load_api':
+                    config, key = value
+                    if config.api_protocol == 'openai':
+                        self.api_recognizer.load(config, key)
+                    else:
+                        self.api_recognizer.key = ''
+                    self.adapter.unload()
+                    self.recognition.clear()
+                    config.save(self.config_path)
+                    self.config = config
+                    self.send(type='config', config=asdict(config))
+                    self.status('ready', '识别 API 已就绪 · 语音片段将发送到所选服务')
+                    if self.translation.enabled and self.translation.provider == 'local' and self.translator.model is None and self.translator_state not in TRANSLATOR_BUSY:
+                        self.queue_translator_load(TranslationConfig(**asdict(self.translation)))
                 elif kind == 'load':
                     config, path = value
                     self.status('loading', '加载模型到本机内存…')
@@ -137,6 +157,7 @@ class Server:
                     self.adapter.load(config, path)
                     self.status('warming', '正在预热模型…')
                     self.adapter.warmup()
+                    self.api_recognizer.key = ''
                     config.save(self.config_path)
                     self.config = config
                     self.send(type='config', config=asdict(config))
@@ -148,7 +169,10 @@ class Server:
                         with self.cv:
                             return (value['session_id'] != self.session or
                                     (not value['final'] and value['segment_id'] in self.final_segments))
-                    text, duration = self.recognition.transcribe(self.adapter, self.config, value, obsolete)
+                    recognizer = self.api_recognizer if self.config.provider == 'api' else self.adapter
+                    if self.config.provider == 'api' and self.config.api_protocol == 'qwen_realtime':
+                        recognizer = self.qwen_recognizer
+                    text, duration = self.recognition.transcribe(recognizer, self.config, value, obsolete)
                     with self.cv:
                         valid = value['session_id'] == self.session
                         valid &= value['final'] or value['segment_id'] not in self.final_segments
@@ -178,7 +202,7 @@ class Server:
                 if any(job == 'load_translator' for job, _ in dropped):
                     self.translator_status('ready' if self.translator.model is not None else 'idle')
                 self.status('error', f'{type(e).__name__}: {e}')
-                self.send(type='error', message=f'本地处理失败 ({type(e).__name__}): {e}。已确认文字仍保留，可重新加载模型恢复。')
+                self.send(type='error', message=f'识别处理失败 ({type(e).__name__}): {e}。已确认文字仍保留，可重新加载识别服务恢复。')
             finally:
                 with self.cv:
                     self.active = False
@@ -386,16 +410,20 @@ class Server:
                 raise ValueError('请等待当前操作结束再切换模型')
             config = Config.parse(message.get('config', asdict(self.config)))
             if cmd == 'download':
+                if config.provider == 'api':
+                    raise ValueError('API 服务无需下载，请使用加载 / 切换')
                 if config.local_model_path:
                     raise ValueError('本地目录无需下载，请使用加载')
                 if self.downloader:
                     raise ValueError('请等待当前下载结束')
                 self.download(config)
             else:
-                path = config.local_model_path
                 self.status('loading')
                 with self.cv:
-                    self.jobs.append(('load', (config, path)))
+                    if config.provider == 'api':
+                        self.jobs.append(('load_api', (config, message.get('api_key', ''))))
+                    else:
+                        self.jobs.append(('load', (config, config.local_model_path)))
                     self.cv.notify()
         elif cmd == 'translation_settings':
             values = asdict(self.translation)
@@ -413,7 +441,7 @@ class Server:
                 if self.translator.model is None:
                     self.translator_status('idle')
                 else:
-                    self.translator_status(self.translator_state, '正在关闭实时翻译…')
+                    self.translator_status('loading', '正在关闭实时翻译…')
                     with self.cv:
                         self.jobs.append(('unload_translator', None))
                         self.cv.notify()
@@ -421,6 +449,8 @@ class Server:
                 self.queue_translator_load(TranslationConfig(**asdict(config)))
             else:
                 self.translator_status(self.translator_state, self.translator_detail)
+        elif cmd == 'asr_api_result':
+            self.qwen_recognizer.resolve(message.get('call_id'), message.get('text', ''), message.get('error', ''))
         elif cmd == 'cancel_download':
             if self.downloader:
                 process, self.downloader = self.downloader, None
@@ -433,7 +463,7 @@ class Server:
             if self.state != 'ready':
                 raise ValueError('模型尚未就绪')
             config = Config.parse({**asdict(self.config),
-                                   'endpoint_mode': message.get('endpoint_mode', self.config.endpoint_mode),
+                                   'endpoint_mode': 'fixed' if self.config.provider == 'api' and self.config.api_protocol == 'qwen_realtime' else message.get('endpoint_mode', self.config.endpoint_mode),
                                    'endpoint_silence_ms': message.get('endpoint_silence_ms', self.config.endpoint_silence_ms)})
             if config != self.config:
                 config.save(self.config_path)
