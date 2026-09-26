@@ -8,6 +8,10 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 
+DEFAULT_SESSION = {'modalities':['text', 'audio'], 'input_audio_format':'pcm',
+                   'input_audio_transcription':{'model':'qwen3-asr-flash-realtime'},
+                   'turn_detection':{'type':'server_vad', 'threshold':0.5, 'silence_duration_ms':800}}
+rejected_hints = []
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
@@ -48,16 +52,30 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Sec-WebSocket-Accept', base64.b64encode(hashlib.sha1(key.encode()).digest()).decode())
         self.end_headers(); self.close_connection = True
         try:
-            self.frame({'type':'session.created'})
+            self.frame({'type':'session.created', 'session':DEFAULT_SESSION})
             config = self.read_frame()
             assert config['type'] == 'session.update'
-            session = config['session']
-            assert session['modalities'] == ['text']
-            assert session['turn_detection'] is None
-            assert session['input_audio_format'] == 'pcm'
+            update = config['session']
+            # The service validates strictly: only documented fields, manual commit, text output.
+            assert update['turn_detection'] is None
+            if update != {'turn_detection': None}:
+                assert set(update) <= {'modalities', 'input_audio_format', 'turn_detection', 'input_audio_transcription'}
+                assert update['modalities'] == ['text']
+                assert update['input_audio_format'] == 'pcm'
+            if 'input_audio_transcription' in update:
+                if route.path == '/no-language':
+                    assert not rejected_hints, 'rejected language hint was sent again'
+                    rejected_hints.append(update['input_audio_transcription'])
+                    self.frame({'type':'error', 'error':{'code':'InvalidParameter', 'param':'session.input_audio_transcription',
+                                                         'message':'Unsupported field'}}); return
+                assert update['input_audio_transcription'] == {'model':'qwen3-asr-flash-realtime', 'language':'zh'}
             if route.path == '/error':
-                self.frame({'type':'error', 'error':{'code':'quota', 'message':'DO NOT DISPLAY mock-only'}}); return
+                self.frame({'type':'error', 'error':{'code':'Throttling.AllocationQuota', 'message':'Quota exceeded for mock-only'}}); return
+            if route.path == '/closed':
+                self.frame(struct.pack('!H', 1008) + b'Access denied for mock-only', 8); return
+            session = {**DEFAULT_SESSION, **update}
             if route.path == '/wrong-mode': session['turn_detection'] = {'type':'server_vad'}
+            if route.path == '/sparse': session = {'id':'sess_sparse'}  # null fields omitted from the echo
             self.frame({'type':'session.updated', 'session':session})
             audio = bytearray()
             while (event := self.read_frame()) is not None:
@@ -70,10 +88,12 @@ class Handler(BaseHTTPRequestHandler):
                     if route.path == '/failed':
                         self.frame({'type':'conversation.item.input_audio_transcription.failed', 'error':{'message':'mock-only'}}); return
                     assert audio == bytes([1, 2]) * 3200
+                    self.frame({'type':'input_audio_buffer.committed', 'item_id':'input'})
+                    self.frame({'type':'conversation.item.input_audio_transcription.completed', 'item_id':'other', 'transcript':'不属于本次提交'})
                     self.frame({'type':'response.text.done', 'text':'这是一条回答，必须忽略'})
                     delta = {'type':'conversation.item.input_audio_transcription.delta', 'event_id':'duplicate', 'item_id':'input', 'text':'你好', 'stash':'🌏'}
                     self.frame(delta); self.frame(delta)
-                    self.frame({'type':'conversation.item.input_audio_transcription.delta', 'item_id':'input', 'text':'你好，', 'stash':'世界'})
+                    self.frame({'type':'conversation.item.input_audio_transcription.text', 'item_id':'input', 'text':'你好，', 'stash':'世界'})
                     self.frame({'type':'conversation.item.input_audio_transcription.completed', 'item_id':'input', 'transcript':'你好，世界🌏。'})
                 else: raise AssertionError('Unexpected event: ' + event['type'])
         except (OSError, ValueError, TypeError): pass

@@ -387,6 +387,11 @@ final class AppModel: ObservableObject {
             endpointMode = "fixed"
         } else { asrAPIBaseURL = "https://api.openai.com/v1"; asrAPIModel = "" }
     }
+    /// The preset whose address is in the field, or "custom"; picking a preset fills the field.
+    var qwenPlatform: String {
+        get { QwenRealtimeASRConfiguration.presets.first { $0.1 == asrAPIBaseURL }?.1 ?? "custom" }
+        set { if newValue != "custom" { asrAPIBaseURL = newValue } }
+    }
     private func normalizedASREndpoint() throws -> String {
         if qwenASR {
             return try QwenRealtimeASRConfiguration(endpoint:asrAPIBaseURL, model:asrAPIModel, language:language).normalizedEndpoint()
@@ -405,10 +410,10 @@ final class AppModel: ObservableObject {
             let key = try APIKeyStore.read(endpoint:"asr:" + base) ?? ""
             let configuration = QwenRealtimeASRConfiguration(endpoint:base, model:asrAPIModel, language:language)
             let currentGeneration = generation
-            asrTesting = true; asrConnectionMessage = "正在连接千问并确认手动转写模式…"
+            asrTesting = true; asrConnectionMessage = "正在连接 \(URL(string: base)?.host ?? base) 并确认手动转写模式…"
             asrTestTask = Task { @MainActor [weak self] in
-                var message = "连接成功，已确认转写模式；测试未发送音频"
-                do { _ = try await QwenRealtimeASRClient().transcribe(configuration:configuration, key:key, pcm:nil) }
+                var message = "连接成功：密钥有效，已确认手动转写模式；测试未发送音频"
+                do { _ = try await QwenRealtimeASRClient(timeout:25).transcribe(configuration:configuration, key:key, pcm:nil) }
                 catch { message = error.localizedDescription }
                 guard let self, self.generation == currentGeneration, !Task.isCancelled else { return }
                 self.asrTesting = false; self.asrTestTask = nil; self.asrConnectionMessage = message

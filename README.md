@@ -101,13 +101,18 @@ API 识别请填写 Base URL（如 `https://api.example.com/v1`）和支持 `POS
 
 | 配置 | 值 |
 | --- | --- |
+| 服务平台 | 选择签发 API Key 的平台，默认千问AI平台（qianwenai.com） |
 | WebSocket 地址 | `wss://maas.qianwenaiapi.com/api-ws/v1/realtime` |
 | 模型 ID | `qwen-audio-3.1-realtime-plus` |
 | API Key | 填写千问平台中可访问该模型的密钥 |
 
 点击**保存 / 启用**，可先用**测试连接**确认权限和会话配置，再回到主窗口开始转写。若已开启 LiveTranslate 独立模式，先在 LiveTranslate 页将它关闭。测试连接只建立会话，不采集或发送音频。
 
-此模型使用 WebSocket，不能填入 OpenAI 音频转写的 Base URL。应用在本机检测停顿后提交一次语音片段，显示输入音频的 ASR 转写增量和最终文本；采用手动提交，不发送 `response.create`，不生成对话回答或语音。默认停顿 1 秒，可在转写设置调整。长语音会按现有识别窗口分块处理，窗口不会强制定稿。千问密钥只在原生客户端使用，不发送给 Python 后端或写入配置文件。
+API Key 只能用于签发它的平台和区域：千问AI平台的密钥对应 `maas.qianwenaiapi.com`，阿里云百炼对应 `dashscope.aliyuncs.com`（新加坡为 `dashscope-intl.aliyuncs.com`），QwenCloud 对应 `maas.qwencloudapi.com`，工作空间专属密钥需填写对应的工作空间地址。地址栏也可以直接粘贴平台的 https Base URL（如 `https://maas.qianwenaiapi.com/compatible-mode/v1` 或 `…/api/v1`），应用会换成同一主机的 `wss://…/api-ws/v1/realtime`。
+
+测试连接或转写失败时，提示会带上 HTTP 状态码或服务器返回的错误码与说明（密钥已隐藏），例如 HTTP 401/403 通常表示密钥无效或与地址不属于同一平台。选择具体语言时，应用把语言提示加到服务器默认的输入转写配置中。若服务拒绝会话配置（例如不支持语言参数），应用会只保留手动提交所需的 `turn_detection: null` 重试一次，之后该地址与模型改为自动识别语言。
+
+应用在本机检测停顿后提交一次语音片段，显示输入音频的 ASR 转写增量和最终文本；采用手动提交，不发送 `response.create`，不生成对话回答或语音。默认停顿 1 秒，可在转写设置调整。长语音会按现有识别窗口分块处理，窗口不会强制定稿。千问密钥只在原生客户端使用，不发送给 Python 后端或写入配置文件。
 
 协议依据：[模型页面](https://www.qianwenai.com/models/qwen-audio-3.1-realtime-plus)、[客户端事件](https://platform.qianwenai.com/docs/api-reference/qwen-audio-realtime/client-events)、[服务端事件](https://platform.qianwenai.com/docs/api-reference/qwen-audio-realtime/server-events)。
 

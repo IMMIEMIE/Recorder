@@ -235,13 +235,19 @@ struct SettingsView: View {
                     Text("OpenAI 兼容音频转写").tag("openai")
                     Text("千问实时语音（Qwen Audio）").tag("qwen_realtime")
                 }
+                if model.qwenASR {
+                    Picker("服务平台", selection: $model.qwenPlatform) {
+                        ForEach(QwenRealtimeASRConfiguration.presets, id: \.1) { Text($0.0).tag($0.1) }
+                        Text("自定义地址").tag("custom")
+                    }
+                }
                 TextField(model.qwenASR ? "WebSocket 地址（wss://…/api-ws/v1/realtime）" : "Base URL，例如 https://api.openai.com/v1", text: $model.asrAPIBaseURL)
                     .textContentType(.URL)
                 TextField(model.qwenASR ? "模型 ID，例如 qwen-audio-3.1-realtime-plus" : "音频转写模型 ID", text: $model.asrAPIModel)
                 SecureField("API Key（留空使用已保存的密钥）", text: $model.asrAPIKeyInput)
                 }.disabled(model.inputBusy)
                 if model.qwenASR {
-                    Text("已预填千问平台地址与模型。填写该平台的 API Key 后点击「保存 / 启用」。停顿后提交语音片段，只显示输入语音的转写；不会请求模型回答或播放语音。")
+                    Text("选择签发 API Key 的平台（密钥只能用于同一平台和区域），也可粘贴平台的 https Base URL，会自动换成实时接口地址。填写 API Key 后点击「保存 / 启用」。停顿后提交语音片段，只显示输入语音的转写；不会请求模型回答或播放语音。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack {
                         Button("测试连接") { model.testASRConnection() }.disabled(model.inputBusy)
