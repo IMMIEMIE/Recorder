@@ -233,22 +233,26 @@ struct SettingsView: View {
                 Group {
                 Picker("API 类型", selection: Binding(get: { model.asrAPIProtocol }, set: { model.setASRAPIProtocol($0) })) {
                     Text("OpenAI 兼容音频转写").tag("openai")
-                    Text("千问实时语音（Qwen Audio）").tag("qwen_realtime")
+                    Text("WebSocket 调用").tag("qwen_realtime")
                 }
-                TextField(model.qwenASR ? "WebSocket 地址（wss://…/api-ws/v1/realtime）" : "Base URL，例如 https://api.openai.com/v1", text: $model.asrAPIBaseURL)
-                    .textContentType(.URL)
-                TextField(model.qwenASR ? "模型 ID，例如 qwen-audio-3.1-realtime-plus" : "音频转写模型 ID", text: $model.asrAPIModel)
+                if model.streamingASR {
+                    LabeledContent("模型", value: StreamingASRConfiguration.model)
+                } else {
+                    TextField("Base URL，例如 https://api.openai.com/v1", text: $model.asrAPIBaseURL)
+                        .textContentType(.URL)
+                    TextField("音频转写模型 ID", text: $model.asrAPIModel)
+                }
                 SecureField("API Key（留空使用已保存的密钥）", text: $model.asrAPIKeyInput)
                 }.disabled(model.inputBusy)
-                if model.qwenASR {
-                    Text("已预填千问平台地址与模型。填写该平台的 API Key 后点击「保存 / 启用」。停顿后提交语音片段，只显示输入语音的转写；不会请求模型回答或播放语音。")
+                if model.streamingASR {
+                    Text("固定使用千问AI平台的流式识别模型，只需填写该平台的 API Key，然后点击「保存 / 启用」。录音时音频持续发送到服务端，边说边出字，停顿后由服务端定稿整句。")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     HStack {
                         Button("测试连接") { model.testASRConnection() }.disabled(model.inputBusy)
                         if model.asrTesting { ProgressView().controlSize(.small) }
                     }
                     if !model.asrConnectionMessage.isEmpty { Text(model.asrConnectionMessage).font(.caption).textSelection(.enabled) }
-                    Text("测试只建立并配置会话，不发送音频。转写时语音片段会发送到千问服务，可能产生费用；密钥存于钥匙串。")
+                    Text("测试只启动识别任务，不发送音频。转写时全部音频会发送到该服务，按音频时长计费；密钥存于钥匙串。")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                 Text("使用兼容 OpenAI /audio/transcriptions 的服务。加载后，语音片段会发送到此地址，可能产生费用；密钥保存在钥匙串，音频不存盘。")
@@ -256,7 +260,7 @@ struct SettingsView: View {
                 }
             }
             HStack {
-                Button(model.qwenASR ? "保存 / 启用" : model.asrProvider == "api" ? "连接 / 切换" : "加载 / 切换") { model.load() }.buttonStyle(.borderedProminent)
+                Button(model.streamingASR ? "保存 / 启用" : model.asrProvider == "api" ? "连接 / 切换" : "加载 / 切换") { model.load() }.buttonStyle(.borderedProminent)
                 if model.asrProvider == "local" {
                     Button("下载模型") { model.load(download: true) }.disabled(!model.localPath.isEmpty)
                 }
@@ -278,22 +282,22 @@ struct SettingsView: View {
             }.disabled(model.busy)
             Picker("快捷键：Control + Option +", selection: $model.shortcutKey) { Text("Space").tag("Space"); Text("R").tag("R"); Text("D").tag("D") }
             Toggle("按住说话", isOn: $model.holdToTalk)
-            if !model.qwenASR {
+            if !model.streamingASR {
             Picker("定稿方式", selection: $model.endpointMode) {
                 Text("智能定稿（默认）").tag("smart")
                 Text("固定停顿").tag("fixed")
             }.disabled(model.inputBusy)
             Text("智能模式结合停顿、句末标点和文字稳定性自动定稿；无需设置秒数。修改在下次转写时生效。").font(.caption).foregroundStyle(.secondary)
             } else {
-                Stepper("停顿提交：\(Double(model.silence) / 1000, specifier: "%.2f") 秒", value: $model.silence, in: 300...2000, step: 20)
+                Stepper("停顿定稿：\(Double(model.silence) / 1000, specifier: "%.2f") 秒", value: $model.silence, in: 300...2000, step: 20)
                     .disabled(model.inputBusy)
             }
             DisclosureGroup("高级", isExpanded: $advanced) {
                 VStack(alignment: .leading, spacing: 12) {
-                    if model.endpointMode == "fixed" && !model.qwenASR {
+                    if model.endpointMode == "fixed" && !model.streamingASR {
                         Stepper("停顿定稿：\(Double(model.silence) / 1000, specifier: "%.2f") 秒", value: $model.silence, in: 300...2000, step: 20)
                     }
-                    if !model.qwenASR {
+                    if !model.streamingASR {
                     TextField("Revision（可选）", text: $model.revision)
                     Stepper("预览间隔：\(model.previewInterval) ms", value: $model.previewInterval, in: 800...10000, step: 200)
                     }

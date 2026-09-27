@@ -13,7 +13,6 @@ from pathlib import Path
 from core import Config, FRAME, RATE, TranslationConfig, read_message, encode_message, Segmenter
 from adapter import Adapter
 from asr_api import APIRecognizer
-from asr_bridge import NativeASRBridge
 from recognition import RecognitionCache
 from translation import CONTEXT_PAIRS, TranslationPlanner, Translator, already_in_target, same_text, validate_translator
 
@@ -35,7 +34,6 @@ class Server:
         self.config = Config()
         self.adapter = Adapter()
         self.api_recognizer = APIRecognizer()
-        self.qwen_recognizer = NativeASRBridge(self.send, lambda: self.alive)
         self.recognition = RecognitionCache()
         self.downloader = None
         self.download_role = 'asr'
@@ -90,8 +88,6 @@ class Server:
 
     def enqueue(self, item):
         with self.cv:
-            if self.config.provider == 'api' and self.config.api_protocol == 'qwen_realtime' and not item['final']:
-                return  # Submit each finalized segment once; no repeated paid preview requests.
             item['session_id'] = self.session
             if item['final']:
                 self.final_segments.add(item['segment_id'])
@@ -105,11 +101,12 @@ class Server:
         if self.state != 'recording':
             return
         self.status('finalizing', '正在处理最后一段语音…')
-        if self.pending:
-            pcm = bytes(self.pending).ljust(FRAME * 2, b'\0')
-            self.segmenter.feed(pcm, self.vad.is_speech(pcm, RATE))
-            self.pending.clear()
-        self.segmenter.flush()
+        if self.segmenter is not None:
+            if self.pending:
+                pcm = bytes(self.pending).ljust(FRAME * 2, b'\0')
+                self.segmenter.feed(pcm, self.vad.is_speech(pcm, RATE))
+                self.pending.clear()
+            self.segmenter.flush()
         with self.cv:
             self.preview = None
             self.jobs.append(('finish', self.session))
@@ -170,8 +167,6 @@ class Server:
                             return (value['session_id'] != self.session or
                                     (not value['final'] and value['segment_id'] in self.final_segments))
                     recognizer = self.api_recognizer if self.config.provider == 'api' else self.adapter
-                    if self.config.provider == 'api' and self.config.api_protocol == 'qwen_realtime':
-                        recognizer = self.qwen_recognizer
                     text, duration = self.recognition.transcribe(recognizer, self.config, value, obsolete)
                     with self.cv:
                         valid = value['session_id'] == self.session
@@ -189,6 +184,15 @@ class Server:
                         self.recognition.forget(value)
                         with self.cv:
                             self.final_segments.discard(value['segment_id'])
+                elif kind == 'stream_final':
+                    # Recognized by the app's streaming session; only publishing and translation happen here.
+                    with self.cv:
+                        valid = value['session_id'] == self.session
+                    if valid:
+                        self.send(type='final', text=value['text'], elapsed_ms=0,
+                                  **{k:v for k,v in value.items() if k != 'text'})
+                        if value['text']:
+                            self.plan_translation(value, value['text'])
                 elif kind == 'finish':
                     self.queue_unit(value, self.planner.flush(value))
                     if value == self.session:
@@ -449,8 +453,18 @@ class Server:
                 self.queue_translator_load(TranslationConfig(**asdict(config)))
             else:
                 self.translator_status(self.translator_state, self.translator_detail)
-        elif cmd == 'asr_api_result':
-            self.qwen_recognizer.resolve(message.get('call_id'), message.get('text', ''), message.get('error', ''))
+        elif cmd == 'asr_stream_final':
+            segment, text, start = message.get('segment_id'), message.get('text'), message.get('start_sample')
+            if not self.streaming() or message.get('session_id') != self.session or self.state not in ('recording', 'finalizing'):
+                return  # Late result of an ended session; its text was already reported or dropped.
+            if (type(segment) is not int or segment < 1 or segment in self.final_segments or not isinstance(text, str) or
+                    len(text.encode()) > 200_000 or type(start) is not int or start < 0):
+                raise ValueError('流式识别结果无效')
+            with self.cv:
+                self.final_segments.add(segment)
+                self.jobs.append(('stream_final', {'session_id': self.session, 'segment_id': segment, 'revision': 1,
+                                                   'start_sample': start, 'forced_cut': False, 'text': text.strip()}))
+                self.cv.notify()
         elif cmd == 'cancel_download':
             if self.downloader:
                 process, self.downloader = self.downloader, None
@@ -463,7 +477,7 @@ class Server:
             if self.state != 'ready':
                 raise ValueError('模型尚未就绪')
             config = Config.parse({**asdict(self.config),
-                                   'endpoint_mode': 'fixed' if self.config.provider == 'api' and self.config.api_protocol == 'qwen_realtime' else message.get('endpoint_mode', self.config.endpoint_mode),
+                                   'endpoint_mode': message.get('endpoint_mode', self.config.endpoint_mode),
                                    'endpoint_silence_ms': message.get('endpoint_silence_ms', self.config.endpoint_silence_ms)})
             if config != self.config:
                 config.save(self.config_path)
@@ -474,7 +488,8 @@ class Server:
             self.final_segments.clear()
             self.pending.clear()
             self.seq = self.samples = 0
-            self.segmenter = Segmenter(self.config, self.enqueue, self.cv)
+            # Streaming sessions get audio and sentence ends from the cloud via the app; no local VAD.
+            self.segmenter = None if self.streaming() else Segmenter(self.config, self.enqueue, self.cv)
             self.status('recording', '正在聆听…')
         elif cmd == 'stop':
             if message.get('session_id') == self.session:
@@ -492,6 +507,8 @@ class Server:
         pcm = payload[4+size:]
         if self.state != 'recording' or header.get('session_id') != self.session:
             return
+        if self.segmenter is None:
+            raise ValueError('流式识别会话的音频由应用直接发送，后端不接收音频')
         if header.get('sequence') != self.seq or header.get('start_sample') != self.samples:
             self.flush()
             raise ValueError('音频序号不连续，已停止采集并处理已接收音频')
@@ -511,6 +528,9 @@ class Server:
         if overloaded:
             self.send(type='error', message='推理落后：已自动停止录音，正在完成已接收语音。请等待处理完成后再开始。')
             self.flush()
+
+    def streaming(self):
+        return self.config.provider == 'api' and self.config.api_protocol == 'qwen_realtime'
 
     def run(self):
         self.conn.settimeout(None)

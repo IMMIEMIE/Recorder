@@ -33,7 +33,7 @@ class CoreTests(unittest.TestCase):
                     'https://example.com/v1?key=secret', 'https://example.com/v1/'):
             with self.assertRaises(ValueError): Config.parse({**values, 'api_base_url':bad})
         with self.assertRaises(ValueError): Config.parse({**values, 'api_key':'secret'})
-        qwen = {**values, 'api_protocol':'qwen_realtime', 'api_base_url':'wss://maas.qianwenaiapi.com/api-ws/v1/realtime'}
+        qwen = {**values, 'api_protocol':'qwen_realtime', 'api_base_url':'wss://maas.qianwenaiapi.com/api-ws/v1/inference'}
         self.assertEqual(Config.parse(qwen).api_protocol, 'qwen_realtime')
         for bad in ('https://example.com/realtime', 'ws://example.com/realtime', 'wss://example.com/realtime?key=secret'):
             with self.assertRaises(ValueError): Config.parse({**qwen, 'api_base_url':bad})
@@ -220,31 +220,33 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertEqual([e['text'] for e in events if e['type']=='final'], ['API 转写'])
 
-    def test_qwen_bridge_final_is_drained_before_ready_without_previews_or_key(self):
+    def test_streaming_finals_come_from_app_without_audio_or_key(self):
         config = Config(provider='api', api_protocol='qwen_realtime',
-                        api_base_url='wss://maas.qianwenaiapi.com/api-ws/v1/realtime',
-                        api_model='qwen-audio-3.1-realtime-plus')
+                        api_base_url='wss://maas.qianwenaiapi.com/api-ws/v1/inference',
+                        api_model='qwen-audio-3.0-asr-flash-streaming')
         self.command('load', config=config.__dict__)
         while self.event().get('state') != 'ready': pass
         self.assertEqual(self.s.api_recognizer.key, '')
         self.command('start'); self.assertEqual(self.event()['state'], 'recording')
-        self.assertEqual(self.s.config.endpoint_mode, 'fixed')
-        for _ in range(130): self.s.segmenter.feed(PCM, True)
+        self.assertIsNone(self.s.segmenter)
+        h=json.dumps({'session_id':'test','sequence':0,'start_sample':0,'sample_rate':16000,'channels':1,'format':'s16le'}).encode()
+        self.b.sendall(encode_message(b'A',struct.pack('!I',len(h))+h+PCM))
+        self.assertIn('不接收音频', self.event()['message'])
+        self.command('asr_stream_final', session_id='other', segment_id=1, text='必须忽略', start_sample=0)
+        self.command('asr_stream_final', segment_id=1, text=' 第一句。', start_sample=16000)
+        self.command('asr_stream_final', segment_id=1, text='重复', start_sample=0)
+        self.command('asr_stream_final', segment_id=2, text='第二句。', start_sample=48000)
         self.command('stop')
-        events=[]; audio=bytearray(); replied=False
+        events=[]
         while True:
             event=self.event(); events.append(event)
-            if event['type']=='asr_api_audio':
-                audio.extend(base64.b64decode(event['audio']))
-                if event['done']:
-                    self.assertEqual(self.s.state, 'finalizing')
-                    self.command('asr_api_result', call_id='stale', text='必须忽略')
-                    self.command('asr_api_result', call_id=event['call_id'], text='千问转写')
-                    replied=True
             if event.get('state')=='ready': break
-        self.assertTrue(replied)
-        self.assertEqual(audio, PCM * 130)
-        self.assertFalse(any(e['type']=='partial' for e in events))
-        self.assertEqual([e['text'] for e in events if e['type']=='final'], ['千问转写'])
+        self.assertTrue(any(e['type']=='error' and '无效' in e['message'] for e in events))
+        finals=[e for e in events if e['type']=='final']
+        self.assertEqual([e['text'] for e in finals], ['第一句。', '第二句。'])
+        self.assertEqual([(e['segment_id'], e['revision'], e['start_sample']) for e in finals], [(1, 1, 16000), (2, 1, 48000)])
+        self.command('asr_stream_final', segment_id=3, text='会话已结束', start_sample=0)
+        self.command('hello')
+        self.assertEqual(self.event()['type'], 'config')
 
 if __name__=='__main__': unittest.main()

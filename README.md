@@ -11,9 +11,9 @@
 
 ## What it does / 项目简介
 
-**声笺 (Shengjian)** turns microphone, audio-file, or system-audio input into near-real-time text on your Mac. Recognition can use local MLX models, an OpenAI-compatible audio transcription API, or Qwen Audio realtime WebSocket; the app can also show a floating subtitle window and translate completed sentences with either a local model or an API.
+**声笺 (Shengjian)** turns microphone, audio-file, or system-audio input into near-real-time text on your Mac. Recognition can use local MLX models, an OpenAI-compatible audio transcription API, or a streaming WebSocket ASR service (Qwen-Audio ASR Flash Streaming); the app can also show a floating subtitle window and translate completed sentences with either a local model or an API.
 
-**声笺**可将麦克风、音频文件或系统声音近实时转写为文本。识别可使用本机 MLX 模型、兼容 OpenAI 音频转写接口的 API 或千问 Qwen Audio 实时 WebSocket；应用还支持悬浮字幕窗口，以及通过本地模型或 API 对定稿句子进行翻译。
+**声笺**可将麦克风、音频文件或系统声音近实时转写为文本。识别可使用本机 MLX 模型、兼容 OpenAI 音频转写接口的 API 或千问流式语音识别（WebSocket）；应用还支持悬浮字幕窗口，以及通过本地模型或 API 对定稿句子进行翻译。
 
 Local transcription does not upload audio. LiveTranslate streams audio to the selected service. API transcription sends speech segments to the selected service. Model downloads, optional AI prompts, and optional API translation also require network access; see [Privacy / 隐私](#privacy--隐私) for the exact boundary.
 
@@ -25,8 +25,8 @@ Local transcription does not upload audio. LiveTranslate streams audio to the se
   **三种音源** — 麦克风、音频文件（WAV、AIFF、M4A、MP3 等系统可解码格式）和系统声音。
 - **Local, near-real-time transcription** — Qwen3-ASR 1.7B by default; Whisper Large v3 Turbo is also available.
   **本地近实时识别** — 默认 Qwen3-ASR 1.7B，也可切换至 Whisper Large v3 Turbo。
-- **API transcription** — OpenAI-compatible audio transcription or Qwen Audio realtime WebSocket, with configurable address, model ID, and API key.
-  **API 识别** — 支持 OpenAI 兼容音频转写和千问 Qwen Audio 实时 WebSocket，可配置地址、模型 ID 与 API Key。
+- **API transcription** — OpenAI-compatible audio transcription or streaming WebSocket ASR (text appears while you speak), with configurable address, model ID, and API key.
+  **API 识别** — 支持 OpenAI 兼容音频转写和 WebSocket 流式识别（边说边出字），可配置地址、模型 ID 与 API Key。
 - **Smart endpointing** — reuses previews and conservatively detects sentence endings to reduce duplicate inference and awkward cutoffs.
   **智能定稿** — 复用预览结果并保守判断句末，减少重复推理与生硬断句。
 - **Live translation** — local Qwen3/Hunyuan models or saved OpenAI-compatible API profiles, with nine target languages.
@@ -95,21 +95,15 @@ Custom MLX-compatible Qwen3-ASR or Whisper IDs and local model directories are s
 For API recognition, enter the base URL such as `https://api.example.com/v1` and a model that supports `POST /audio/transcriptions`. The app sends WAV speech segments, including provisional previews, to that service; preview requests can increase usage and fees. API recognition requires a connection and does not download model weights.
 API 识别请填写 Base URL（如 `https://api.example.com/v1`）和支持 `POST /audio/transcriptions` 的模型。应用会将 WAV 语音片段（包括预览片段）发送给该服务；预览请求可能增加用量和费用。API 识别无需下载模型，但需要联网。
 
-#### Qwen Audio 3.1 Realtime / 千问实时语音
+#### Streaming ASR over WebSocket / WebSocket 流式识别
 
-在**设置 → 转写**选择 **API 服务 → 千问实时语音（Qwen Audio）**，地址和模型会自动填好：
+在**设置 → 转写**选择 **API 服务 → API 类型 → WebSocket 调用**，只需填写千问AI平台（qianwenai.com）的 API Key。模型固定为 `qwen-audio-3.0-asr-flash-streaming`，接口固定为 `wss://maas.qianwenaiapi.com/api-ws/v1/inference`，不可修改。
 
-| 配置 | 值 |
-| --- | --- |
-| WebSocket 地址 | `wss://maas.qianwenaiapi.com/api-ws/v1/realtime` |
-| 模型 ID | `qwen-audio-3.1-realtime-plus` |
-| API Key | 填写千问平台中可访问该模型的密钥 |
+点击**保存 / 启用**，可先用**测试连接**确认密钥和模型权限，再回到主窗口开始转写。若已开启 LiveTranslate 独立模式，先在 LiveTranslate 页将它关闭。测试连接只启动识别任务，不采集或发送音频。
 
-点击**保存 / 启用**，可先用**测试连接**确认权限和会话配置，再回到主窗口开始转写。若已开启 LiveTranslate 独立模式，先在 LiveTranslate 页将它关闭。测试连接只建立会话，不采集或发送音频。
+录音期间，音频约每 100 ms 一帧持续发送到服务端，识别中的文字实时显示；服务端检测到停顿后定稿整句，定稿句照常进入逐句翻译。停顿时长用转写设置中的「停顿定稿」调整（对应服务端 `max_sentence_silence`），「语言」设置作为识别语种提示。全部录音都会上传，按音频时长计费（模型页标价 ¥0.00033/秒）。密钥只在原生客户端使用，不发送给 Python 后端或写入配置文件。早期版本保存的其他地址或模型（如千问实时语音 `…/api-ws/v1/realtime`）会自动改为上述固定值，并沿用已保存的密钥。阿里云百炼的密钥不能用于此接口。
 
-此模型使用 WebSocket，不能填入 OpenAI 音频转写的 Base URL。应用在本机检测停顿后提交一次语音片段，显示输入音频的 ASR 转写增量和最终文本；采用手动提交，不发送 `response.create`，不生成对话回答或语音。默认停顿 1 秒，可在转写设置调整。长语音会按现有识别窗口分块处理，窗口不会强制定稿。千问密钥只在原生客户端使用，不发送给 Python 后端或写入配置文件。
-
-协议依据：[模型页面](https://www.qianwenai.com/models/qwen-audio-3.1-realtime-plus)、[客户端事件](https://platform.qianwenai.com/docs/api-reference/qwen-audio-realtime/client-events)、[服务端事件](https://platform.qianwenai.com/docs/api-reference/qwen-audio-realtime/server-events)。
+协议依据：[模型页面](https://www.qianwenai.com/models/qwen-audio-3.0-asr-flash-streaming)、[WebSocket 接入指南](https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api)、[客户端事件](https://help.aliyun.com/zh/model-studio/fun-asr-client-events)、[服务端事件](https://help.aliyun.com/zh/model-studio/fun-asr-server-events)。
 
 ### Sentence translation / 逐句翻译
 

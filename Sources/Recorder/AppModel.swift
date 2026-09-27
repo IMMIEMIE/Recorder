@@ -45,14 +45,14 @@ final class AppModel: ObservableObject {
     @Published var asrAPIProtocol = "openai"
     @Published var asrConnectionMessage = ""
     @Published private(set) var asrTesting = false
-    private var asrAudio: [String:Data] = [:]
-    private var asrTask: Task<Void, Never>?
-    private var asrTestTask: Task<Void, Never>?
+    private var asrTestClient: StreamingASRClient?
+    /// Set and read under audioLock: capture callbacks route PCM to it instead of the backend.
+    private var streamClient: StreamingASRClient?
+    private var streamAttempt = UUID()
     private var activeASRProvider = "local"
     private var activeAPIBaseURL = ""
     private var activeAPIModel = ""
     private var activeAPIProtocol = "openai"
-    private var activeASRLanguage = "auto"
     static let qwenID = "mlx-community/Qwen3-ASR-1.7B-bf16"
     static let whisperID = "mlx-community/whisper-large-v3-turbo"
     @Published var activeModelID = "mlx-community/Qwen3-ASR-1.7B-bf16"
@@ -130,7 +130,9 @@ final class AppModel: ObservableObject {
 
     var busy: Bool { !["idle", "ready", "error"].contains(state) }
     var inputBusy: Bool { busy || pendingStart || liveTesting || asrTesting }
-    var qwenASR: Bool { asrProvider == "api" && asrAPIProtocol == "qwen_realtime" }
+    /// "qwen_realtime" is the historical config tag for the WebSocket streaming ASR protocol.
+    var streamingASR: Bool { asrProvider == "api" && asrAPIProtocol == "qwen_realtime" }
+    private var streamingActive: Bool { activeASRProvider == "api" && activeAPIProtocol == "qwen_realtime" }
     var recording: Bool { state == "recording" }
     var canStart: Bool {
         if liveEnabled { return state == "ready" && !liveTesting }
@@ -302,8 +304,10 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
-        asrTask?.cancel(); asrTask = nil; asrTestTask?.cancel(); asrTestTask = nil
-        asrAudio.removeAll(); asrTesting = false
+        asrTestClient?.cancel(); asrTestClient = nil; asrTesting = false
+        streamAttempt = UUID()
+        audioLock.lock(); let stream = streamClient; streamClient = nil; audioLock.unlock()
+        stream?.cancel()
         liveAttempt = UUID()
         liveClient?.cancel(); liveClient = nil; liveTesting = false
         settleLiveRows()
@@ -351,7 +355,7 @@ final class AppModel: ObservableObject {
                     throw AIError.message("请填写识别 API Key")
                 }
                 var extra: [String:Any] = ["config":config]
-                if !qwenASR { extra["api_key"] = key }
+                if !streamingASR { extra["api_key"] = key }
                 command("load", extra:extra)
             } catch { self.error = error.localizedDescription }
         } else { command(download ? "download" : "load", extra:["config":config]) }
@@ -382,14 +386,14 @@ final class AppModel: ObservableObject {
         guard !inputBusy, ["openai", "qwen_realtime"].contains(value), value != asrAPIProtocol else { return }
         asrAPIProtocol = value; asrAPIKeyInput = ""; asrConnectionMessage = ""
         if value == "qwen_realtime" {
-            asrAPIBaseURL = QwenRealtimeASRConfiguration.endpoint
-            asrAPIModel = QwenRealtimeASRConfiguration.model
-            endpointMode = "fixed"
+            asrAPIBaseURL = StreamingASRConfiguration.endpoint
+            asrAPIModel = StreamingASRConfiguration.model
         } else { asrAPIBaseURL = "https://api.openai.com/v1"; asrAPIModel = "" }
     }
     private func normalizedASREndpoint() throws -> String {
-        if qwenASR {
-            return try QwenRealtimeASRConfiguration(endpoint:asrAPIBaseURL, model:asrAPIModel, language:language).normalizedEndpoint()
+        if streamingASR {
+            asrAPIModel = StreamingASRConfiguration.model
+            return StreamingASRConfiguration.endpoint
         }
         var base = asrAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while base.hasSuffix("/") { base.removeLast() }
@@ -397,23 +401,23 @@ final class AppModel: ObservableObject {
         return try AIProfile.normalize(base)
     }
     func testASRConnection() {
-        guard qwenASR, !liveEnabled, !inputBusy else { return }
+        guard streamingASR, !liveEnabled, !inputBusy else { return }
         do {
             let base = try normalizedASREndpoint()
             let keyInput = asrAPIKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
             if !keyInput.isEmpty { try APIKeyStore.save(keyInput, endpoint:"asr:" + base); asrAPIKeyInput = "" }
             let key = try APIKeyStore.read(endpoint:"asr:" + base) ?? ""
-            let configuration = QwenRealtimeASRConfiguration(endpoint:base, model:asrAPIModel, language:language)
-            let currentGeneration = generation
-            asrTesting = true; asrConnectionMessage = "正在连接千问并确认手动转写模式…"
-            asrTestTask = Task { @MainActor [weak self] in
-                var message = "连接成功，已确认转写模式；测试未发送音频"
-                do { _ = try await QwenRealtimeASRClient().transcribe(configuration:configuration, key:key, pcm:nil) }
-                catch { message = error.localizedDescription }
-                guard let self, self.generation == currentGeneration, !Task.isCancelled else { return }
-                self.asrTesting = false; self.asrTestTask = nil; self.asrConnectionMessage = message
+            let client = StreamingASRClient()
+            let finish = { [weak self, weak client] (message: String) in
+                guard let self, let client, self.asrTestClient === client else { return }
+                client.cancel(); self.asrTestClient = nil; self.asrTesting = false; self.asrConnectionMessage = message
             }
-        } catch { asrConnectionMessage = error.localizedDescription }
+            // task-started proves key, model and parameters; the task is closed before any audio is sent.
+            client.onReady = { finish("连接成功，识别任务已启动；测试未发送音频") }
+            client.onEnd = { error in finish(error ?? "识别任务已结束") }
+            asrTestClient = client; asrTesting = true; asrConnectionMessage = "正在连接并启动识别任务…"
+            try client.connect(configuration: StreamingASRConfiguration(language:language, silenceMS:silence), key:key)
+        } catch { asrTestClient = nil; asrTesting = false; asrConnectionMessage = error.localizedDescription }
     }
     func cancelDownload() { command("cancel_download") }
 
@@ -510,6 +514,7 @@ final class AppModel: ObservableObject {
             self.session = UUID().uuidString
             self.partial = ""; self.revisions.removeAll()
             if self.liveEnabled { self.connectLive(test: false); return }
+            if self.streamingActive { self.connectStreaming(); return }
             self.command("start", extra: ["endpoint_mode": self.endpointMode, "endpoint_silence_ms": self.silence])
         }
         if audioSource == "microphone" {
@@ -517,6 +522,46 @@ final class AppModel: ObservableObject {
                 self?.updatePermission(); begin(granted)
             } }
         } else { begin(true) }
+    }
+
+    /// The cloud task starts first; the backend session starts once audio can flow, and ends after the last final.
+    private func connectStreaming() {
+        let attempt = UUID(); streamAttempt = attempt
+        let currentSession = session
+        let configuration = StreamingASRConfiguration(language:language, silenceMS:silence)
+        let client = StreamingASRClient()
+        client.onReady = { [weak self] in
+            guard let self, self.streamAttempt == attempt, self.session == currentSession, self.pendingStart else { return }
+            self.command("start", extra: ["endpoint_silence_ms": self.silence])
+        }
+        client.onPartial = { [weak self] text in
+            guard let self, self.streamAttempt == attempt, self.session == currentSession else { return }
+            self.partial = text
+        }
+        client.onFinal = { [weak self] id, text, begin in
+            guard let self, self.streamAttempt == attempt, self.session == currentSession else { return }
+            self.command("asr_stream_final", extra: ["segment_id":id, "text":text, "start_sample":begin * 16])
+        }
+        client.onEnd = { [weak self] error in
+            guard let self, self.streamAttempt == attempt else { return }
+            self.streamAttempt = UUID()
+            self.audioLock.lock(); self.accepting = false; self.streamClient = nil; self.audioLock.unlock()
+            self.stopInputs(); self.level = 0
+            if let error { self.error = error }
+            if self.pendingStart { self.pendingStart = false; return }
+            if self.session == currentSession, ["recording", "finalizing"].contains(self.state) {
+                self.state = "finalizing"; self.command("stop")
+            }
+        }
+        audioLock.lock(); streamClient = client; audioLock.unlock()
+        do {
+            try client.connect(configuration: configuration, key: try APIKeyStore.read(endpoint:StreamingASRConfiguration.keyAccount) ?? "")
+            detail = "正在连接识别服务…"
+        } catch {
+            streamAttempt = UUID()
+            audioLock.lock(); streamClient = nil; audioLock.unlock()
+            pendingStart = false; self.error = error.localizedDescription
+        }
     }
 
     private func beginCapture() {
@@ -562,7 +607,8 @@ final class AppModel: ObservableObject {
         audioLock.lock()
         guard accepting else { audioLock.unlock(); return }
         let audioSession = session
-        let sent = liveEnabled ? (liveClient?.append(pcm) ?? false) : (transport?.audio(pcm, session: session, sequence: sequence, start: samples) ?? false)
+        let sent = liveEnabled ? (liveClient?.append(pcm) ?? false)
+            : streamClient.map { $0.append(pcm) } ?? (transport?.audio(pcm, session: session, sequence: sequence, start: samples) ?? false)
         if sent { sequence += 1; samples += pcm.count / 2 }
         else { accepting = false }
         audioLock.unlock()
@@ -583,6 +629,12 @@ final class AppModel: ObservableObject {
             if state == "recording" { state = "finalizing"; liveClient?.finish() }
             else if state == "connecting" {
                 liveAttempt = UUID(); liveClient?.cancel(); liveClient = nil; state = "ready"
+            }
+        } else if let client = streamClient {
+            if state == "recording" { state = "finalizing"; detail = "正在等待尾句识别结果…"; client.finish() }
+            else {
+                streamAttempt = UUID(); client.cancel()
+                audioLock.lock(); streamClient = nil; audioLock.unlock()
             }
         } else if state == "recording" { state = "finalizing"; command("stop") }
     }
@@ -607,16 +659,19 @@ final class AppModel: ObservableObject {
             revision = c["revision"] as? String ?? ""
             preset = localPath.isEmpty && [Self.qwenID, Self.whisperID].contains(modelID) ? modelID : "custom"
             language = c["language"] as? String ?? "auto"
-            activeASRLanguage = language
             previewInterval = c["preview_interval_ms"] as? Int ?? 1200
             endpointMode = c["endpoint_mode"] as? String ?? "smart"
             silence = c["endpoint_silence_ms"] as? Int ?? 1000
             maxSegment = c["max_segment_seconds"] as? Int ?? 18
-        case "asr_api_audio":
-            receiveQwenAudio(event)
+            migrateLegacyStreamingConfig()
         case "status":
             let next = event["state"] as? String ?? "idle"
-            if next != "recording", recording { stopInputs(); audioLock.lock(); accepting = false; audioLock.unlock(); level = 0 }
+            if next != "recording", recording {
+                stopInputs(); level = 0
+                streamAttempt = UUID()
+                audioLock.lock(); accepting = false; let stream = streamClient; streamClient = nil; audioLock.unlock()
+                stream?.cancel()
+            }
             state = next; detail = event["detail"] as? String ?? ""
             if next == "recording" { beginCapture() }
             if next == "ready" { partial = "" }
@@ -673,38 +728,20 @@ final class AppModel: ObservableObject {
         default: break
         }
     }
-    private func receiveQwenAudio(_ event: [String:Any]) {
-        guard activeASRProvider == "api", activeAPIProtocol == "qwen_realtime",
-              event["session_id"] as? String == session, let call = event["call_id"] as? String,
-              let encoded = event["audio"] as? String, let data = Data(base64Encoded:encoded) else { return }
-        var pcm = asrAudio[call] ?? Data(); pcm.append(data)
-        guard pcm.count <= 800_000 else {
-            asrAudio[call] = nil
-            command("asr_api_result", extra:["call_id":call, "error":"千问音频片段过长"])
-            return
+    /// Streaming ASR uses a fixed endpoint and model. Configs saved with another address or model
+    /// (e.g. the former Qwen-Audio realtime chat endpoint) are rewritten, carrying their Keychain key over.
+    private func migrateLegacyStreamingConfig() {
+        let old = asrAPIBaseURL
+        guard asrProvider == "api", asrAPIProtocol == "qwen_realtime",
+              old != StreamingASRConfiguration.endpoint || asrAPIModel != StreamingASRConfiguration.model else { return }
+        asrAPIBaseURL = StreamingASRConfiguration.endpoint
+        asrAPIModel = StreamingASRConfiguration.model
+        let account = StreamingASRConfiguration.keyAccount
+        if let key = try? APIKeyStore.read(endpoint:"asr:" + old), !key.isEmpty, (try? APIKeyStore.read(endpoint:account)) == nil {
+            try? APIKeyStore.save(key, endpoint:account)
         }
-        asrAudio[call] = pcm
-        guard event["done"] as? Bool == true else { return }
-        asrAudio[call] = nil
-        guard asrTask == nil else {
-            command("asr_api_result", extra:["call_id":call, "error":"千问识别请求仍在处理中"]); return
-        }
-        let currentGeneration = generation, currentSession = session
-        let configuration = QwenRealtimeASRConfiguration(endpoint:activeAPIBaseURL, model:activeAPIModel, language:activeASRLanguage)
-        asrTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            var result: [String:Any] = ["call_id":call]
-            do {
-                let key = try APIKeyStore.read(endpoint:"asr:" + configuration.endpoint) ?? ""
-                result["text"] = try await QwenRealtimeASRClient().transcribe(configuration:configuration, key:key, pcm:pcm) { [weak self] text in
-                    guard let self, self.generation == currentGeneration, self.session == currentSession else { return }
-                    self.partial = text
-                }
-            } catch { result["error"] = error.localizedDescription }
-            guard self.generation == currentGeneration, self.session == currentSession, !Task.isCancelled else { return }
-            self.asrTask = nil
-            self.command("asr_api_result", extra:result)
-        }
+        asrConnectionMessage = "已切换为固定流式识别模型 \(StreamingASRConfiguration.model)，正在应用新设置…"
+        load()
     }
     func saveText() {
         TextExport.save(exportText) { [weak self] message in self?.error = message }
