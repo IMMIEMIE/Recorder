@@ -114,6 +114,19 @@ final class AppModel: ObservableObject {
     @Published private(set) var liveConfiguration = LiveTranslateConfiguration()
     @Published var liveEndpoint = LiveTranslateConfiguration().endpoint
     @Published var liveLanguage = "zh"
+    @Published var liveAudioOutput = false
+    @Published var liveVolume: Float = 0.8
+    @Published var livePlaybackTiming: LiveTranslatePlaybackTiming = .streaming
+    @Published private(set) var livePlaying = false
+    @Published private(set) var replayingTranscriptID: String?
+    @Published private(set) var replayRevision = 0
+    private var replayCache = LiveTranslateReplayCache()
+    private let replayPlayer = LiveTranslateAudioPlayer()
+    private var replayAttempt = UUID()
+    private let liveAudioPlayer = LiveTranslateAudioPlayer()
+    private var livePlaybackQueue = LiveTranslatePlaybackQueue(timing: .streaming)
+    private var liveAudioMuted = false
+    private var livePlaybackSession = UUID()
     @Published var liveKeyInput = ""
     @Published var liveMessage = ""
     @Published private(set) var liveTesting = false
@@ -183,6 +196,8 @@ final class AppModel: ObservableObject {
         liveDefaults = defaults
         liveConfiguration = LiveTranslateConfiguration.load(defaults: defaults)
         liveEndpoint = liveConfiguration.endpoint; liveLanguage = liveConfiguration.language
+        liveAudioOutput = liveConfiguration.audioOutput; liveVolume = liveConfiguration.volume
+        livePlaybackTiming = liveConfiguration.playbackTiming
         apiTranslations.onUpdate = { [weak self] id, text, done in
             guard let self, let index = self.rows[id], self.finalText.indices.contains(index) else { return }
             // Negative unit IDs are reserved for frontend API translations.
@@ -304,6 +319,8 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        stopReplay()
+        stopLivePlayback()
         asrTestClient?.cancel(); asrTestClient = nil; asrTesting = false
         streamAttempt = UUID()
         audioLock.lock(); let stream = streamClient; streamClient = nil; audioLock.unlock()
@@ -499,6 +516,7 @@ final class AppModel: ObservableObject {
         if panel.runModal() == .OK { audioFileURL = panel.url }
     }
     func start() {
+        stopReplay()
         guard canStart, !pendingStart else {
             if state == "ready" { error = "识别服务设置已更改，请先点击「连接 / 切换」使其生效" }
             return
@@ -747,7 +765,7 @@ final class AppModel: ObservableObject {
         TextExport.save(exportText) { [weak self] message in self?.error = message }
     }
     func copyText() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(exportText, forType: .string) }
-    func clear() { guard !busy else { return }; cancelLiveTranslations(); finalText.removeAll(); rows.removeAll(); seen.removeAll(); revisions.removeAll(); partial = "" }
+    func clear() { guard !busy else { return }; stopReplay(); replayCache.clear(); replayRevision = replayCache.revision; cancelLiveTranslations(); finalText.removeAll(); rows.removeAll(); seen.removeAll(); revisions.removeAll(); partial = "" }
 
     func registerShortcut() {
         if let hotKey { UnregisterEventHotKey(hotKey); self.hotKey = nil }
@@ -774,7 +792,7 @@ extension AppModel {
     func saveLiveSettings(enabled: Bool? = nil) -> Bool {
         guard !liveSettingsBusy else { return false }
         do {
-            var next = LiveTranslateConfiguration(enabled: enabled ?? liveEnabled, endpoint: liveEndpoint, language: liveLanguage)
+            var next = LiveTranslateConfiguration(enabled: enabled ?? liveEnabled, endpoint: liveEndpoint, language: liveLanguage, audioOutput: liveAudioOutput, volume: liveVolume, playbackTiming: livePlaybackTiming)
             next = try next.normalized()
             let key = liveKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
             if !key.isEmpty { try APIKeyStore.save(key, endpoint: next.keyAccount) }
@@ -808,6 +826,11 @@ extension AppModel {
         let currentSession = session
         let client = liveClientFactory()
         liveClient = client; liveTesting = test
+        if !test {
+            liveAudioPlayer.stop(); livePlaying = false; liveAudioMuted = false
+            replayCache.beginSession()
+            livePlaybackQueue = LiveTranslatePlaybackQueue(timing: liveConfiguration.playbackTiming); livePlaybackSession = UUID()
+        }
         if !test { state = "connecting"; detail = "正在连接 LiveTranslate…"; liveEvents = LiveTranslateEvents() }
         liveMessage = "正在连接并确认会话配置…"
         client.onReady = { [weak self, weak client] in
@@ -815,12 +838,32 @@ extension AppModel {
             if test { client?.finish() }
             else {
                 guard self.pendingStart else { client?.cancel(); return }
+                if self.liveConfiguration.audioOutput {
+                    self.liveAudioPlayer.onFailure = { [weak self] message in
+                        guard let self else { return }
+                        self.error = message; self.stopLivePlayback()
+                    }
+                    do { try self.liveAudioPlayer.start(volume: self.liveConfiguration.volume) }
+                    catch { self.error = "无法播放译音，请检查系统声音输出；字幕继续更新"; self.liveAudioMuted = true }
+                }
                 self.state = "recording"; self.beginCapture()
             }
         }
         client.onEvent = { [weak self] event in
             guard let self, !test, self.liveAttempt == attempt, self.session == currentSession else { return }
             self.liveEvents.apply(event)
+            if self.liveConfiguration.audioOutput {
+                self.replayCache.consume(event, transcripts: self.liveEvents, session: currentSession)
+                if self.replayRevision != self.replayCache.revision { self.replayRevision = self.replayCache.revision }
+            }
+            if self.liveConfiguration.audioOutput && !self.liveAudioMuted {
+                do {
+                    for pcm in try self.livePlaybackQueue.consume(event, transcripts: self.liveEvents) {
+                        try self.liveAudioPlayer.append(pcm); self.livePlaying = true
+                    }
+                    if self.livePlaybackQueue.hasPendingAudio { self.livePlaying = true }
+                } catch { self.error = error.localizedDescription; self.stopLivePlayback() }
+            }
             self.publishLiveRows()
         }
         client.onEnd = { [weak self] message in
@@ -832,12 +875,28 @@ extension AppModel {
                 self.pendingStart = false; self.level = 0
                 self.preserveUnmatchedLiveOutput()
                 self.settleLiveRows()
-                self.state = "ready"
+                let incompleteAudio = self.livePlaybackQueue.hasIncompleteSample
+                if self.livePlaybackQueue.hasPendingAudio {
+                    self.error = "部分译音未收到完整定稿，已跳过播放；已有字幕已保留"
+                }
+                if message == nil && !self.liveAudioMuted && self.livePlaying {
+                    self.state = "finalizing"; self.detail = "正在播放最后一段译音…"
+                    let playback = self.livePlaybackSession
+                    self.liveAudioPlayer.finish { [weak self] in
+                        guard let self, self.livePlaybackSession == playback else { return }
+                        self.livePlaying = false; self.state = "ready"
+                    }
+                } else { self.stopLivePlayback(); self.state = "ready" }
+                if incompleteAudio { self.error = "末段译音数据不完整，已有字幕已保留" }
                 if let message { self.error = message }
                 else if self.liveEvents.hasUnmatchedOutput { self.error = "部分译文未收到对应句子信息，请重新连接服务" }
             }
+            if !test {
+                self.livePlaybackQueue = LiveTranslatePlaybackQueue(timing: self.liveConfiguration.playbackTiming)
+                self.replayCache.beginSession()
+            }
             self.liveTesting = false; self.liveClient = nil
-            self.liveMessage = message ?? (test ? "连接成功，已确认文本输出与目标语言" : "本次会话已结束")
+            self.liveMessage = message ?? (test ? "连接成功，已确认所选输出方式与目标语言" : "本次会话已结束")
         }
         do {
             let key = try liveKeyReader(liveConfiguration.keyAccount) ?? ""
@@ -847,6 +906,39 @@ extension AppModel {
             liveMessage = error.localizedDescription
             if !test { state = "ready"; self.error = error.localizedDescription }
         }
+    }
+    func canReplay(_ transcript: Transcript) -> Bool {
+        transcript.sourceDone && !transcript.incomplete && !transcript.translating && replayCache.audio(for: transcript.id) != nil
+    }
+    func replay(_ transcript: Transcript) {
+        if replayingTranscriptID == transcript.id { stopReplay(); return }
+        guard canReplay(transcript), let pcm = replayCache.audio(for: transcript.id) else { return }
+        stopReplay()
+        // A user-requested replay takes precedence over automatic translation audio.
+        stopLivePlayback()
+        let attempt = UUID(); replayAttempt = attempt
+        replayPlayer.onFailure = { [weak self] message in
+            guard let self, self.replayAttempt == attempt else { return }
+            self.error = message; self.stopReplay()
+        }
+        do {
+            try replayPlayer.start(volume: liveConfiguration.volume)
+            replayingTranscriptID = transcript.id
+            try replayPlayer.append(pcm)
+            replayPlayer.finish { [weak self] in
+                guard let self, self.replayAttempt == attempt else { return }
+                self.replayingTranscriptID = nil
+            }
+        } catch { self.error = "无法重播译音，请检查系统声音输出"; stopReplay() }
+    }
+    func stopReplay() {
+        replayAttempt = UUID(); replayPlayer.stop(); replayingTranscriptID = nil
+    }
+    func stopLivePlayback() {
+        livePlaybackSession = UUID(); liveAudioMuted = true
+        liveAudioPlayer.stop(); livePlaying = false
+        livePlaybackQueue = LiveTranslatePlaybackQueue(timing: liveConfiguration.playbackTiming)
+        if liveEnabled && state == "finalizing" && liveClient == nil { state = "ready" }
     }
     private func publishLiveRows() {
         var changed = false

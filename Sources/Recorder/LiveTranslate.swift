@@ -1,5 +1,11 @@
 import Foundation
 
+enum LiveTranslatePlaybackTiming: String, Codable, CaseIterable {
+    case streaming
+    case afterFinal
+    var title: String { self == .streaming ? "边说边播放" : "定稿后播放" }
+}
+
 struct LiveTranslateConfiguration: Codable, Equatable {
     static let model = "qwen3.8-livetranslate-flash-realtime"
     static let languages = [("zh", "中文"), ("en", "English"), ("ja", "日本語"), ("ko", "한국어"),
@@ -7,6 +13,25 @@ struct LiveTranslateConfiguration: Codable, Equatable {
     var enabled = false
     var endpoint = "wss://maas.qianwenaiapi.com/api-ws/v1/realtime"
     var language = "zh"
+    var audioOutput = false
+    var volume: Float = 0.8
+    var playbackTiming: LiveTranslatePlaybackTiming = .streaming
+    var outputModalities: [String] { audioOutput ? ["text", "audio"] : ["text"] }
+    enum CodingKeys: String, CodingKey { case enabled, endpoint, language, audioOutput, volume, playbackTiming }
+    init(enabled: Bool = false, endpoint: String = "wss://maas.qianwenaiapi.com/api-ws/v1/realtime", language: String = "zh",
+         audioOutput: Bool = false, volume: Float = 0.8, playbackTiming: LiveTranslatePlaybackTiming = .streaming) {
+        self.enabled = enabled; self.endpoint = endpoint; self.language = language
+        self.audioOutput = audioOutput; self.volume = volume; self.playbackTiming = playbackTiming
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decode(Bool.self, forKey: .enabled)
+        endpoint = try c.decode(String.self, forKey: .endpoint)
+        language = try c.decode(String.self, forKey: .language)
+        audioOutput = try c.decodeIfPresent(Bool.self, forKey: .audioOutput) ?? false
+        volume = try c.decodeIfPresent(Float.self, forKey: .volume) ?? 0.8
+        playbackTiming = try c.decodeIfPresent(LiveTranslatePlaybackTiming.self, forKey: .playbackTiming) ?? .streaming
+    }
     var languageName: String { Self.languages.first { $0.0 == language }?.1 ?? language }
     // Separate namespace from both ASR credentials and Chat Completions profiles.
     var keyAccount: String { "livetranslate:" + endpoint }
@@ -17,6 +42,7 @@ struct LiveTranslateConfiguration: Codable, Equatable {
               parts.scheme == "wss" || (allowLocalhost && parts.scheme == "ws" && host == "127.0.0.1"),
               !parts.path.isEmpty, parts.path != "/",
               (parts.queryItems ?? []).allSatisfy({ $0.name == "model" }),
+              volume.isFinite, (0...1).contains(volume),
               Self.languages.contains(where: { $0.0 == language }) else {
             throw AIError.message("请填写有效的 WSS 实时服务地址，并选择支持的目标语言")
         }
@@ -41,12 +67,13 @@ struct LiveTranslateConfiguration: Codable, Equatable {
         defaults.set(try JSONEncoder().encode(try normalized()), forKey: "livetranslate.configuration.v1")
     }
     var sessionUpdate: [String: Any] {
-        ["type": "session.update", "session": [
-            "output_modalities": ["text"], "translation": ["language": language],
-            "audio": ["input": ["format": ["type": "pcm", "sample_rate": 16000],
-                                 "turn_detection": ["type": "server_vad", "threshold": 0.5, "silence_duration_ms": 1000]]]
-        ]]
+        var audio: [String: Any] = ["input": ["format": ["type": "pcm", "sample_rate": 16000],
+            "turn_detection": ["type": "server_vad", "threshold": 0.5, "silence_duration_ms": 1000]]]
+        if audioOutput { audio["output"] = ["format": ["type": "pcm", "sample_rate": 24000]] }
+        return ["type": "session.update", "session": [
+            "output_modalities": outputModalities, "translation": ["language": language], "audio": audio]]
     }
+
 }
 
 /// Source and translation arrive independently. Join by IDs, never by text or arrival order.
@@ -87,12 +114,12 @@ struct LiveTranslateEvents {
             if !rows[id]!.source.done { rows[id]!.source.text += event["delta"] as? String ?? "" }
         case "conversation.item.input_audio_transcription.completed":
             ensure(id); rows[id]!.source = Part(text: event["transcript"] as? String ?? "", done: true)
-        case "response.text.delta":
+        case "response.text.delta", "response.audio_transcript.delta":
             var part = outputs[id] ?? Part()
             if !part.done { part.text += event["delta"] as? String ?? "" }
             outputs[id] = part
-        case "response.text.done":
-            outputs[id] = Part(text: event["text"] as? String ?? "", done: true)
+        case "response.text.done", "response.audio_transcript.done":
+            outputs[id] = Part(text: (event["text"] ?? event["transcript"]) as? String ?? "", done: true)
         default: break
         }
     }
@@ -213,9 +240,16 @@ final class LiveTranslateClient: NSObject, URLSessionTaskDelegate, @unchecked Se
                     case "session.updated":
                         guard self.configured else { self.end("LiveTranslate 会话配置顺序异常"); return }
                         guard let value = event["session"] as? [String: Any],
-                              value["output_modalities"] as? [String] == ["text"],
+                              Set(value["output_modalities"] as? [String] ?? []) == Set(configuration.outputModalities),
                               (value["translation"] as? [String: Any])?["language"] as? String == configuration.language else {
-                            self.end("LiveTranslate 未确认文本输出及目标语言，请检查模型和接口兼容性"); return
+                            self.end("LiveTranslate 未确认所选输出方式及目标语言，请检查模型和接口兼容性"); return
+                        }
+                        if configuration.audioOutput {
+                            let output = (value["audio"] as? [String: Any])?["output"] as? [String: Any]
+                            let format = output?["format"] as? [String: Any]
+                            guard format?["type"] as? String == "pcm", format?["sample_rate"] as? Int == 24000 else {
+                                self.end("LiveTranslate 未确认 24 kHz PCM 译音格式"); return
+                            }
                         }
                         if !self.ready {
                             self.ready = true; self.deadline?.cancel()

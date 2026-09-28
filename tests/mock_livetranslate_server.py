@@ -70,7 +70,8 @@ class Handler(BaseHTTPRequestHandler):
             self.frame({'type': 'session.created'})
             config = self.read_frame()
             assert config['type'] == 'session.update'
-            assert config['session']['output_modalities'] == ['text']
+            audio_output = 'audio' in config['session']['output_modalities']
+            assert config['session']['output_modalities'] in (['text'], ['text', 'audio'])
             assert config['session']['audio']['input']['format']['sample_rate'] == 16000
             if route.path == '/error':
                 self.frame({'type': 'error', 'error': {'code': 'insufficient_quota', 'message': 'DO NOT DISPLAY mock-only'}})
@@ -78,6 +79,8 @@ class Handler(BaseHTTPRequestHandler):
             session = config['session']
             if route.path == '/wrong-mode':
                 session['output_modalities'] = ['text', 'audio']
+            if route.path == '/wrong-audio-format':
+                session['audio']['output']['format']['sample_rate'] = 16000
             self.frame({'type': 'session.updated', 'session': session})
             sent = False
             total = 0
@@ -88,9 +91,13 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     if not sent:
                         # Translation precedes both its association and the source transcript.
-                        delta = {'type': 'response.text.delta', 'event_id': 'duplicate', 'item_id': 'translation', 'delta': '你好🌏'}
+                        delta = {'type': 'response.audio_transcript.delta' if audio_output else 'response.text.delta', 'event_id': 'duplicate', 'item_id': 'translation', 'delta': '你好🌏'}
                         self.frame(delta)
                         self.frame(delta)
+                        if audio_output:
+                            audio = {'type': 'response.audio.delta', 'event_id': 'audio-1', 'item_id': 'translation', 'delta': base64.b64encode(b'\0\x40' * 2400).decode()}
+                            self.frame(audio)
+                            self.frame(audio)
                         self.frame({'type': 'conversation.item.created', 'previous_item_id': 'source', 'item': {'id': 'translation', 'role': 'assistant'}})
                         self.frame({'type': 'input_audio_buffer.speech_started', 'item_id': 'source', 'audio_start_ms': 1200})
                         self.frame({'type': 'conversation.item.input_audio_transcription.delta', 'item_id': 'source', 'delta': 'Hello'})
@@ -101,7 +108,9 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     if sent:
                         self.frame({'type': 'conversation.item.input_audio_transcription.completed', 'item_id': 'source', 'transcript': 'Hello world.'})
-                        self.frame({'type': 'response.text.done', 'item_id': 'translation', 'text': '你好，世界🌏。'})
+                        self.frame({'type': 'response.audio_transcript.done' if audio_output else 'response.text.done', 'item_id': 'translation', 'transcript' if audio_output else 'text': '你好，世界🌏。'})
+                        if audio_output:
+                            self.frame({'type': 'response.audio.done', 'item_id': 'translation'})
                     self.frame({'type': 'fixture.audio_bytes', 'count': total})
                     self.frame({'type': 'session.finished'})
                     return

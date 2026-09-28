@@ -119,6 +119,7 @@ struct MainView: View {
                     }.fixedSize().help(model.translationSummary)
                     Button { ai.prepare(text: model.joinedText); showAI = true } label: { Label("AI 提问", systemImage: "sparkles") }
                         .disabled(model.finalText.isEmpty || model.liveEnabled)
+                    if model.livePlaying { Button("停止译音", systemImage: "speaker.slash") { model.stopLivePlayback() } }
                     Button { model.saveText() } label: { Label("另存为…", systemImage: "square.and.arrow.down") }
                         .disabled(model.finalText.isEmpty).help("将已确认文本保存为 TXT")
                     Button { model.copyText() } label: { Label("复制", systemImage: "doc.on.doc") }.disabled(model.finalText.isEmpty)
@@ -145,6 +146,16 @@ struct MainView: View {
                                             Text(item.translation).font(.system(size: 15)).lineSpacing(5).foregroundStyle(.secondary).textSelection(.enabled)
                                         } else if item.translating {
                                             Text("翻译中…").font(.caption).foregroundStyle(.tertiary)
+                                        }
+                                        if model.canReplay(item) {
+                                            HStack {
+                                                Spacer()
+                                                Button { model.replay(item) } label: {
+                                                    Label(model.replayingTranscriptID == item.id ? "停止" : "播放译音",
+                                                          systemImage: model.replayingTranscriptID == item.id ? "stop.fill" : "play.fill")
+                                                }.buttonStyle(.borderless).font(.caption)
+                                                    .help("重播此段译音；停止本次自动译音，字幕继续更新")
+                                            }
                                         }
                                     }.frame(maxWidth: .infinity, alignment: .leading)
                                 }
@@ -178,7 +189,7 @@ struct MainView: View {
                         Circle().fill(model.recording ? .red : accent).frame(width: 8, height: 8)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(model.statusTitle).font(.system(size: 13, weight: .medium))
-                            if ["loading", "warming", "connecting"].contains(model.state) {
+                            if ["loading", "warming", "connecting", "finalizing"].contains(model.state) {
                                 Text(model.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                             }
                         }
