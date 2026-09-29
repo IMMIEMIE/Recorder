@@ -4,16 +4,25 @@ cd "$(dirname "$0")/.."
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache"
 # RECORDER_INPROCESS=1 swaps the Python sidecar for the in-process BackendCore (phased refactor).
-swift_flags="-c release --disable-sandbox"
+# Package.swift reads it to add the MLX dependencies and the RECORDER_INPROCESS define.
 if [ "${RECORDER_INPROCESS:-0}" = "1" ]; then
-  swift_flags="$swift_flags -Xswiftc -DRECORDER_INPROCESS"
+  export RECORDER_INPROCESS=1
+  # SwiftPM does not compile mlx-swift's Metal kernels; reuse the mlx 0.32.2 wheel's library,
+  # which matches the pinned mlx-swift 0.32.2 kernels (docs/SPIKE-RESULTS.md §5.10).
+  metallib=.venv/lib/python3.12/site-packages/mlx/lib/mlx.metallib
+  [ -f "$metallib" ] || { echo "缺少 $metallib，请先运行 scripts/setup.sh" >&2; exit 1; }
 fi
-swift build $swift_flags
+swift build -c release --disable-sandbox
 app="$PWD/dist/声笺.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp assets/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 cp .build/release/Recorder "$app/Contents/MacOS/Recorder"
 cp -R backend "$app/Contents/Resources/"
+if [ "${RECORDER_INPROCESS:-0}" = "1" ]; then
+  cp "$metallib" "$app/Contents/Resources/mlx.metallib"
+else
+  rm -f "$app/Contents/Resources/mlx.metallib"
+fi
 python_base=$(.venv/bin/python -c 'import sys; print(sys.base_prefix)')
 if [ ! -d "$app/Contents/Resources/runtime" ]; then
   cp -R "$python_base" "$app/Contents/Resources/runtime"

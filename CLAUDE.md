@@ -35,7 +35,10 @@ Real-model verification (needs Metal GPU and a local model snapshot; writes JSON
 .venv/bin/python scripts/verify_pipeline.py --model /abs/snapshot   # paced PCM through the real socket server
 .venv/bin/python scripts/verify_translation.py                      # ASR + local translation via the socket server; needs both default models cached in models/
 .venv/bin/python scripts/verify_endpoints.py                         # compare fixed vs smart endpointing on paced fixtures with cached models (see docs/SMART-ENDPOINTS.md)
+./scripts/verify_inprocess.sh [asr|translate]                       # same fixtures through the in-process mlx-swift model layer (RecorderVerify)
 ```
+
+In-process refactor (`refactor/mlx-swift-*`, see `spikes/HANDOFF.md`): `Package.swift` adds the MLX dependencies, the `RecorderMLX` library, the `RecorderVerify` CLI and the `RECORDER_INPROCESS` define only when the `RECORDER_INPROCESS=1` environment variable is set (`RECORDER_INPROCESS=1 ./scripts/build.sh`); the default build still ships the Python sidecar. `Sources/Recorder/Backend/` is plain Foundation and is compiled by `scripts/test_backend.sh`; MLX code lives in `Sources/RecorderMLX/` and `Sources/Recorder/Engines/`.
 
 Version bumps: the version string is hardcoded in `scripts/build.sh` (Info.plist `CFBundleShortVersionString`/`CFBundleVersion`), `scripts/package.sh` (DMG name, volume name, install notes), and `README.md`. `package.sh` refuses to overwrite an existing DMG of the same name. After replacing `assets/AppIcon.png`, run `python3 scripts/make_icon.py`.
 

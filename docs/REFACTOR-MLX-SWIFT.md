@@ -1,7 +1,7 @@
 # 重构实现文档：移除 Python 后端，迁移至 mlx-swift 单进程架构
 
 > 分支：`refactor/mlx-swift-20260929`
-> 状态：Phase 0（spike）、Phase 1（进程内通道与后端骨架）、Phase 2（信号链移植）已完成；Phase 3 起待实施。实现与规格的偏差记录在 §4 各阶段之后的「实施备注」。
+> 状态：Phase 0（spike）、Phase 1（进程内通道与后端骨架）、Phase 2（信号链移植）已完成；Phase 3（模型层）代码已提交、待 macOS 编译与对拍；Phase 4 起待实施。实现与规格的偏差记录在 §4 各阶段之后的「实施备注」。
 > 前置结论：安装包 547 MB 中约 96% 是捆绑的 Python ML 推理栈（1.2 GB 磁盘），其中 torch 526 MB 仅为 mlx-whisper 的传递依赖。Swift 应用本体仅 2.5 MB。
 
 ---
@@ -240,7 +240,7 @@ Phase 1–2 实施备注（2026-09-29）：
 - `ASRValidation.validate` 的 whisper 分支暂跳过 mlx_whisper 运行环境与资产检查（资产改为随 app 打包是 Phase 3 工作）。
 - 事件投递：BackendCore.actor 单一隔离域对应 Python 的 Condition(RLock)；重活（识别/翻译/加载）为 off-actor await，控制命令不被推理阻塞；翻译逐 token 让位用自持 `AsyncThrowingStream` 迭代实现。attach 与首条命令存在 Task 竞态，core 先缓冲事件、attach 后按序补发。
 - 测试：`scripts/test_backend.sh`（swiftc 显式文件列表）+ `tests/BackendTests.swift`，移植 test_core/test_endpoint/test_translation 的断言，49 项全绿。
-- 双轨开关：`build.sh` 在 `RECORDER_INPROCESS=1` 时加 `-Xswiftc -DRECORDER_INPROCESS`；默认关闭，仍走 Python sidecar。
+- 双轨开关：`build.sh` 在 `RECORDER_INPROCESS=1` 时加 `-Xswiftc -DRECORDER_INPROCESS`；默认关闭，仍走 Python sidecar。（Phase 3 起改为 `Package.swift` 读取该环境变量，见下方 Phase 3 实施备注。）
 
 ### Phase 3 — 模型层接入（2–3 周，依赖 Phase 0 结论）
 
@@ -252,6 +252,15 @@ Phase 1–2 实施备注（2026-09-29）：
 | `ASRAPIClient.swift` | asr_api.py | 原样移植（stdlib→URLSession）：multipart WAV、90 s 超时、拒重定向、2 MB 响应上限、错误文案 |
 
 验收：`scripts/verify_pipeline.py` / `verify_translation.py` / `verify_endpoints.py` 的场景改由 Swift 可执行目标复现（或写 `scripts/verify_inprocess.py` 直连 Swift 测试壳），结果写入 `docs/VALIDATION.md`。
+
+**Phase 3 实施备注**（代码已提交，尚未在 macOS 上编译与对拍；验证清单见 `spikes/HANDOFF.md` §4）：
+
+- 模型层放在独立库 target `RecorderMLX`（`Qwen3ASR`、`MLXTextGenerator`、`MLXRuntime`），供 app 与对拍 CLI `RecorderVerify` 共用；`ASREngine`/`TranslatorEngine` 适配器在 `Sources/Recorder/Engines/`。`scripts/verify_inprocess.sh` 取代计划中的 `verify_inprocess.py`，覆盖 verify_model.py 与 verify_translation.py 的场景；实时节奏全链路（verify_pipeline/verify_endpoints）尚未复现。
+- 双轨开关改为 manifest 级：`Package.swift` 读取 `RECORDER_INPROCESS=1` 才加入 mlx-swift（exact 0.32.2）、mlx-swift-lm（main 按 revision 钉住）、swift-transformers（`Tokenizers`，自写分词器桥，不用 MLXHuggingFace 宏），默认构建不拉 MLX。
+- Metal kernel：`build.sh` 进程内分支把 `.venv` 中 mlx 0.32.2 的 `mlx.metallib` 放进 `Contents/Resources/`，启动时经 `GPU.metallib` 指定（Phase 5 改为源码编译）。
+- 全部模型计算串行在一条专用队列上（对应 Python 单 worker 线程）；翻译用 `TokenIterator` 拉一次解一个 token，BackendCore 停止拉取即让出 GPU，取代计划中的「cancel/drop 两层取消」——丢弃迭代器即释放 KV cache。
+- 与 spike 的有意差异：mel 前端不再补零到 30 s（mlx_audio 以 `padding=True` 调用特征提取器）；不足 1 s 的输入补零到 1 s（`min_chunk_duration`）；Qwen3-ASR 支持 `quantization` 配置。
+- Whisper 未移植：进程内加载 whisper 架构时报「Whisper 本地识别引擎尚未接入…」。
 
 ### Phase 4 — 下载器（1 周）
 

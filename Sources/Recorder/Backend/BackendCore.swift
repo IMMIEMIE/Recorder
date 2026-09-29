@@ -1,8 +1,8 @@
 import Foundation
 
 enum ASRValidation {
-    /// adapter.py validate_config: file-level snapshot checks per architecture. Model loading is Phase 3;
-    /// the whisper mlx_whisper asset check is deferred until the assets ship with the app.
+    /// adapter.py validate_config: file-level snapshot checks per architecture. The whisper
+    /// mlx_whisper asset check is deferred until the Whisper port ships its assets with the app.
     static func validate(config: ModelConfig, path: URL) throws {
         var systemInfo = utsname()
         uname(&systemInfo)
@@ -57,7 +57,8 @@ enum ASRValidation {
     }
 }
 
-/// Pre-Phase 3 stand-ins wired by AppModel under RECORDER_INPROCESS; tests inject fakes.
+/// Default engines for builds without the MLX model layer (the app injects Engines/MLX*Engine);
+/// tests inject fakes.
 final class PlaceholderASREngine: ASREngine {
     var isLoaded = false
     func load(config: ModelConfig, path: String) async throws {

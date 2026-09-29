@@ -90,7 +90,8 @@ enum TranslationText {
         return messages
     }
 
-    static func maxTokens(_ text: String) -> Int { min(1024, 64 + 3 * text.count) }
+    // Python len() counts code points, not grapheme clusters.
+    static func maxTokens(_ text: String) -> Int { min(1024, 64 + 3 * text.unicodeScalars.count) }
 }
 
 /// Worker-thread only. Resets itself when a final from a new session arrives.

@@ -2,6 +2,9 @@ import SwiftUI
 import AVFoundation
 import Carbon
 import UniformTypeIdentifiers
+#if RECORDER_INPROCESS
+import RecorderMLX
+#endif
 
 struct TranslationPart {
     var text: String
@@ -252,7 +255,9 @@ final class AppModel: ObservableObject {
             let initial = Bundle.main.resourceURL!.appendingPathComponent("initial-config.json")
             if !FileManager.default.fileExists(atPath: configURL.path), FileManager.default.fileExists(atPath: initial.path) { try FileManager.default.copyItem(at: initial, to: configURL) }
         } catch { self.error = "无法创建本地配置目录"; state = "error"; return }
-        let core = BackendCore(root: root)
+        // SwiftPM builds of mlx-swift carry no Metal kernels; build.sh bundles mlx.metallib.
+        MLXRuntime.configure(metallib: Bundle.main.resourceURL?.appendingPathComponent("mlx.metallib"))
+        let core = BackendCore(root: root, asrEngine: MLXASREngine(), translator: MLXTranslatorEngine())
         let channel = InProcessChannel(core: core)
         channel.onEvent = { [weak self] event in DispatchQueue.main.async {
             guard let self, self.generation == currentGeneration else { return }
