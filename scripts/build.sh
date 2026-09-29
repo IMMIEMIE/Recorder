@@ -3,7 +3,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache"
-swift build -c release --disable-sandbox
+# RECORDER_INPROCESS=1 swaps the Python sidecar for the in-process BackendCore (phased refactor).
+swift_flags="-c release --disable-sandbox"
+if [ "${RECORDER_INPROCESS:-0}" = "1" ]; then
+  swift_flags="$swift_flags -Xswiftc -DRECORDER_INPROCESS"
+fi
+swift build $swift_flags
 app="$PWD/dist/声笺.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp assets/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"

@@ -100,3 +100,5 @@ final class Transport: @unchecked Sendable {
         queue.sync { if fd >= 0 { Darwin.close(fd); fd = -1 } }
     }
 }
+
+extension Transport: BackendChannel {}

@@ -90,7 +90,7 @@ final class AppModel: ObservableObject {
     @Published var shortcutKey = UserDefaults.standard.string(forKey: "shortcutKey") ?? "Space" {
         didSet { UserDefaults.standard.set(shortcutKey, forKey: "shortcutKey"); registerShortcut() }
     }
-    private var transport: Transport?
+    private var transport: BackendChannel?
     private var process: Process?
     private var stderrPipe: Pipe?
     private let diagnosticLock = NSLock()
@@ -244,6 +244,27 @@ final class AppModel: ObservableObject {
         let currentGeneration = generation
         state = "connecting"; error = ""
         translatorSelectionLoaded = false
+#if RECORDER_INPROCESS
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("LocalRecorder")
+        do {
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let configURL = root.appendingPathComponent("config.json")
+            let initial = Bundle.main.resourceURL!.appendingPathComponent("initial-config.json")
+            if !FileManager.default.fileExists(atPath: configURL.path), FileManager.default.fileExists(atPath: initial.path) { try FileManager.default.copyItem(at: initial, to: configURL) }
+        } catch { self.error = "无法创建本地配置目录"; state = "error"; return }
+        let core = BackendCore(root: root)
+        let channel = InProcessChannel(core: core)
+        channel.onEvent = { [weak self] event in DispatchQueue.main.async {
+            guard let self, self.generation == currentGeneration else { return }
+            self.handle(event)
+        } }
+        channel.onFailure = { [weak self] message in DispatchQueue.main.async {
+            guard let self, self.generation == currentGeneration else { return }
+            self.stopInputs(); self.state = "error"; self.error = message
+        } }
+        transport = channel
+        command("hello")
+#else
         let resources = Bundle.main.resourceURL!
         let python = resources.appendingPathComponent("runtime/bin/python3")
         let script = resources.appendingPathComponent("backend/server.py")
@@ -316,6 +337,7 @@ final class AppModel: ObservableObject {
                 self?.state = "error"; self?.error = "推理服务连接超时，请重新连接"
             }
         }
+#endif
     }
 
     func shutdown() {

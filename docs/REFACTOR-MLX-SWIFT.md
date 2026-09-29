@@ -1,7 +1,7 @@
 # 重构实现文档：移除 Python 后端，迁移至 mlx-swift 单进程架构
 
 > 分支：`refactor/mlx-swift-20260929`
-> 状态：规划（本文档为实现规格，未开始编码）
+> 状态：Phase 0（spike）、Phase 1（进程内通道与后端骨架）、Phase 2（信号链移植）已完成；Phase 3 起待实施。实现与规格的偏差记录在 §4 各阶段之后的「实施备注」。
 > 前置结论：安装包 547 MB 中约 96% 是捆绑的 Python ML 推理栈（1.2 GB 磁盘），其中 torch 526 MB 仅为 mlx-whisper 的传递依赖。Swift 应用本体仅 2.5 MB。
 
 ---
@@ -231,6 +231,16 @@
 | `TranslationPlanner.swift` | translation.py 16-109 | 单元规划、forced-cut 遗留、`already_in_target`、`same_text`、`join_text`、`build_messages`、`max_tokens` |
 
 验收：用录制的 PCM 回放（`tests/fixtures/`）比对 Python 与 Swift 的 final 切分点、revision、文本逐项一致。`docs/SMART-ENDPOINTS.md` 的智能定稿行为作为基准用例。
+
+Phase 1–2 实施备注（2026-09-29）：
+
+- 新文件落在 `Sources/Recorder/Backend/`：BackendTypes、ConfigStore、Segmenter、WebRTCVAD、RecognitionCache、TranslationPlanner、BackendCore（actor）、InProcessChannel、ASRAPIClient、ModelCache。WebRTC VAD 以 C 源码直接编入 SwiftPM C target `Cwebrtcvad`（与 Python webrtcvad wheel 同源），`scripts/verify_vad.sh` 逐帧对拍一致。
+- 计划中属于 Phase 3 的 `ASRAPIClient`（asr_api.py）与 Phase 4 的 `ModelCache.resolve_cached_model` 算法提前移植——`load`/`load_api` 命令路径依赖它们，先补齐使 BackendCore 语义完整。
+- 阶段性缺口（待后续阶段补上，均有明确报错文案）：模型下载（Phase 4）在 in-process 模式返回「下载功能尚未接入」；本地 ASR/翻译引擎（Phase 3）由 `PlaceholderASREngine`/`PlaceholderTranslatorEngine` 占位。
+- `ASRValidation.validate` 的 whisper 分支暂跳过 mlx_whisper 运行环境与资产检查（资产改为随 app 打包是 Phase 3 工作）。
+- 事件投递：BackendCore.actor 单一隔离域对应 Python 的 Condition(RLock)；重活（识别/翻译/加载）为 off-actor await，控制命令不被推理阻塞；翻译逐 token 让位用自持 `AsyncThrowingStream` 迭代实现。attach 与首条命令存在 Task 竞态，core 先缓冲事件、attach 后按序补发。
+- 测试：`scripts/test_backend.sh`（swiftc 显式文件列表）+ `tests/BackendTests.swift`，移植 test_core/test_endpoint/test_translation 的断言，49 项全绿。
+- 双轨开关：`build.sh` 在 `RECORDER_INPROCESS=1` 时加 `-Xswiftc -DRECORDER_INPROCESS`；默认关闭，仍走 Python sidecar。
 
 ### Phase 3 — 模型层接入（2–3 周，依赖 Phase 0 结论）
 
