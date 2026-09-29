@@ -15,14 +15,15 @@ struct MelFrontend {
     let nMels = 128
     let sampleRate = 16_000
 
-    private let window: [Double]            // hann(400), symmetric
-    private let filterBank: [Double]        // flattened [mel * 201 + bin]
+    let window: [Double]                   // hann(400), symmetric — debug-dumpable
+    let filterBank: [Double]               // flattened [mel * 201 + bin] — debug-dumpable
     private let dftCos: [Double]            // flattened [bin * 400 + t]
     private let dftSin: [Double]
 
     init() {
-        // hann window (np.hanning: symmetric, endpoints zero)
-        window = (0..<nFft).map { 0.5 - 0.5 * cos(2.0 * .pi * Double($0) / Double(nFft - 1)) }
+        let nFft = self.nFft
+        // hann window — torch.hann_window(400) is PERIODIC (2*pi/N), not symmetric
+        window = (0..<nFft).map { 0.5 - 0.5 * cos(2.0 * .pi * Double($0) / Double(nFft)) }
         // DFT matrices for rfft bins 0...200
         let bins = nFft / 2 + 1
         var cosM = [Double](repeating: 0, count: bins * nFft)
@@ -102,19 +103,37 @@ struct MelFrontend {
         let numFramesTotal = 1 + (centered.count - nFft) / hop  // 3001 for 30 s
         let bins = nFft / 2 + 1
 
-        // power spectrogram: (frames, bins) — DFT via matrix multiply in Double
+        // power spectrogram: (frames, bins) — DFT via matrix multiply in Double.
+        // cblas_dgemm row-major, unambiguous layout (vDSP_mmulD semantics are not).
         var power = [Double](repeating: 0, count: numFramesTotal * bins)
-        for f in 0..<numFramesTotal {
-            let base = f * hop
-            var frame = [Double](repeating: 0, count: nFft)
-            vDSP_vmulD(centered + base, 1, window, 1, &frame, 1, vDSP_Length(nFft))
-            var real = [Double](repeating: 0, count: bins)
-            var imag = [Double](repeating: 0, count: bins)
-            // real = frame (1x400) · cosM^T (400x201); cosM is [bin][t] row-major
-            vDSP_mmulD(frame, 1, dftCos, 1, &real, 1, 1, vDSP_Length(bins), vDSP_Length(nFft))
-            vDSP_mmulD(frame, 1, dftSin, 1, &imag, 1, 1, vDSP_Length(bins), vDSP_Length(nFft))
-            for k in 0..<bins {
-                power[f * bins + k] = real[k] * real[k] + imag[k] * imag[k]
+        centered.withUnsafeBufferPointer { centeredPtr in
+            for f in 0..<numFramesTotal {
+                let base = f * hop
+                var frame = [Double](repeating: 0, count: nFft)
+                vDSP_vmulD(centeredPtr.baseAddress! + base, 1, window, 1, &frame, 1, vDSP_Length(nFft))
+                var real = [Double](repeating: 0, count: bins)
+                var imag = [Double](repeating: 0, count: bins)
+                // real = frame (1x400) · cosM^T (400x201); cosM is [bin][t] row-major
+                // beta must be 0: dgemm adds beta*C to the result
+                cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                            1, Int32(bins), Int32(nFft), 1.0,
+                            frame, Int32(nFft), dftCos, Int32(nFft), 0.0,
+                            &real, Int32(bins))
+                cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                            1, Int32(bins), Int32(nFft), 1.0,
+                            frame, Int32(nFft), dftSin, Int32(nFft), 0.0,
+                            &imag, Int32(bins))
+                for k in 0..<bins {
+                    power[f * bins + k] = real[k] * real[k] + imag[k] * imag[k]
+                }
+            }
+        }
+
+        // debug: dump power spectrogram for python-side diff
+        if ProcessInfo.processInfo.environment["SPIKE_DEBUG"] == "1" {
+            print("power[:8] =", power.prefix(8).map { Float($0) })
+            power.withUnsafeBufferPointer { buf in
+                try? Data(buffer: buf).write(to: URL(fileURLWithPath: "/tmp/swift_power.bin"))
             }
         }
 
@@ -124,17 +143,22 @@ struct MelFrontend {
         var logSpec = [Float](repeating: 0, count: nMels * frames)
         var maxVal = -Double.infinity
         var melRow = [Double](repeating: 0, count: frames)
-        for m in 0..<nMels {
-            // melRow = filterBank[m] (1x201) · power^T (201 x frames)
-            vDSP_mmulD(
-                filterBank + m * bins, 1,
-                power, bins,  // power stored frame-major: (frames, bins); stride bins on rows gives (bins, frames)
-                &melRow, 1,
-                1, vDSP_Length(frames), vDSP_Length(bins))
-            for t in 0..<frames {
-                let v = log10(max(1e-10, melRow[t]))
-                if v > maxVal { maxVal = v }
-                logSpec[m * frames + t] = Float(v)
+        filterBank.withUnsafeBufferPointer { fbPtr in
+            power.withUnsafeBufferPointer { pPtr in
+                for m in 0..<nMels {
+                    // melRow = filterBank[m] (1x201) · power^T (201 x frames);
+                    // power is (frames, bins) row-major, TransB yields its transpose
+                    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                                1, Int32(frames), Int32(bins), 1.0,
+                                fbPtr.baseAddress! + m * bins, Int32(bins),
+                                pPtr.baseAddress!, Int32(bins), 0.0,
+                                &melRow, Int32(frames))
+                    for t in 0..<frames {
+                        let v = log10(max(1e-10, melRow[t]))
+                        if v > maxVal { maxVal = v }
+                        logSpec[m * frames + t] = Float(v)
+                    }
+                }
             }
         }
         // clamp + scale in float32 (python: float64 log, then asarray float32 AFTER clamp/scale —
@@ -147,10 +171,11 @@ struct MelFrontend {
         return MLXArray(logSpec).reshaped(1, nMels, frames)
     }
 
-    /// Frames marked valid by the rescaled attention mask (mask[:, ::hop]):
-    /// frame t valid iff t * hop < original sample count.
+    /// Frames marked valid by the rescaled attention mask: transformers samples
+    /// the padded mask every hop then trims the last frame when len % hop != 0 —
+    /// floor division covers both cases.
     func validFrames(sampleCount: Int) -> Int {
         let maxFrames = nSamples / hop
-        return min(maxFrames, (sampleCount + hop - 1) / hop)
+        return min(maxFrames, sampleCount / hop)
     }
 }

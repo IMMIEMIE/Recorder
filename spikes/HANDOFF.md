@@ -1,7 +1,8 @@
-# 交接文档：mlx-swift 单进程重构（Phase 0 spike 进行中）
+# 交接文档：mlx-swift 单进程重构（Phase 0 spike 已完成 ✅）
 
 > 分支：`refactor/mlx-swift-20260929`
-> 日期：2026-09-29
+> 日期：2026-09-29（spike 验证当日完成）
+> **状态更新：Phase 0 已通过，结果见 [docs/SPIKE-RESULTS.md](../docs/SPIKE-RESULTS.md)——三个 fixture 对拍达标，性能 ≈ Python 的 1.0×。§2/§3 保留作历史记录，当前下一步为 §4 的 Phase 1。**
 > 总体规格：[docs/REFACTOR-MLX-SWIFT.md](../docs/REFACTOR-MLX-SWIFT.md)（必读，本文档只覆盖当前进度与下一步）
 > 本文档面向：接手 spike 验证与后续实施的开发者（人或 AI 助手）
 

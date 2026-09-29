@@ -9,7 +9,8 @@ final class BPETokenizer {
     private let mergeRanks: [String: Int]
     private let specials: [String: Int]          // special content -> id
     private let specialIds: [Int: String]        // id -> content (skip on decode)
-    private let byteEncoder: [Character: Character]  // byte-as-unicode -> printable char
+    private let specialFlagged: Set<Int>         // ids with special=true (dropped by decode)
+    private let byteEncoder: [UInt8: Character]  // raw byte -> printable unicode char
     private let byteDecoder: [Character: UInt8]
 
     init(modelDirectory: URL) throws {
@@ -40,6 +41,7 @@ final class BPETokenizer {
         // added tokens from tokenizer_config.json
         var sp = [String: Int]()
         var spIds = [Int: String]()
+        var flagged = Set<Int>()
         if let cfgData = try? Data(contentsOf: modelDirectory.appendingPathComponent("tokenizer_config.json")),
            let cfg = try? JSONSerialization.jsonObject(with: cfgData) as? [String: Any],
            let added = cfg["added_tokens_decoder"] as? [String: [String: Any]] {
@@ -47,33 +49,42 @@ final class BPETokenizer {
                 if let id = Int(idStr), let content = info["content"] as? String {
                     sp[content] = id
                     spIds[id] = content
+                    if (info["special"] as? Bool) == true { flagged.insert(id) }
                 }
             }
         }
         specials = sp
         specialIds = spIds
+        specialFlagged = flagged
 
-        // GPT-2 bytes-to-unicode
-        var enc = [Character: Character]()
+        // GPT-2 bytes-to-unicode: printable bytes map to themselves, the rest
+        // map to U+0100+n where n counts non-printable bytes in ascending order
+        var enc = [UInt8: Character]()
         var dec = [Character: UInt8]()
-        func byteChar(_ b: UInt8) -> Character {
-            let scalars: [UInt8]
+        var n = 0
+        for b in UInt8(0)...UInt8(255) {
+            let c: Character
             switch b {
             case UInt8(33)...UInt8(126), UInt8(161)...UInt8(172), UInt8(174)...UInt8(255):
-                scalars = [b]
+                c = Character(UnicodeScalar(b))
             default:
-                let n = 256 + Int(b)
-                scalars = [UInt8(n >> 6 | 0b11000000), UInt8(n & 0x3F | 0b10000000)]
+                c = Character(UnicodeScalar(256 + n)!)
+                n += 1
             }
-            return Character(String(decoding: scalars, as: UTF8.self))
-        }
-        for b in UInt8(0)...UInt8(255) {
-            let c = byteChar(b)
-            enc[c] = Character(UnicodeScalar(b))
+            enc[b] = c
             dec[c] = b
         }
         byteEncoder = enc
         byteDecoder = dec
+    }
+
+    /// debug: byte -> unicode scalar value of the mapped char
+    func debugByteEncoderScalars() throws -> [String: Int] {
+        var out = [String: Int]()
+        for (b, c) in byteEncoder {
+            out[String(b)] = Int(c.unicodeScalars.first?.value ?? 0)
+        }
+        return out
     }
 
     private let splitRegex = try! NSRegularExpression(
@@ -120,9 +131,9 @@ final class BPETokenizer {
         }
         var out = [Int]()
         for word in words {
-            // map to unicode chars
+            // map to unicode chars (GPT-2 byte-level: each raw byte -> printable char)
             let bytes = Array(word.utf8)
-            let chars = bytes.compactMap { byteEncoder[Character(UnicodeScalar($0))] }
+            let chars = bytes.compactMap { byteEncoder[$0] }
             var symbols = chars.map(String.init)
             while symbols.count > 1 {
                 var bestRank = Int.max
@@ -150,12 +161,15 @@ final class BPETokenizer {
         return out
     }
 
-    /// Decode ids; skip special (added) tokens when skipSpecials.
+    /// Decode ids. Added tokens with special=true are dropped when skipSpecials;
+    /// added-but-not-special content (e.g. <asr_text>) survives so callers can
+    /// strip language prefixes, matching the Python tokenizer behavior.
     func decode(_ ids: [Int], skipSpecials: Bool = true) -> String {
         var chars = [Character]()
         for id in ids {
             if let sp = specialIds[id] {
-                if !skipSpecials { chars.append(contentsOf: sp) }
+                if skipSpecials && specialFlagged.contains(id) { continue }
+                chars.append(contentsOf: sp)
                 continue
             }
             guard let tok = idToToken[id] else { continue }
@@ -167,12 +181,12 @@ final class BPETokenizer {
                 }
             }
         }
+        // chars hold raw bytes (byteDecoder maps each GPT-2 char back to one
+        // byte value) — collect their scalar values directly, never re-encode
         var bytes = [UInt8]()
         for c in chars {
-            if let s = c.unicodeScalars.first, s.isASCII {
-                bytes.append(UInt8(s.value))
-            } else {
-                bytes.append(contentsOf: String(c).utf8)
+            if let s = c.unicodeScalars.first {
+                bytes.append(UInt8(truncatingIfNeeded: s.value))
             }
         }
         return String(decoding: bytes, as: UTF8.self)

@@ -1,11 +1,30 @@
 import Foundation
 import MLX
 import MLXNN
-import MLXFast
 
 /// Qwen3-ASR port of mlx_audio/stt/models/qwen3_asr/qwen3_asr.py (the parts the
 /// 声笺 backend uses: single-input, greedy, fixed language or auto).
 /// Parameter names mirror the Python module tree so safetensors load directly.
+
+/// Minimal unbounded KV cache with mlx_lm SimpleKVCache semantics:
+/// keys/values shaped (batch, kvHeads, seq, headDim); offset = cached token count.
+final class KVCache {
+    private var keys: MLXArray?
+    private var values: MLXArray?
+    private(set) var offset = 0
+
+    func update(keys newKeys: MLXArray, values newValues: MLXArray) -> (MLXArray, MLXArray) {
+        if let ks = keys, let vs = values {
+            keys = MLX.concatenated([ks, newKeys], axis: 2)
+            values = MLX.concatenated([vs, newValues], axis: 2)
+        } else {
+            keys = newKeys
+            values = newValues
+        }
+        offset += newKeys.dim(2)
+        return (keys!, values!)
+    }
+}
 
 // MARK: - Audio encoder
 
@@ -15,16 +34,16 @@ final class AudioAttention: Module {
     let headDim: Int
     let scaling: Float
 
-    @ModuleInfo(var keys: "q_proj") var qProj: Linear
-    @ModuleInfo(var keys: "k_proj") var kProj: Linear
-    @ModuleInfo(var keys: "v_proj") var vProj: Linear
-    @ModuleInfo(var keys: "out_proj") var outProj: Linear
+    @ModuleInfo(key: "q_proj") var qProj: Linear
+    @ModuleInfo(key: "k_proj") var kProj: Linear
+    @ModuleInfo(key: "v_proj") var vProj: Linear
+    @ModuleInfo(key: "out_proj") var outProj: Linear
 
     init(dModel: Int, heads: Int) {
         embedDim = dModel
         numHeads = heads
         headDim = dModel / heads
-        scaling = Float(headDim) ** -0.5
+        scaling = 1 / sqrt(Float(headDim))
         _qProj.wrappedValue = Linear(inputDimensions: dModel, outputDimensions: dModel, bias: true)
         _kProj.wrappedValue = Linear(inputDimensions: dModel, outputDimensions: dModel, bias: true)
         _vProj.wrappedValue = Linear(inputDimensions: dModel, outputDimensions: dModel, bias: true)
@@ -40,7 +59,7 @@ final class AudioAttention: Module {
         q = q.reshaped(bsz, seqLen, numHeads, headDim).transposed(0, 2, 1, 3)
         k = k.reshaped(bsz, seqLen, numHeads, headDim).transposed(0, 2, 1, 3)
         v = v.reshaped(bsz, seqLen, numHeads, headDim).transposed(0, 2, 1, 3)
-        var out = MLXFast.scaledDotProductAttention(q, k, v, scale: 1.0, mask: mask)
+        var out = MLX.scaledDotProductAttention(queries: q, keys: k, values: v, scale: 1.0, mask: mask)
         out = out.transposed(0, 2, 1, 3).reshaped(bsz, seqLen, embedDim)
         return outProj(out)
     }
@@ -93,9 +112,9 @@ final class AudioEncoder: Module {
     }
 
     let config: Config
-    @ModuleInfo(key: "conv2d1") var conv1: Conv2D
-    @ModuleInfo(key: "conv2d2") var conv2: Conv2D
-    @ModuleInfo(key: "conv2d3") var conv3: Conv2D
+    @ModuleInfo(key: "conv2d1") var conv1: Conv2d
+    @ModuleInfo(key: "conv2d2") var conv2: Conv2d
+    @ModuleInfo(key: "conv2d3") var conv3: Conv2d
     @ModuleInfo(key: "conv_out") var convOut: Linear
     @ModuleInfo(key: "layers") var layers: [AudioEncoderLayer]
     @ModuleInfo(key: "ln_post") var lnPost: LayerNorm
@@ -105,15 +124,15 @@ final class AudioEncoder: Module {
 
     init(config: Config) {
         self.config = config
-        _conv1.wrappedValue = Conv2D(
+        _conv1.wrappedValue = Conv2d(
             inputChannels: 1, outputChannels: config.downsampleHidden,
-            kernelSize: (3, 3), stride: (2, 2), padding: (1, 1))
-        _conv2.wrappedValue = Conv2D(
+            kernelSize: [3, 3], stride: [2, 2], padding: [1, 1])
+        _conv2.wrappedValue = Conv2d(
             inputChannels: config.downsampleHidden, outputChannels: config.downsampleHidden,
-            kernelSize: (3, 3), stride: (2, 2), padding: (1, 1))
-        _conv3.wrappedValue = Conv2D(
+            kernelSize: [3, 3], stride: [2, 2], padding: [1, 1])
+        _conv3.wrappedValue = Conv2d(
             inputChannels: config.downsampleHidden, outputChannels: config.downsampleHidden,
-            kernelSize: (3, 3), stride: (2, 2), padding: (1, 1))
+            kernelSize: [3, 3], stride: [2, 2], padding: [1, 1])
         let freqAfterConv = ((((config.numMelBins + 1) / 2) + 1) / 2 + 1) / 2
         _convOut.wrappedValue = Linear(
             inputDimensions: config.downsampleHidden * freqAfterConv,
@@ -144,14 +163,15 @@ final class AudioEncoder: Module {
     }
 
     /// python _get_feat_extract_output_lengths (numpy semantics, scalar input).
+    /// Arithmetic shifts give python floor division: intermediates go negative,
+    /// where swift's `/` would truncate the wrong way.
     static func featOutLength(_ inputLength: Int) -> Int {
         let leave = inputLength % 100
-        let feat = (leave - 1) / 2 + 1        // python floor division on ints
-        let inner = (feat - 1) / 2 + 1 - 1
-        return (inner - 1) / 2 + 1 + (inputLength / 100) * 13
+        let feat = ((leave - 1) >> 1) + 1
+        return (((feat - 1) >> 1) >> 1) + 1 + (inputLength / 100) * 13
     }
 
-    private func blockMask(seqLen: Int, cuSeqlens: [Int], dtype: Dtype) -> MLXArray {
+    private func blockMask(seqLen: Int, cuSeqlens: [Int], dtype: DType) -> MLXArray {
         var mask = [Float](repeating: -1e9, count: seqLen * seqLen)
         for i in 0..<(cuSeqlens.count - 1) {
             let start = cuSeqlens[i], end = cuSeqlens[i + 1]
@@ -161,7 +181,7 @@ final class AudioEncoder: Module {
                 }
             }
         }
-        return MLXArray(mask).reshaped(seqLen, seqLen).astype(dtype).expandedDimensions(0, 1)
+        return MLXArray(mask).reshaped(seqLen, seqLen).asType(dtype).expandedDimensions(axes: [0, 1])
     }
 
     /// features: (1, nMels, 3000); validFrames: frames of real audio.
@@ -182,10 +202,10 @@ final class AudioEncoder: Module {
         // pad chunks on the time axis and stack
         let padded = chunks.map { c in
             c.dim(1) < maxChunk
-                ? concatenated([c, MLXArray.zeros(c.dim(0), maxChunk - c.dim(1))], axis: 1)
+                ? concatenated([c, MLXArray.zeros([c.dim(0), maxChunk - c.dim(1)], dtype: c.dtype)], axis: 1)
                 : c
         }
-        let stacked = MLX.stacked(padded, axis: 0).expandedDimensions(3)  // (C, 128, maxChunk, 1)
+        let stacked = MLX.stacked(padded, axis: 0).expandedDimensions(axis: 3)  // (C, 128, maxChunk, 1)
 
         var x = MLXNN.gelu(conv1(stacked))
         x = MLXNN.gelu(conv2(x))
@@ -200,23 +220,46 @@ final class AudioEncoder: Module {
         let validHiddens = (0..<b).map { x[$0, 0..<afterCnnLens[$0], 0...] }
         var hidden = MLX.concatenated(validHiddens, axis: 0)   // (total, dModel)
 
-        // window blocks: python window_aftercnn = max_len_after_cnn * (n_window_infer / (n_window*2))
+        // window blocks: python splits each batch item's full post-cnn sequence
+        // (not per-chunk) into windows of maxAfterCnn * (n_window_infer / (n_window*2))
         let maxAfterCnn = afterCnnLens.max() ?? 1
         let windowAfterCnn = maxAfterCnn * (config.nWindowInfer / (config.nWindow * 2))
         let totalLen = afterCnnLens.reduce(0, +)
+        let seqAfterCnn = AudioEncoder.featOutLength(validFrames)
+        precondition(seqAfterCnn == totalLen, "卷积输出长度与分块不一致")
         var cuChunkLens = [Int]()
-        for cnnLen in afterCnnLens {
-            cuChunkLens.append(contentsOf: Array(repeating: windowAfterCnn, count: cnnLen / windowAfterCnn))
-            if cnnLen % windowAfterCnn != 0 { cuChunkLens.append(cnnLen % windowAfterCnn) }
-        }
+        let numFullWindows = seqAfterCnn / windowAfterCnn
+        cuChunkLens.append(contentsOf: Array(repeating: windowAfterCnn, count: numFullWindows))
+        let remainder = seqAfterCnn % windowAfterCnn
+        if remainder != 0 { cuChunkLens.append(remainder) }
         var cuSeqlens = [0]
         for l in cuChunkLens { cuSeqlens.append(cuSeqlens.last! + l) }
         precondition(cuSeqlens.last! == totalLen, "块注意力长度不一致")
 
+        if ProcessInfo.processInfo.environment["SPIKE_DEBUG"] == "1" {
+            eval(hidden)
+            hidden.asArray(Float.self).withUnsafeBufferPointer { buf in
+                try? Data(buffer: buf).write(to: URL(fileURLWithPath: "/tmp/swift_tower_pre_layers.bin"))
+            }
+        }
+
         let mask = blockMask(seqLen: totalLen, cuSeqlens: cuSeqlens, dtype: hidden.dtype)
-        hidden = hidden.expandedDimensions(0)
-        for layer in layers {
+        hidden = hidden.expandedDimensions(axis: 0)
+        let debug = ProcessInfo.processInfo.environment["SPIKE_DEBUG"] == "1"
+        var layerOut = [Float]()
+        for (i, layer) in layers.enumerated() {
             hidden = layer(hidden, mask: mask)
+            if debug, i == 0 {
+                layerOut = hidden[0].asArray(Float.self)
+            }
+        }
+        if debug {
+            hidden[0].asArray(Float.self).withUnsafeBufferPointer { buf in
+                try? Data(buffer: buf).write(to: URL(fileURLWithPath: "/tmp/swift_tower_final.bin"))
+            }
+            layerOut.withUnsafeBufferPointer { buf in
+                try? Data(buffer: buf).write(to: URL(fileURLWithPath: "/tmp/swift_tower_layer0.bin"))
+            }
         }
         var out = hidden[0]
         out = lnPost(out)
@@ -245,7 +288,7 @@ final class TextAttention: Module {
         numHeads = heads
         numKvHeads = kvHeads
         self.headDim = headDim
-        scale = Float(headDim) ** -0.5
+        scale = 1 / sqrt(Float(headDim))
         _qProj.wrappedValue = Linear(inputDimensions: hiddenSize, outputDimensions: heads * headDim, bias: false)
         _kProj.wrappedValue = Linear(inputDimensions: hiddenSize, outputDimensions: kvHeads * headDim, bias: false)
         _vProj.wrappedValue = Linear(inputDimensions: hiddenSize, outputDimensions: kvHeads * headDim, bias: false)
@@ -272,7 +315,7 @@ final class TextAttention: Module {
         if let cache {
             (k, v) = cache.update(keys: k, values: v)
         }
-        let out = MLXFast.scaledDotProductAttention(q, k, v, scale: scale, mask: mask)
+        let out = MLX.scaledDotProductAttention(queries: q, keys: k, values: v, scale: scale, mask: mask)
         let qlen = q.dim(2)
         return oProj(out.transposed(0, 2, 1, 3).reshaped(b, qlen, numHeads * headDim))
     }
@@ -333,7 +376,7 @@ final class TextModel: Module {
 
     init(cfg: Qwen3ASRModel.TextConfig) {
         self.cfg = cfg
-        _embedTokens.wrappedValue = Embedding(embeddingDimensions: cfg.hiddenSize, vocabularySize: cfg.vocabSize)
+        _embedTokens.wrappedValue = Embedding(embeddingCount: cfg.vocabSize, dimensions: cfg.hiddenSize)
         _layers.wrappedValue = (0..<cfg.numHiddenLayers).map { _ in TextDecoderLayer(cfg: cfg) }
         _norm.wrappedValue = RMSNorm(dimensions: cfg.hiddenSize, eps: cfg.rmsNormEps)
         super.init()
@@ -354,9 +397,9 @@ final class TextModel: Module {
     static func attentionMask(h: MLXArray, offset: Int, n: Int) -> MLXArray? {
         if n == 1 { return nil }
         let total = offset + n
-        let r = MLXArray.arange(0..<total).reshaped(1, total)   // (1, total)
-        let l = MLXArray.arange(offset..<offset + n).reshaped(n, 1)
-        return ((l .< r) * MLXArray(-1e9)).astype(h.dtype)      // (n, total)
+        let r = MLXArray.arange(0, total).reshaped(1, total)   // (1, total)
+        let l = MLXArray.arange(offset, offset + n).reshaped(n, 1)
+        return ((l .< r) * MLXArray(-1e9)).asType(h.dtype)     // (n, total)
     }
 }
 
@@ -386,7 +429,7 @@ final class Qwen3ASRModel: Module {
     let audioEndTokenId = 151_670
     let audioPadTokenId = 151_676
 
-    init() {
+    override init() {
         _audioTower.wrappedValue = AudioEncoder(config: AudioEncoder.Config())
         _model.wrappedValue = TextModel(cfg: text)
         super.init()
@@ -403,8 +446,8 @@ final class Qwen3ASRModel: Module {
     /// via concatenation — the pad block is always contiguous in this prompt.
     func buildInputsEmbeds(inputIds: MLXArray, audioFeatures: MLXArray) -> MLXArray {
         let embeds = model.embedTokens(inputIds)     // (1, L, H)
-        let feats = audioFeatures.reshaped(-1, audioFeatures.dim(-1)).astype(embeds.dtype)
-        let ids = inputIds.astype(.int32).reshaped(-1)
+        let feats = audioFeatures.reshaped(-1, audioFeatures.dim(-1)).asType(embeds.dtype)
+        let ids = inputIds.asType(.int32).reshaped(-1)
         eval(ids)
         var padPositions = [Int]()
         for i in 0..<ids.dim(0) {
@@ -430,15 +473,20 @@ final class Qwen3ASRModel: Module {
         let embeds = buildInputsEmbeds(inputIds: inputIds, audioFeatures: audioFeatures)
         let seqLen = embeds.dim(1)
 
+        // TextModel returns normed hidden states — the tied lm_head must be
+        // applied before argmax.
+        func sample(_ hidden: MLXArray) -> MLXArray {
+            lmHead(hidden).argMax(axis: -1)
+        }
+
         // prefill all but the final position, then forward the final position to sample token 0
-        var logits: MLXArray
+        var token: MLXArray
         if seqLen > 1 {
             _ = model(inputsEmbeds: embeds[0..., 0..<(seqLen - 1), 0...], cache: cache)
-            logits = model(inputsEmbeds: embeds[0..., (seqLen - 1)...(seqLen - 1), 0...], cache: cache)
+            token = sample(model(inputsEmbeds: embeds[0..., (seqLen - 1)...(seqLen - 1), 0...], cache: cache))
         } else {
-            logits = model(inputsEmbeds: embeds, cache: cache)
+            token = sample(model(inputsEmbeds: embeds, cache: cache))
         }
-        var token = MLX.argmax(logits[0..., logits.dim(1) - 1, 0...], axis: -1)
         eval(token)
 
         var out = [Int]()
@@ -447,8 +495,7 @@ final class Qwen3ASRModel: Module {
             if eosTokenIds.contains(t) { break }
             out.append(t)
             let nextEmbed = model.embedTokens(token.reshaped(1, 1))
-            logits = model(inputsEmbeds: nextEmbed, cache: cache)
-            token = MLX.argmax(logits[0..., logits.dim(1) - 1, 0...], axis: -1)
+            token = sample(model(inputsEmbeds: nextEmbed, cache: cache))
             eval(token)
         }
         return out
@@ -473,7 +520,7 @@ enum WeightLoader {
         var weights = [String: MLXArray]()
         for f in files {
             let url = snapshot.appendingPathComponent(f)
-            let shard = try MLXNN.loadWeights(url)
+            let shard = try MLX.loadArrays(url: url)
             for (k, v) in shard {
                 var key = k
                 if key.hasPrefix("thinker.") { key = String(key.dropFirst("thinker.".count)) }
