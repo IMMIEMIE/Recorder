@@ -41,10 +41,11 @@ final class EventRecorder: BackendEventSink {
 }
 
 final class FakeASREngine: ASREngine {
-    var isLoaded = true
+    // Like the Python adapter (model is None), a fresh engine is not loaded.
+    var isLoaded = false
     var calls: [Data] = []
     var text = "重复重复"
-    func load(config: ModelConfig, path: String) async throws {}
+    func load(config: ModelConfig, path: String) async throws { isLoaded = true }
     func warmup() async throws {}
     func unload() async { isLoaded = false }
     func transcribe(_ pcm: Data) async throws -> (text: String, elapsedMS: Int) {

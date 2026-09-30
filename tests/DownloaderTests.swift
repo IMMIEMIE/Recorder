@@ -256,7 +256,8 @@ func checkRealHub(modelID: String, reference: URL, full: Bool) async throws {
                 continue
             }
             let expected = String(repeating: "../", count: file.name.split(separator: "/").count + 1) + "blobs/\(file.etag)"
-            let size = (try FileManager.default.attributesOfItem(atPath: pointer.path)[.size] as? NSNumber)?.int64Value
+            // attributesOfItem does not traverse the last symlink (it would return the link string's length).
+            let size = (try FileManager.default.attributesOfItem(atPath: pointer.resolvingSymlinksInPath().path)[.size] as? NSNumber)?.int64Value
             try expect(target == expected, "\(file.name): python links \(target), swift would link \(expected)")
             try expect(size == file.size, "\(file.name): size \(size ?? -1) vs \(file.size)")
             checked += 1

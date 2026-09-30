@@ -295,7 +295,8 @@ private final class FileTransfer: NSObject, URLSessionDataDelegate, @unchecked S
     private let fresh: ContentHash
     private let lock = NSLock()
     // Mutated on the serial delegate queue; read by the consumer after the stream finishes.
-    private var hash: ContentHash
+    // Not named `hash`: that would collide with NSObject's `hash`.
+    private var contentHash: ContentHash
     private var written: Int64
     private var handle: FileHandle?
     private var failure: Error?
@@ -308,14 +309,14 @@ private final class FileTransfer: NSObject, URLSessionDataDelegate, @unchecked S
         self.file = file
         self.offset = offset
         self.fresh = fresh
-        self.hash = hash
+        self.contentHash = hash
         written = offset
     }
 
     var result: (hash: ContentHash, written: Int64) {
         lock.lock()
         defer { lock.unlock() }
-        return (hash, written)
+        return (contentHash, written)
     }
 
     func start() -> AsyncThrowingStream<Int64, Error> {
@@ -369,7 +370,7 @@ private final class FileTransfer: NSObject, URLSessionDataDelegate, @unchecked S
                 handle = try FileHandle(forWritingTo: file)
                 lock.lock()
                 written = 0
-                hash = fresh
+                contentHash = fresh
                 lock.unlock()
             } else if let url = response.url {
                 try HubDownloader.check(response, url: url)
@@ -395,7 +396,7 @@ private final class FileTransfer: NSObject, URLSessionDataDelegate, @unchecked S
             return
         }
         lock.lock()
-        hash.update(data)
+        contentHash.update(data)
         written += Int64(data.count)
         let count = written
         lock.unlock()
