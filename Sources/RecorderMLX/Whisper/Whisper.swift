@@ -50,7 +50,11 @@ public final class Whisper {
             }
             quantize(model: model, filter: filter)
         }
-        let parameters = ModuleParameters(item: NestedItem.unflattened(weights.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }))
+        // Python's Module.update is non-strict and stores "alignment_heads" (word-timestamp
+        // metadata, read only by timing.py) on the model; this port never uses it, so the key
+        // is dropped rather than declared.
+        let sanitized = weights.filter { $0.key != "alignment_heads" }
+        let parameters = ModuleParameters(item: NestedItem.unflattened(sanitized.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }))
         try model.update(parameters: parameters, verify: [.noUnusedKeys])
         eval(model.parameters())
         self.model = model
@@ -244,6 +248,7 @@ public final class Whisper {
                 next = eot
             }
             tokens.append(next)
+            if ProcessInfo.processInfo.environment["RECORDER_WHISPER_TRACE"] != nil { print("TRACE \(tokens)") }
             completed = next == eot
         }
         // finalize: slice after the sot sequence, up to the first EOT.

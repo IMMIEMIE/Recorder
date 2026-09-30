@@ -23,6 +23,8 @@ struct MelFrontend {
 
     init(nMels: Int = 128) {
         self.nMels = nMels
+        // Local copy so the closures below don't capture self before init completes.
+        let nFft = 400
         let bins = nFft / 2 + 1
         // torch.hann_window(400) is periodic (2π/N), not symmetric.
         window = (0..<nFft).map { 0.5 - 0.5 * cos(2.0 * .pi * Double($0) / Double(nFft)) }

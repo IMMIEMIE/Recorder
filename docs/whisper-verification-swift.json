@@ -1,0 +1,32 @@
+{
+  "architecture" : "arm64",
+  "implementation" : "mlx-swift",
+  "language" : "auto",
+  "load_seconds" : 1.1444781249156222,
+  "mlx_peak_bytes" : 2184948662,
+  "model_path" : "models\/models--mlx-community--whisper-large-v3-turbo\/snapshots\/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+  "model_type" : "whisper",
+  "platform" : "Version 27.0 (Build 26A428)",
+  "results" : [
+    {
+      "audio_seconds" : 8.0056250000000002,
+      "elapsed_ms" : 1655.9080838924274,
+      "file" : "chinese.aiff",
+      "text" : "你好!这是一个本地语音识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识识"
+    },
+    {
+      "audio_seconds" : 5.1880625,
+      "elapsed_ms" : 1690.6050000106916,
+      "file" : "english.aiff",
+      "text" : "This is a local speech recognition test. Please remember the number 12345. This is a local speech recognition. Please remember the number 12345. This is a local speech recognition. Please. This is a local speech recognition. This is a local speech recognition. This is a local speech recognition. This is a local speech recognition. This is a local speech recognition. This is a local speech recognition. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech. This is a local speech"
+    },
+    {
+      "audio_seconds" : 6.5996249999999996,
+      "elapsed_ms" : 1629.1779580060393,
+      "file" : "mixed.aiff",
+      "text" : "今天我们测试 PYTHEN和 SWIFT,所有音频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频频"
+    }
+  ],
+  "revision" : "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+  "warmup_seconds" : 6.0411537500331178
+}

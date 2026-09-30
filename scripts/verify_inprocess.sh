@@ -27,17 +27,22 @@ snapshot() {
 
 mode=${1:-all}
 [ $# -gt 0 ] && shift
+# Resolve snapshots into variables first: a failing command substitution inside an argument
+# list doesn't trip set -e, and RecorderVerify would run with an empty model path.
 if [ "$mode" = "asr" ] || [ "$mode" = "all" ]; then
-  "$bin" asr --metallib "$metallib" --model "$(snapshot mlx-community/Qwen3-ASR-1.7B-bf16)" "$@" \
+  model="$(snapshot mlx-community/Qwen3-ASR-1.7B-bf16)"
+  "$bin" asr --metallib "$metallib" --model "$model" "$@" \
     tests/fixtures/chinese.aiff tests/fixtures/english.aiff tests/fixtures/mixed.aiff
 fi
 if [ "$mode" = "whisper" ]; then
+  model="$(snapshot mlx-community/whisper-large-v3-turbo)"
   "$bin" asr --metallib "$metallib" --assets assets/whisper --output docs/whisper-verification-swift.json \
-    --model "$(snapshot mlx-community/whisper-large-v3-turbo)" "$@" \
+    --model "$model" "$@" \
     tests/fixtures/chinese.aiff tests/fixtures/english.aiff tests/fixtures/mixed.aiff
 fi
 if [ "$mode" = "translate" ] || [ "$mode" = "all" ]; then
-  "$bin" translate --metallib "$metallib" --model "$(snapshot mlx-community/Qwen3-4B-Instruct-2507-4bit)" "$@" \
+  model="$(snapshot mlx-community/Qwen3-4B-Instruct-2507-4bit)"
+  "$bin" translate --metallib "$metallib" --model "$model" "$@" \
     "Good morning. Please remember the number one, two, three, four, five." \
     "This is a local speech recognition test."
 fi

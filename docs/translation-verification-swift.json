@@ -1,0 +1,30 @@
+{
+  "architecture" : "arm64",
+  "implementation" : "mlx-swift",
+  "load_seconds" : 0.41636575001757592,
+  "mlx_peak_bytes" : 2522271228,
+  "model_path" : "models\/models--mlx-community--Qwen3-4B-Instruct-2507-4bit\/snapshots\/50d427756c6b1b2fe0c0a10f67fbda1fc8e82c1b",
+  "model_type" : "qwen3",
+  "platform" : "Version 27.0 (Build 26A428)",
+  "results" : [
+    {
+      "elapsed_ms" : 471.15166601724923,
+      "first_token_ms" : 175.60974997468293,
+      "source" : "Good morning. Please remember the number one, two, three, four, five.",
+      "text" : "早上好，请记住一、二、三、四、五。",
+      "tokens" : 14,
+      "tokens_per_second" : 29.714423209717459
+    },
+    {
+      "elapsed_ms" : 382.80437490902841,
+      "first_token_ms" : 182.20558296889067,
+      "source" : "This is a local speech recognition test.",
+      "text" : "这是一次本地语音识别测试。",
+      "tokens" : 8,
+      "tokens_per_second" : 20.898402746575613
+    }
+  ],
+  "revision" : "50d427756c6b1b2fe0c0a10f67fbda1fc8e82c1b",
+  "target_language" : "简体中文",
+  "warmup_seconds" : 0.83717000007163733
+}
