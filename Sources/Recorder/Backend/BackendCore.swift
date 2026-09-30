@@ -107,6 +107,17 @@ enum BackendJob {
     case unloadTranslator
 }
 
+/// A queued `download` command: the role decides which status line and load job it drives.
+enum DownloadRequest {
+    case asr(ModelConfig)
+    case translator(TranslationConfig)
+
+    var role: String {
+        if case .translator = self { return "translator" }
+        return "asr"
+    }
+}
+
 /// One in-flight translation; class identity mirrors the Python dict passed between worker calls.
 final class TranslationJob {
     let unitID: Int
@@ -145,6 +156,7 @@ actor BackendCore {
     private let asr: ASREngine
     private let apiRecognizer: APIRecognizing
     private let translator: TranslatorEngine
+    private let downloader: ModelDownloading
 
     private(set) var alive = true
     private var active = false
@@ -160,6 +172,9 @@ actor BackendCore {
     private var context: [(target: String, session: String, source: String, text: String)] = []
     private var nextUnitID = 0
     private var overloadSession: String?
+    // The running download (server.py self.downloader); a new identity makes stale callbacks inert.
+    private var download: (id: UUID, task: Task<Void, Never>)?
+    private var downloadRole = "asr"
 
     private var jobs: [BackendJob] = []
     private(set) var preview: SegmentJob?
@@ -181,11 +196,13 @@ actor BackendCore {
 
     init(root: URL, asrEngine: ASREngine = PlaceholderASREngine(),
          apiRecognizer: APIRecognizing = APIRecognizer(),
-         translator: TranslatorEngine = PlaceholderTranslatorEngine()) {
+         translator: TranslatorEngine = PlaceholderTranslatorEngine(),
+         downloader: ModelDownloading = HubDownloader()) {
         self.root = root
         self.asr = asrEngine
         self.apiRecognizer = apiRecognizer
         self.translator = translator
+        self.downloader = downloader
         configPath = root.appendingPathComponent("config.json")
         translationPath = root.appendingPathComponent("translation.json")
         if let data = FileManager.default.contents(atPath: configPath.path) {
@@ -218,6 +235,7 @@ actor BackendCore {
     }
 
     var jobCount: Int { jobs.count }
+    var isDownloading: Bool { download != nil }
     var currentAPIKey: String { apiRecognizer.key }
     var recognitionEntryCount: Int { recognition.entries.count }
 
@@ -361,6 +379,9 @@ actor BackendCore {
                         cache: root.appendingPathComponent("models")) {
                         try ASRValidation.validate(config: config, path: $0)
                     }
+                } else {
+                    // adapter.load validates every path, including local directories and fresh downloads.
+                    try ASRValidation.validate(config: config, path: URL(fileURLWithPath: resolved))
                 }
                 recognition.clear()
                 try await asr.load(config: config, path: resolved)
@@ -620,7 +641,7 @@ actor BackendCore {
             case "asr_stream_final":
                 try handleStreamFinal(message)
             case "cancel_download":
-                break  // Downloader arrives in Phase 4; there is nothing to cancel yet.
+                cancelDownload()
             case "start":
                 try handleStart(message)
             case "stop":
@@ -644,7 +665,8 @@ actor BackendCore {
             let config = try TranslationConfig.parse(values)
             guard config.provider == "local" else { throw BackendError.value("请先选择本地模型翻译") }
             if cmd == "download" {
-                throw BackendError.value("下载功能尚未接入，请等待后续版本更新")
+                guard download == nil else { throw BackendError.value("请等待当前下载结束") }
+                startDownload(.translator(config))
             } else {
                 queueTranslatorLoad(config)
             }
@@ -659,7 +681,8 @@ actor BackendCore {
         if cmd == "download" {
             if config.provider == "api" { throw BackendError.value("API 服务无需下载，请使用加载 / 切换") }
             if !config.localModelPath.isEmpty { throw BackendError.value("本地目录无需下载，请使用加载") }
-            throw BackendError.value("下载功能尚未接入，请等待后续版本更新")
+            guard download == nil else { throw BackendError.value("请等待当前下载结束") }
+            startDownload(.asr(config))
         } else {
             status("loading")
             if config.provider == "api" {
@@ -668,6 +691,87 @@ actor BackendCore {
                 jobs.append(.load(config, config.localModelPath))
             }
             schedule()
+        }
+    }
+
+    // MARK: - Downloads (server.py download / monitor; the subprocess becomes a cancellable Task)
+
+    private func startDownload(_ request: DownloadRequest) {
+        let modelID: String
+        let revision: String
+        switch request {
+        case .asr(let config):
+            (modelID, revision) = (config.modelID, config.revision)
+        case .translator(let config):
+            (modelID, revision) = (config.modelID, config.revision)
+        }
+        downloadRole = request.role
+        if case .translator = request {
+            translatorStatus("downloading", "正在查询翻译模型资源…")
+        } else {
+            status("downloading", "正在查询模型资源…")
+        }
+        let id = UUID()
+        let downloader = downloader
+        let cache = root.appendingPathComponent("models")
+        let task = Task { [weak self] in
+            let result: Result<(path: String, revision: String), Error>
+            do {
+                result = .success(try await downloader.download(modelID: modelID, revision: revision, cache: cache) { detail, completed, total in
+                    await self?.downloadProgress(id: id, role: request.role, detail: detail, completed: completed, total: total)
+                })
+            } catch {
+                result = .failure(error)
+            }
+            await self?.downloadFinished(id: id, request: request, result: result)
+        }
+        download = (id, task)
+    }
+
+    private func downloadProgress(id: UUID, role: String, detail: String, completed: Int64, total: Int64) {
+        guard download?.id == id else { return }
+        // NSNumber like the JSON the socket carried, so `as? Double` / `as? Int` both read it.
+        send(["type": "progress", "detail": detail, "completed": NSNumber(value: completed),
+              "total": NSNumber(value: total), "role": role])
+    }
+
+    private func downloadFinished(id: UUID, request: DownloadRequest,
+                                  result: Result<(path: String, revision: String), Error>) {
+        guard download?.id == id else { return }  // Cancelled or superseded: its outcome is not reported.
+        download = nil
+        switch result {
+        case .success(let value):
+            switch request {
+            case .asr(var config):
+                config.revision = value.revision
+                status("loading")
+                jobs.append(.load(config, value.path))
+            case .translator(var config):
+                config.revision = value.revision
+                translatorStatus("loading")
+                jobs.append(.loadTranslator(config, value.path))
+            }
+            schedule()
+        case .failure(let error):
+            // download.py printed this line before exiting non-zero; the monitor then set the status.
+            send(["type": "error", "message": "下载失败 (\(backendErrorKind(error))): \(backendErrorMessage(error))",
+                  "role": request.role])
+            if case .translator = request {
+                translatorStatus("error", "翻译模型下载失败；可重试，已下载缓存可复用")
+            } else {
+                status("error", "下载失败；可重试，已下载缓存可复用")
+            }
+        }
+    }
+
+    private func cancelDownload() {
+        guard let running = download else { return }
+        download = nil
+        running.task.cancel()
+        if downloadRole == "translator" {
+            translatorStatus(translator.isLoaded ? "ready" : "idle", "下载已取消，可重试续传")
+        } else {
+            status(asr.isLoaded ? "ready" : "idle", "下载已取消，可重试续传")
         }
     }
 
@@ -790,6 +894,8 @@ actor BackendCore {
     /// Python's shutdown simply terminates the process; the in-process core releases its engines instead.
     func shutdown() async {
         alive = false
+        download?.task.cancel()
+        download = nil
         translating = nil
         translations.removeAll()
         preview = nil

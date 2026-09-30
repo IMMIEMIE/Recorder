@@ -1,8 +1,8 @@
-# 交接文档：mlx-swift 单进程重构（Phase 0–2 已完成 ✅，Phase 3 代码已落地待 macOS 验证）
+# 交接文档：mlx-swift 单进程重构（Phase 0–3 已完成 ✅，Phase 4 下载器代码已落地待 macOS 验证）
 
 > 分支：`refactor/mlx-swift-20260929`
-> 日期：2026-09-29（Phase 0–2 同日完成；Phase 3 模型层代码同日提交，尚未在 macOS 上编译/对拍）
-> **状态更新：Phase 0 spike 通过（[docs/SPIKE-RESULTS.md](../docs/SPIKE-RESULTS.md)）；Phase 1–2 进程内后端骨架与信号链已落地（`Sources/Recorder/Backend/`，49 项 Swift 测试全绿、VAD 对拍逐帧一致，提交 `3fa60d2`、`bebad79`）。Phase 3 的 Qwen3-ASR 引擎、本地翻译引擎、AppModel 注入与 `RecorderVerify` 对拍工具已编写（`Sources/RecorderMLX/`、`Sources/Recorder/Engines/`），但编写环境为 Linux 云端容器，无 Swift 工具链与 Metal，**代码未经编译**。下一步：在 Apple Silicon Mac 上按 §4「Phase 3 验证清单」编译、修正、对拍。**
+> 日期：2026-09-29（Phase 0–2 完成、Phase 3 代码提交）；2026-09-30（Phase 3 在 macOS 上编译并对拍通过；Phase 4 下载器代码提交，尚未在 macOS 上编译）
+> **状态更新：Phase 0 spike 通过（[docs/SPIKE-RESULTS.md](../docs/SPIKE-RESULTS.md)）；Phase 1–2 进程内后端骨架与信号链已落地（提交 `3fa60d2`、`bebad79`）。Phase 3 模型层（Qwen3-ASR、Whisper、本地翻译）已在 Apple Silicon Mac 上编译并对拍：三个 fixture 的 Qwen3-ASR 与 Whisper 转写与 Python 逐字一致（修正见提交 `4b338d2`、`aefe7d2`）。Phase 4 下载器（`Sources/Recorder/Backend/ModelDownloader.swift`）与 BackendCore 的 download/cancel_download 已编写，编写环境为 Linux 云端容器，**代码未经编译**。下一步：在 Mac 上按 §4「Phase 4 验证清单」编译、跑测试、与 Python 缓存对拍。**
 > 总体规格：[docs/REFACTOR-MLX-SWIFT.md](../docs/REFACTOR-MLX-SWIFT.md)（必读；其 §4 Phase 1–2 后已附「实施备注」记录实现与规格的偏差）
 > 本文档面向：接手后续实施的开发者（人或 AI 助手）
 
@@ -44,7 +44,17 @@ AppModel 改动最小化：`transport` 换成 `BackendChannel?`；`launch()` 按
 | `RecognitionCache.swift` | recognition.py 全量：last_voiced 命中、18 s 切块逐块缓存、`forget`/`clear` 时机 |
 | `TranslationPlanner.swift` | translation.py 全量：单元规划、forced-cut 遗留（剥 `CUT_PUNCTUATION`、MAX_CARRY=400）、`already_in_target` 脚本计数、`same_text`、`build_messages`（Hunyuan 单轮/其余 system+2 组上下文）、`validate_translator` |
 
-### Phase 3 — 模型层接入（代码已提交，**未编译、未对拍**）
+### Phase 3 — 模型层接入（macOS 编译、对拍通过 ✅）
+
+2026-09-30 在 Apple Silicon Mac（macOS 27.0）上编译通过并修正：MelFrontend 初始化中闭包捕获 self、Whisper 权重多出的 `alignment_heads`（Python `Module.update` 非严格、只供词级时间戳用，移植版丢弃）、`gpt2`/`multilingual.tiktoken` 末行孤立的 `=`（Python 宽松 base64 解码为空字节，Swift 严格解码会跳过它导致全部特殊 token 编号错一位）、`verify_inprocess.sh` 中命令替换失败不触发 `set -e`（提交 `4b338d2`、`aefe7d2`）。对拍结果（`docs/*-verification-swift.json` 与 Python 版对照）：
+
+| 模型 | 文本 | 单次耗时（Swift / Python） | 备注 |
+| --- | --- | --- | --- |
+| Qwen3-ASR-1.7B-bf16（auto） | 三个 fixture 逐字一致 | 865/930/744 ms vs 505/487/392 ms | 峰值 4.95 GB（Python 5.17 GB）；耗时偏高待复测（spike 时为 ≈1.0×） |
+| whisper-large-v3-turbo（auto） | 三个 fixture 逐字一致 | 744/680/717 ms vs 469/424/451 ms | `--language Chinese` 时 504 ms；峰值 2.18 GB（Python 2.55 GB） |
+| Qwen3-4B-Instruct-2507-4bit 翻译 | 译文合理，无 `<think>` | 首 token 176–182 ms，21–30 tok/s | |
+
+以下为 Phase 3 各文件说明：
 
 编写环境无 Swift 工具链（Linux 容器，swift.org 下载被网络策略拦截），以下代码按 mlx-swift 0.32.2、mlx-swift-lm（main `c043fb3`）、swift-transformers 1.3.x 的源码 API 手工核对编写，首次在 Mac 上编译时预计仍需少量修正。
 
@@ -78,31 +88,39 @@ AppModel 改动最小化：`transport` 换成 `BackendChannel?`；`launch()` 按
 ## 3. 已知偏差与阶段缺口（均有明确中文报错，不影响双轨默认路径）
 
 1. **Phase 3 代码未编译**：见上文；首要任务是在 Mac 上 `RECORDER_INPROCESS=1 swift build` 并修正编译错误。
-2. **模型下载未接入**（Phase 4）：in-process 模式下 `download` 命令与翻译模型下载返回「下载功能尚未接入，请等待后续版本更新」；`cancel_download` 为 no-op。
+2. **下载器未编译**（Phase 4）：`ModelDownloader.swift` 与 BackendCore 下载流程已写好、测试已写好，待 Mac 上编译与跑 `scripts/test_download.sh`。
+6. **Phase 3 推理耗时**：对拍中 Swift 单次转写比 Python 慢约 1.6–1.8×（spike 时为 1.0×），文本一致；需在空载机器上复测，若属实再用 Instruments 定位（候选：`MLXRuntime` 队列切换、Whisper/Qwen 首次调用的 kernel 编译、mel 前端）。
 3. **Whisper 未验证**：代码与 Qwen 部分一样未经编译；`ASRValidation.whisperAssets` 为 nil（后端测试、默认构建）时仍跳过资产检查。`word_timestamps`、温度回退、束搜索等 adapter 不用的 mlx_whisper 功能未移植。
 4. **Hunyuan-MT 分词器**：swift-transformers 的 `AutoTokenizer.from(modelFolder:)` 需要 `tokenizer.json`；若 `mlx-community/Hunyuan-MT-7B-4bit` 快照只有 tiktoken 词表，加载会失败（报错会走翻译失败路径，不影响识别），需实测。
 5. **metallib 来源**：开发期与进程内打包都复用 `.venv` 中 mlx 0.32.2 wheel 的 `mlx.metallib`；Phase 5 删 Python 后需改为从 mlx 源码编译（完整 Xcode + `xcrun metal`）。
 
 ## 4. 待完成的工作（按序执行）
 
-### Phase 3 — 验证与收尾（**下一步**）
+### Phase 3 — 验证与收尾（✅ 已完成，剩余项转后续）
 
-**Phase 3 验证清单**（需 Apple Silicon Mac、`.venv`、`models/` 下已缓存的默认两个模型）：
+对拍清单 1–4 已完成（结果见 §2 Phase 3 表格）。仍待办：app 内切换 Qwen/Whisper/翻译模型时的 GPU 内存观察（清单 5）、结果写入 `docs/VALIDATION.md`（清单 6）、`verify_pipeline`/`verify_endpoints` 场景的 Swift 复现（需把 `Sources/Recorder/Backend` 拆成库 target 或在 CLI 中复用 swiftc 文件列表，按需决定）。
 
-1. `RECORDER_INPROCESS=1 swift build -c release`：修正编译错误（重点核对：`quantize(model:filter:)` 重载、`TokenIterator`/`GenerateParameters` 初始化、`LLMModelFactory.load(from:using:)`、`AsyncThrowingStream(unfolding:)`、AVAudioConverter 回调）。同时确认默认 `swift build`、`scripts/test_backend.sh` 等仍通过。
-2. `./scripts/verify_inprocess.sh asr`：三个 fixture 与 `docs/model-verification.json`（Python）对比，要求逐字一致或仅标点/空格差异；另跑 `--language Chinese`。若与 spike 结论出现偏差，先怀疑 MelFrontend 改为「不补 30 s」这一处（可临时补零到 480000 样本对照）。
-3. `./scripts/verify_inprocess.sh whisper`（需已缓存 `whisper-large-v3-turbo`）：与 `docs/whisper-verification.json` 对比文本；另跑 `--language Chinese`。`./scripts/test_backend.sh` 新增的 `whisper validation` 用例也应通过。
-4. `./scripts/verify_inprocess.sh translate`：确认 `enable_thinking=False` 生效（输出不含 `<think>`）、译文合理；对比 `docs/translation-verification.json` 的吞吐（±30%）。Hunyuan-MT 若已缓存一并试。
-5. `RECORDER_INPROCESS=1 ./scripts/build.sh` 后运行 app：加载→预热→麦克风转写→开启本地翻译→切换 Qwen/Whisper/翻译模型；观察翻译逐 token 让位（识别 final 不被翻译拖慢）、切模型先卸载后加载的 GPU 内存（`MLXRuntime.peakMemory`/活动监视器）。
-6. 结果写入 `docs/VALIDATION.md`，并在规格文档 §4 Phase 3「实施备注」补上验证结论。
+### Phase 4 — 下载器（代码已提交，**未编译**）
 
-**Phase 3 剩余开发**：
+| 文件 | 内容 |
+| --- | --- |
+| `Sources/Recorder/Backend/ModelDownloader.swift` | `ModelDownloading` 协议 + `HubDownloader`：不依赖 swift-transformers 的 `HubApi`（它的缓存布局与 huggingface_hub 不同），按 huggingface_hub 1.30 `_hf_hub_download_to_cache_dir` 直接写 HF 缓存。`GET /api/models/<repo>[/revision/<rev>]?blobs=true` → 按 download.py 扩展名过滤（**含 `.jinja`**）→ 钉 commit SHA 逐文件 `GET /<repo>/resolve/<sha>/<file>`（LFS 跟随 302 到 CDN）。blob 名 = LFS 的 sha256，否则 git blob id（与 huggingface_hub 取 `X-Linked-Etag`/`ETag` 的结果相同，也是其 `verify` 用的校验值）；`snapshots/<sha>/<file>` 为相对符号链接 `../../blobs/<etag>`（子目录多一级 `../`）；SHA 版本不写 `refs/`；写 `CACHEDIR.TAG`（同内容）。下载完成先校验大小与 sha256 / git-sha1，再原子 rename 成 blob。`HF_ENDPOINT` 环境变量照 Python 生效 |
+| `BackendCore.swift` | server.py `download`/monitor/`cancel_download` 移植：`正在查询模型资源…`/`正在查询翻译模型资源…` → `progress` 事件（带 `role`，数值用 NSNumber，与 socket JSON 同样可读为 Double/Int）→ 成功后钉 revision、`status loading` 并排队 `load`/`load_translator`；失败发 `下载失败 (<异常名>): <原因>` 与「下载失败；可重试，已下载缓存可复用」；取消即 `Task.cancel()`，状态回 `ready`/`idle` +「下载已取消，可重试续传」，被取消或已被替换的下载其结果不再上报（对应 Python `self.downloader is not process`）；一次只允许一个下载（「请等待当前下载结束」）；`shutdown` 取消下载。另补齐 adapter.load 语义：`load` 带显式路径（本地目录、下载结果）时也跑 `ASRValidation.validate` |
+| `tests/BackendTests.swift` | 新增 4 项：下载后加载 ASR（状态序列、progress 形状、revision 落盘）、失败文案与重试、取消（忽略迟到结果、忙时拒绝第二个下载）、翻译模型下载后加载 |
+| `tests/DownloaderTests.swift` + `tests/mock_hub_server.py` + `scripts/test_download.sh` | 本地假 Hub（模拟 model_info、resolve、LFS 302 到异主机 CDN、Range、`X-Error-Code`）上的 8 项：布局（blob 命名、相对链接、过滤、无 refs、CACHEDIR.TAG、ModelCache 可离线解析）与 progress 形状、已缓存零传输/只补链接、取消保留分片并以 Range 续传（跨 302）、服务器忽略 Range 时重写、校验失败不落盘、错误名（ValueError/RepositoryNotFoundError/RevisionNotFoundError）、不安全文件名、**Python 对拍**（`.venv` 有 huggingface_hub 时先用 `backend/download.py` 从同一假 Hub 下载，两份缓存目录逐项比较：路径、链接目标、文件 sha256） |
 
-- `verify_pipeline.py`/`verify_endpoints.py` 场景（实时节奏 PCM 经 BackendCore 全链路）可在 `RecorderVerify` 增加 `pipeline` 子命令复现——需要把 `Sources/Recorder/Backend` 拆成库 target 或在 CLI 中复用 swiftc 文件列表方式，按需决定。
+与 Python 的有意差异（缓存结果不受影响）：
+- **断点续传**：huggingface_hub 1.30 每个文件都下到唯一临时名、失败即删（Python 版取消后实际只保留已完成的文件）；Swift 版 LFS 分片保存为 `blobs/<etag>.incomplete`，重试时以 `Range` 续传（服务器不支持时自动从头写），「可重试续传」的文案因此名副其实。小的 git 文件不续传（可能 gzip 传输）。
+- **完整性校验**：每个文件落盘前校验 sha256 / git-sha1，Python 只校验大小。
+- 不创建 `<cache>/.locks/`（仅一个下载器，且 rename 是原子的）；Xet 存储的文件走 resolve 的普通 HTTP 回退（huggingface_hub 未装 hf_xet 时同样如此）；不读取 `~/.cache/huggingface/token`（默认模型均为公开仓库）。
+- 进度事件形状沿用 download.py：每个文件开始时发一次累计进度（detail=文件名，total=全部文件大小），传输中发该文件自身进度（detail=tqdm 的 desc，超 40 字符取尾部加「(…)」，≥0.1 s 节流）。进度条因此在两种比例间跳变，与 Python 版一致，保持未改。
 
-### Phase 4 — 下载器（1 周）
-
-`ModelDownloader.swift`：`HubApi`（swift-transformers）或自写——model_info(files_metadata) → 扩展名过滤（**含 `.jinja`**）→ 钉 commit SHA 逐文件下载 → 进度回调映射 `progress` 事件（含 `role` 区分 ASR/翻译）→ 取消（保留已缓存 blob 续传）。替换 BackendCore 中「下载功能尚未接入」的两处报错，实现 downloader 状态与 `cancel_download`。验收：下载后缓存目录布局与 Python 版逐字节同构，同一份缓存可被双轨互相识别。
+**Phase 4 验证清单**（Apple Silicon Mac）：
+1. `swift build` 与 `RECORDER_INPROCESS=1 swift build -c release` 编译通过（重点核对：`FileTransfer` 的 URLSession 代理方法签名能被调用、`AsyncThrowingStream` 取消时 `onTermination` 触发、CryptoKit `Insecure.SHA1`）。
+2. `./scripts/test_backend.sh`（54 项）与 `./scripts/test_download.sh`（8 项；有 `.venv` 时含 Python 对拍）全绿。
+3. `./scripts/test_download.sh hub mlx-community/Qwen3-4B-Instruct-2507-4bit`：用真实 Hub 的 model_info 核对 `models/` 中 Python 下载的缓存——每个指针的链接目标与大小都应与 Swift 版会写入的一致（不下载权重）。可再加 `--full` 实际下载到临时目录并逐字节比较（约 2.3 GB）。
+4. `RECORDER_INPROCESS=1 ./scripts/build.sh` 后在 app 中：删除（或改名）某个模型缓存后点「下载模型」→ 进度与文件名显示 → 自动加载就绪；下载中点「取消下载」→ 状态回退、再次下载从断点继续；翻译模型同样验证一次（设置 → 翻译 →「下载翻译模型」）。
+5. 双轨互认：Swift 版下载的缓存用默认（Python sidecar）构建加载一次，反之亦然。结果写入 `docs/VALIDATION.md`。
 
 ### Phase 5 — 拆除与瘦身（3–5 天）
 
@@ -126,6 +144,6 @@ AppModel 改动最小化：`transport` 换成 `BackendChannel?`；`launch()` 按
 - 模型快照（已缓存）：`~/Library/Application Support/LocalRecorder/models/models--mlx-community--Qwen3-ASR-1.7B-bf16/snapshots/e1f6c266914abc5a46e8756e02580f834a6cf8a7`；翻译模型 `models--mlx-community--Qwen3-4B-Instruct-2507-4bit` 也在。
 - Python 参照实现：`.venv/lib/python3.12/site-packages/` 下 `mlx_audio/stt/models/qwen3_asr/`、`mlx_audio/lm/generate.py`、`transformers/audio_utils.py`、`transformers/models/whisper/feature_extraction_whisper.py`；webrtcvad C 源取自 webrtcvad-wheels 2.0.14 sdist。
 - Swift 6.3.3 / macOS arm64；mlx-swift 解析为 0.32.2。注意：新版工具链下 `AsyncThrowingStream` 用 `makeAsyncIterator()`（`makeIterator` 不存在）。
-- 常用命令：`swift build`（默认，Python sidecar）/ `RECORDER_INPROCESS=1 swift build`（进程内，含 MLX 依赖；不再需要 `-Xswiftc -D`）；`./scripts/test_backend.sh`；`./scripts/verify_vad.sh`；`./scripts/verify_inprocess.sh [asr|translate]`。
+- 常用命令：`swift build`（默认，Python sidecar）/ `RECORDER_INPROCESS=1 swift build`（进程内，含 MLX 依赖；不再需要 `-Xswiftc -D`）；`./scripts/test_backend.sh`；`./scripts/verify_vad.sh`；`./scripts/verify_inprocess.sh [asr|whisper|translate]`；`./scripts/test_download.sh [hub <model_id> [--full]]`。
 - 依赖参照源码：mlx-whisper 0.4.3 wheel（`transcribe.py`、`decoding.py`、`whisper.py`、`tokenizer.py`、`audio.py`）；mlx-swift 0.32.2（`GPU.metallib`、`Memory.clearCache`、`quantize(model:filter:)`）、mlx-swift-lm main（`MLXLMCommon/Evaluate.swift` 的 `TokenIterator`、`ModelFactory.swift` 的 `load(from:using:)`、`MLXHuggingFaceMacros` 中分词器桥的写法）、mlx-audio 0.5.1 wheel（`mlx_audio/stt/models/qwen3_asr/qwen3_asr.py`）。
 - 提交记录：`3fa60d2` Phase 0 spike；`bebad79` Phase 1–2；Phase 3 模型层见本分支后续提交。spike 的调试经验（对拍方法、常见数值坑）在 `docs/SPIKE-RESULTS.md`，Phase 3 移植时先读。

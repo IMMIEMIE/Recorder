@@ -23,6 +23,8 @@ Tests:
 ./scripts/test_audio.sh          # file/system audio input conversion, EOF, stop/restart (no capture permissions needed)
 ./scripts/test_streaming_asr.sh  # streaming ASR WSS client, against tests/mock_streaming_asr_server.py
 ./scripts/test_livetranslate.sh  # LiveTranslate client, against tests/mock_livetranslate_server.py
+./scripts/test_backend.sh        # in-process backend (BackendCore/Segmenter/VAD/planner/downloader flow), no models
+./scripts/test_download.sh       # in-process model downloader against tests/mock_hub_server.py; with .venv also diffs its cache against backend/download.py
 ```
 
 There is no XCTest target. Each Swift test script compiles an explicit list of `Sources/Recorder/*.swift` files plus one `tests/*Tests.swift` into a standalone `@main` executable with `swiftc -parse-as-library` (mock servers are started by the script and passed in via env vars such as `RECORDER_MOCK_URL`). When Swift code under test gains a dependency on another source file, add that file to the script's `swiftc` line; `test_livetranslate.sh` compiles every source except `RecorderApp.swift`.
@@ -38,7 +40,7 @@ Real-model verification (needs Metal GPU and a local model snapshot; writes JSON
 ./scripts/verify_inprocess.sh [asr|whisper|translate]               # same fixtures through the in-process mlx-swift model layer (RecorderVerify)
 ```
 
-In-process refactor (`refactor/mlx-swift-*`, see `spikes/HANDOFF.md`): `Package.swift` adds the MLX dependencies, the `RecorderMLX` library, the `RecorderVerify` CLI and the `RECORDER_INPROCESS` define only when the `RECORDER_INPROCESS=1` environment variable is set (`RECORDER_INPROCESS=1 ./scripts/build.sh`); the default build still ships the Python sidecar. `Sources/Recorder/Backend/` is plain Foundation and is compiled by `scripts/test_backend.sh`; MLX code lives in `Sources/RecorderMLX/` and `Sources/Recorder/Engines/`; the Whisper port's mel filters and tiktoken vocabularies are vendored in `assets/whisper/` and bundled only by the in-process build.
+In-process refactor (`refactor/mlx-swift-*`, see `spikes/HANDOFF.md`): `Package.swift` adds the MLX dependencies, the `RecorderMLX` library, the `RecorderVerify` CLI and the `RECORDER_INPROCESS` define only when the `RECORDER_INPROCESS=1` environment variable is set (`RECORDER_INPROCESS=1 ./scripts/build.sh`); the default build still ships the Python sidecar. `Sources/Recorder/Backend/` is plain Foundation and is compiled by `scripts/test_backend.sh` and `scripts/test_download.sh`; its `ModelDownloader.swift` replaces `download.py` and must keep writing the huggingface_hub cache layout (`blobs/<sha256 or git blob id>`, relative `snapshots/<sha>/` symlinks, no `refs/` for SHA revisions) and the same extension filter including `.jinja`; MLX code lives in `Sources/RecorderMLX/` and `Sources/Recorder/Engines/`; the Whisper port's mel filters and tiktoken vocabularies are vendored in `assets/whisper/` and bundled only by the in-process build.
 
 Version bumps: the version string is hardcoded in `scripts/build.sh` (Info.plist `CFBundleShortVersionString`/`CFBundleVersion`), `scripts/package.sh` (DMG name, volume name, install notes), and `README.md`. `package.sh` refuses to overwrite an existing DMG of the same name. After replacing `assets/AppIcon.png`, run `python3 scripts/make_icon.py`.
 

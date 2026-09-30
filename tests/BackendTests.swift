@@ -91,6 +91,20 @@ final class FakeTranslatorEngine: TranslatorEngine {
     }
 }
 
+final class FakeDownloader: ModelDownloading, @unchecked Sendable {
+    var calls: [(modelID: String, revision: String)] = []
+    var result: Result<(path: String, revision: String), Error> = .failure(BackendError.value("模型缺少 config.json"))
+    var hold = false
+    func download(modelID: String, revision: String, cache: URL,
+                  progress: @escaping DownloadProgress) async throws -> (path: String, revision: String) {
+        calls.append((modelID, revision))
+        await progress("config.json", 0, 110)
+        await progress("config.json", 10, 10)
+        if hold { try await Task.sleep(nanoseconds: 60_000_000_000) }
+        return try result.get()
+    }
+}
+
 func tempRoot() -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-backend-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -635,6 +649,7 @@ final class CoreHarness {
     let asr: FakeASREngine
     let translator: FakeTranslatorEngine
     let api: FakeAPIRecognizer
+    let downloader: FakeDownloader
     let dir = tempRoot()
 
     init(asrText: String = "重复重复") {
@@ -642,7 +657,8 @@ final class CoreHarness {
         asr.text = asrText
         translator = FakeTranslatorEngine()
         api = FakeAPIRecognizer()
-        core = BackendCore(root: dir, asrEngine: asr, apiRecognizer: api, translator: translator)
+        downloader = FakeDownloader()
+        core = BackendCore(root: dir, asrEngine: asr, apiRecognizer: api, translator: translator, downloader: downloader)
     }
 
     func ready() async throws {
@@ -1009,6 +1025,95 @@ func testInvalidTargetRejectedWithoutChangingConfig() async throws {
     try expect(target == "English", "config unchanged")
 }
 
+// MARK: - Downloads (server.py download / monitor / cancel_download)
+
+let downloadedSHA = "0123456789abcdef0123456789abcdef01234567"
+
+func fakeSnapshot(_ root: URL, modelID: String, files: [String: String]) throws -> URL {
+    let snapshot = root.appendingPathComponent("models").appendingPathComponent(HubDownloader.repoFolder(modelID))
+        .appendingPathComponent("snapshots").appendingPathComponent(downloadedSHA)
+    try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+    for (name, text) in files { try Data(text.utf8).write(to: snapshot.appendingPathComponent(name)) }
+    return snapshot
+}
+
+func testDownloadThenLoadsASR() async throws {
+    let harness = CoreHarness()
+    await harness.core.attach(harness.recorder)
+    let snapshot = try fakeSnapshot(harness.dir, modelID: Backend.defaultModel, files: [
+        "config.json": #"{"model_type":"qwen3_asr"}"#, "tokenizer_config.json": "{}", "preprocessor_config.json": "{}",
+        "vocab.json": "{}", "merges.txt": "", "model.safetensors": ""])
+    harness.downloader.result = .success((snapshot.path, downloadedSHA))
+    await harness.core.control(command("download", extra: ["config": ModelConfig().asDict]))
+    let events = try await harness.waitUntil { ($0["type"] as? String) == "status" && ($0["state"] as? String) == "ready" }
+    try expect(events.first { ($0["type"] as? String) == "status" }?["detail"] as? String == "正在查询模型资源…", "query status first")
+    let progress = events.filter { ($0["type"] as? String) == "progress" }
+    try expect(progress.count == 2 && progress.allSatisfy { $0["role"] as? String == "asr" }, "progress carries role")
+    try expect(progress[0]["completed"] as? Double == 0 && progress[0]["total"] as? Double == 110, "progress reads as Double")
+    try expect(progress[1]["completed"] as? Int == 10, "progress reads as Int")
+    let states = events.filter { ($0["type"] as? String) == "status" }.map { $0["state"] as? String ?? "" }
+    try expect(states == ["downloading", "loading", "loading", "warming", "ready"], "download then load: \(states)")
+    try expect(harness.downloader.calls.first?.modelID == Backend.defaultModel, "default model requested")
+    let revision = await harness.core.config.revision
+    try expect(revision == downloadedSHA, "revision pinned to the downloaded commit")
+    let saved = try ModelConfig.parse(try JSONSerialization.jsonObject(with: Data(contentsOf: harness.dir.appendingPathComponent("config.json"))) as? [String: Any] ?? [:])
+    try expect(saved.revision == downloadedSHA, "saved config pins revision")
+}
+
+func testDownloadFailureReportsAndAllowsRetry() async throws {
+    let harness = CoreHarness()
+    await harness.core.attach(harness.recorder)
+    await harness.core.control(command("download"))
+    let events = try await harness.waitUntil { ($0["type"] as? String) == "status" && ($0["state"] as? String) == "error" }
+    let error = events.last { ($0["type"] as? String) == "error" }
+    try expect(error?["message"] as? String == "下载失败 (ValueError): 模型缺少 config.json" && error?["role"] as? String == "asr", "download.py error line")
+    try expect(events.last?["detail"] as? String == "下载失败；可重试，已下载缓存可复用", "retry hint")
+    let downloading = await harness.core.isDownloading
+    try expect(!downloading, "downloader cleared")
+    harness.recorder.clear()
+    await harness.core.control(command("download"))
+    _ = try await harness.waitUntil { ($0["type"] as? String) == "status" && ($0["state"] as? String) == "error" }
+    try expect(harness.downloader.calls.count == 2, "retry accepted")
+}
+
+func testCancelDownloadIgnoresLateOutcome() async throws {
+    let harness = CoreHarness()
+    await harness.core.attach(harness.recorder)
+    harness.downloader.hold = true
+    await harness.core.control(command("download"))
+    _ = try await harness.waitUntil { ($0["type"] as? String) == "progress" && ($0["completed"] as? Int) == 10 }
+    await harness.core.control(command("download", extra: ["role": "translator"]))
+    try expect(harness.recorder.all.last?["message"] as? String == "ValueError: 请等待当前下载结束", "one download at a time")
+    await harness.core.control(command("cancel_download"))
+    let status = harness.recorder.last("status")
+    try expect(status?["state"] as? String == "idle" && status?["detail"] as? String == "下载已取消，可重试续传", "cancel restores state")
+    let downloading = await harness.core.isDownloading
+    try expect(!downloading, "downloader cleared")
+    let count = harness.recorder.all.count
+    for _ in 0..<1000 { await Task.yield() }
+    try expect(harness.recorder.all.count == count, "cancelled download reports nothing")
+    await harness.core.control(command("cancel_download"))
+    try expect(harness.recorder.all.count == count, "cancel without a download is a no-op")
+}
+
+func testTranslatorDownloadThenLoads() async throws {
+    let harness = CoreHarness()
+    await harness.core.attach(harness.recorder)
+    harness.translator.isLoaded = false
+    let snapshot = try fakeSnapshot(harness.dir, modelID: Backend.defaultTranslator, files: [
+        "config.json": #"{"model_type":"qwen3"}"#, "tokenizer_config.json": "{}", "tokenizer.json": "{}",
+        "chat_template.jinja": "{{ messages }}", "model.safetensors": ""])
+    harness.downloader.result = .success((snapshot.path, downloadedSHA))
+    await harness.core.control(command("download", extra: ["role": "translator", "translation": ["provider": "local"]]))
+    let events = try await harness.waitUntil { ($0["type"] as? String) == "translator" && ($0["state"] as? String) == "ready" }
+    let translator = events.filter { ($0["type"] as? String) == "translator" }
+    try expect(translator.first?["state"] as? String == "downloading" && translator.first?["detail"] as? String == "正在查询翻译模型资源…", "translator query status")
+    try expect(events.filter { ($0["type"] as? String) == "progress" }.allSatisfy { $0["role"] as? String == "translator" }, "translator progress role")
+    try expect(!events.contains { ($0["type"] as? String) == "status" }, "ASR status untouched")
+    let saved = await harness.core.translation
+    try expect(saved.revision == downloadedSHA && saved.enabled, "translator revision pinned and enabled")
+}
+
 @main struct BackendTests {
     static func main() async throws {
         let started = Date()
@@ -1073,6 +1178,10 @@ func testInvalidTargetRejectedWithoutChangingConfig() async throws {
         await run("enable without model", testEnablingWithoutDownloadedModelReportsAndTurnsOff)
         await run("api provider local", testAPIProviderPersistsAndNeverCallsLocalTranslator)
         await run("invalid target", testInvalidTargetRejectedWithoutChangingConfig)
+        await run("download then load", testDownloadThenLoadsASR)
+        await run("download failure + retry", testDownloadFailureReportsAndAllowsRetry)
+        await run("cancel download", testCancelDownloadIgnoresLateOutcome)
+        await run("translator download", testTranslatorDownloadThenLoads)
         print("\(passed) passed, \(failures) failed in \(String(format: "%.1fs", -started.timeIntervalSinceNow))")
         if failures > 0 { exit(1) }
     }
