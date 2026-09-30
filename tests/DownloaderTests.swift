@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 // ModelDownloader against tests/mock_hub_server.py (scripts/test_download.sh), plus a layout check
-// against a real Hugging Face cache written by the Python build (`hub` mode).
+// against a real Hugging Face cache written by huggingface_hub, e.g. by the former Python build (`hub` mode).
 
 struct TestFailure: Error { let message: String }
 func expect(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
@@ -219,24 +219,6 @@ func testUnsafeNamesRejected() throws {
     try expect(HubDownloader.displayName(String(repeating: "a", count: 41)) == "(…)" + String(repeating: "a", count: 40), "tqdm desc truncation")
 }
 
-/// scripts/test_download.sh runs backend/download.py against the same mock first when the Python
-/// environment is present; both builds must leave byte-identical cache folders.
-func testPythonParity() async throws {
-    guard let reference = ProcessInfo.processInfo.environment["RECORDER_PYTHON_CACHE"] else {
-        print("SKIP python parity (no .venv with huggingface_hub)")
-        return
-    }
-    let cache = tempCache()
-    defer { try? FileManager.default.removeItem(at: cache) }
-    _ = try await download("mock/tiny", cache: cache)
-    let python = try tree(URL(fileURLWithPath: reference).appendingPathComponent("models--mock--tiny"))
-    let swift = try tree(cache.appendingPathComponent("models--mock--tiny"))
-    let differences = Set(python.keys).union(swift.keys).filter { python[$0] != swift[$0] }.sorted()
-    try expect(differences.isEmpty, "cache folders differ: \(differences.map { "\($0): python=\(python[$0] ?? "-") swift=\(swift[$0] ?? "-")" })")
-    let tag = try String(contentsOf: URL(fileURLWithPath: reference).appendingPathComponent("CACHEDIR.TAG"), encoding: .utf8)
-    try expect(tag == HubDownloader.cacheDirTag, "CACHEDIR.TAG matches huggingface_hub")
-}
-
 // MARK: - Real hub (`hub <model_id> <cache> [--full]`)
 
 /// Compares the layout the Swift downloader would write against a cache the Python build downloaded:
@@ -310,7 +292,6 @@ func checkRealHub(modelID: String, reference: URL, full: Bool) async throws {
         await run("corrupt blob rejected", testCorruptBlobRejected)
         await run("errors match download.py", testErrorsMatchDownloadPy)
         await run("unsafe names rejected", testUnsafeNamesRejected)
-        await run("python parity", testPythonParity)
         print("\(passed) passed, \(failures) failed in \(String(format: "%.1fs", -started.timeIntervalSinceNow))")
         if failures > 0 { exit(1) }
     }

@@ -2,8 +2,9 @@ import SwiftUI
 import AVFoundation
 import Carbon
 import UniformTypeIdentifiers
-#if RECORDER_INPROCESS
-import RecorderMLX
+// SwiftPM builds import the backend module; the swiftc test scripts compile its sources into one module.
+#if canImport(RecorderBackend)
+import RecorderBackend
 #endif
 
 struct TranslationPart {
@@ -71,7 +72,7 @@ final class AppModel: ObservableObject {
     @Published var progressLabel = ""
     static let translatorQwenID = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
     static let translatorHunyuanID = "mlx-community/Hunyuan-MT-7B-4bit"
-    /// Must match TRANSLATION_TARGETS in backend/core.py.
+    /// Must match Backend.translationTargets (Sources/RecorderBackend/BackendTypes.swift).
     static let translationTargets = ["简体中文", "繁體中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]
     @Published var translationProvider = "local"
     @Published var translationAPIProfile = ""
@@ -94,10 +95,6 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(shortcutKey, forKey: "shortcutKey"); registerShortcut() }
     }
     private var transport: BackendChannel?
-    private var process: Process?
-    private var stderrPipe: Pipe?
-    private let diagnosticLock = NSLock()
-    private var backendDiagnostic = ""
     private let capture = AudioCapture()
     private var session = ""
     private var seen = Set<String>()
@@ -113,7 +110,6 @@ final class AppModel: ObservableObject {
     private var sleepObserver: NSObjectProtocol?
     @Published private var pendingStart = false
     private var generation = UUID()
-    private var socketPath = ""
     @Published private(set) var liveConfiguration = LiveTranslateConfiguration()
     @Published var liveEndpoint = LiveTranslateConfiguration().endpoint
     @Published var liveLanguage = "zh"
@@ -247,19 +243,9 @@ final class AppModel: ObservableObject {
         let currentGeneration = generation
         state = "connecting"; error = ""
         translatorSelectionLoaded = false
-#if RECORDER_INPROCESS
-        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("LocalRecorder")
-        do {
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            let configURL = root.appendingPathComponent("config.json")
-            let initial = Bundle.main.resourceURL!.appendingPathComponent("initial-config.json")
-            if !FileManager.default.fileExists(atPath: configURL.path), FileManager.default.fileExists(atPath: initial.path) { try FileManager.default.copyItem(at: initial, to: configURL) }
-        } catch { self.error = "无法创建本地配置目录"; state = "error"; return }
-        // SwiftPM builds of mlx-swift carry no Metal kernels; build.sh bundles mlx.metallib.
-        MLXRuntime.configure(metallib: Bundle.main.resourceURL?.appendingPathComponent("mlx.metallib"))
-        ASRValidation.whisperAssets = Bundle.main.resourceURL?.appendingPathComponent("whisper")
-        let core = BackendCore(root: root, asrEngine: MLXASREngine(), translator: MLXTranslatorEngine())
-        let channel = InProcessChannel(core: core)
+        let channel: BackendChannel
+        do { channel = try LocalBackend.makeChannel() }
+        catch { self.error = "无法创建本地配置目录"; state = "error"; return }
         channel.onEvent = { [weak self] event in DispatchQueue.main.async {
             guard let self, self.generation == currentGeneration else { return }
             self.handle(event)
@@ -270,80 +256,6 @@ final class AppModel: ObservableObject {
         } }
         transport = channel
         command("hello")
-#else
-        let resources = Bundle.main.resourceURL!
-        let python = resources.appendingPathComponent("runtime/bin/python3")
-        let script = resources.appendingPathComponent("backend/server.py")
-        guard FileManager.default.isExecutableFile(atPath: python.path) else {
-            state = "error"; error = "运行环境缺失，请使用 scripts/build.sh 构建完整应用"; return
-        }
-        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("LocalRecorder")
-        do {
-            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-            let configURL = root.appendingPathComponent("config.json")
-            let initial = resources.appendingPathComponent("initial-config.json")
-            if !FileManager.default.fileExists(atPath: configURL.path), FileManager.default.fileExists(atPath: initial.path) { try FileManager.default.copyItem(at: initial, to: configURL) }
-        } catch { self.error = "无法创建本地配置目录"; state = "error"; return }
-        socketPath = "/tmp/recorder-\(UUID().uuidString).sock"
-        let process = Process()
-        process.executableURL = python
-        process.arguments = [script.path, "--socket", socketPath, "--root", root.path]
-        var env = ProcessInfo.processInfo.environment
-        env["PYTHONUNBUFFERED"] = "1"
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env["NUMBA_CACHE_DIR"] = root.appendingPathComponent("numba-cache").path
-        env["HF_HUB_DISABLE_TELEMETRY"] = "1"
-        env["HF_HUB_OFFLINE"] = "1"
-        env["TRANSFORMERS_OFFLINE"] = "1"
-        env["TOKENIZERS_PARALLELISM"] = "false"
-        process.environment = env
-        process.standardOutput = FileHandle.nullDevice
-        let stderr = Pipe()
-        stderrPipe = stderr
-        diagnosticLock.lock(); backendDiagnostic = ""; diagnosticLock.unlock()
-        stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let self else { return }
-            self.diagnosticLock.lock()
-            self.backendDiagnostic = String((self.backendDiagnostic + String(decoding: data, as: UTF8.self)).suffix(2000))
-            self.diagnosticLock.unlock()
-        }
-        process.standardError = stderr
-        process.terminationHandler = { [weak self] child in DispatchQueue.main.async {
-            guard let self, self.generation == currentGeneration else { return }
-            self.stopInputs(); self.state = "error"
-            self.diagnosticLock.lock(); let diagnostic = self.backendDiagnostic; self.diagnosticLock.unlock()
-            self.error = "推理服务退出（代码 \(child.terminationStatus)）。点击重新连接恢复。\n" + diagnostic
-        } }
-        do { try process.run(); self.process = process }
-        catch { state = "error"; self.error = "无法启动 Python 运行环境：\(error.localizedDescription)"; return }
-        let path = socketPath
-        DispatchQueue.global().async { [weak self] in
-            for _ in 0..<100 {
-                let channel = Transport()
-                do {
-                    try channel.connect(path: path)
-                    DispatchQueue.main.async {
-                        guard let self, self.generation == currentGeneration else { channel.close(); return }
-                        self.transport = channel
-                        channel.onEvent = { [weak self] event in DispatchQueue.main.async {
-                            guard self?.generation == currentGeneration else { return }; self?.handle(event)
-                        } }
-                        channel.onFailure = { [weak self] message in DispatchQueue.main.async {
-                            guard let self, self.generation == currentGeneration else { return }
-                            self.stopInputs(); self.state = "error"; self.error = message
-                        } }
-                        self.command("hello")
-                    }
-                    return
-                } catch { Thread.sleep(forTimeInterval: 0.1) }
-            }
-            DispatchQueue.main.async {
-                guard self?.generation == currentGeneration, self?.process?.isRunning == true else { return }
-                self?.state = "error"; self?.error = "推理服务连接超时，请重新连接"
-            }
-        }
-#endif
     }
 
     func shutdown() {
@@ -362,11 +274,6 @@ final class AppModel: ObservableObject {
         audioLock.lock(); accepting = false; audioLock.unlock()
         stopInputs()
         transport?.close(); transport = nil
-        if let process, process.isRunning { process.terminate() }
-        process = nil
-        stderrPipe?.fileHandleForReading.readabilityHandler = nil
-        stderrPipe = nil
-        if !socketPath.isEmpty { try? FileManager.default.removeItem(atPath: socketPath) }
     }
 
     private func command(_ name: String, extra: [String:Any] = [:]) {

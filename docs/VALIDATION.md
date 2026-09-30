@@ -91,3 +91,23 @@
 - 已定稿且完整收到译音的文本块右下角显示播放按钮，支持再次播放、停止和切换段落；重播会停止本次自动译音，字幕继续更新。
 - 译音仅缓存在内存中，清空文本或退出应用后释放；完成片段最多保留 128 MB，超出时淘汰最早片段，单段上限 30 秒。
 - `scripts/test_livetranslate.sh` 通过，新增覆盖音频先到、定稿与音频完成关联、重复事件、重复读取、跨会话隔离、容量淘汰和清空；现有 WebSocket、文件输入与离线播放回归通过。尚未用真实服务及实体输出设备验收重播。
+
+## 2026-09-30 — mlx-swift 单进程重构（0.4.0）
+
+### Phase 3 模型层对拍（macOS 27.0，Apple Silicon，release 构建）
+
+| 模型 | 三个 fixture 文本 | 单次耗时 Swift / Python | MLX 峰值 Swift / Python |
+| --- | --- | --- | --- |
+| Qwen3-ASR-1.7B-bf16（auto） | 与 `model-verification.json` 逐字一致 | 865/930/744 ms vs 505/487/392 ms | 4.95 GB / 5.17 GB |
+| whisper-large-v3-turbo（auto） | 与 `whisper-verification.json` 逐字一致 | 744/680/717 ms vs 469/424/451 ms（`--language Chinese` 504 ms） | 2.18 GB / 2.55 GB |
+| Qwen3-4B-Instruct-2507-4bit 翻译 | 译文合理，无 `<think>` | 首 token 176–182 ms，21–30 tok/s | 2.52 GB |
+
+Swift 版单次转写慢约 1.6–1.8×（spike 时 ≈1.0×），待空载复测。数据：`docs/*-verification-swift.json`。
+
+### Phase 4 下载器
+
+按 `spikes/HANDOFF.md` 的 Phase 4 清单在 macOS 上验证通过（提交 `3f51422` 含三处编译/测试修正）：缓存布局与 huggingface_hub 相同，Python 与 Swift 两版可共用同一份缓存。
+
+### Phase 5（删除 Python 后端）
+
+待验证：编译、全部 Swift 测试、`verify_inprocess.sh pipeline`、DMG 体积、全新安装与旧版升级回归（清单见 `spikes/HANDOFF.md` §4）。

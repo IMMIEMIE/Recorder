@@ -21,27 +21,29 @@ func validModelID(_ modelID: String) -> Bool {
     return parts.count == 2 && parts.allSatisfy { !$0.isEmpty } && !modelID.contains("..")
 }
 
-struct ModelConfig: Equatable {
-    var schemaVersion = 1
-    var modelID = Backend.defaultModel
-    var localModelPath = ""
-    var revision = ""
-    var language = "auto"
-    // max_segment_seconds bounds inference chunks, never finalization.
-    var previewIntervalMS = 1200
-    var endpointMode = "smart"
-    var endpointSilenceMS = 1000
-    var maxSegmentSeconds = 18
-    var provider = "local"
-    var apiBaseURL = ""
-    var apiModel = ""
-    var apiProtocol = "openai"
+public struct ModelConfig: Equatable {
+    public init() {}
 
-    static let fields = ["schema_version", "model_id", "local_model_path", "revision", "language",
+    public var schemaVersion = 1
+    public var modelID = Backend.defaultModel
+    public var localModelPath = ""
+    public var revision = ""
+    public var language = "auto"
+    // max_segment_seconds bounds inference chunks, never finalization.
+    public var previewIntervalMS = 1200
+    public var endpointMode = "smart"
+    public var endpointSilenceMS = 1000
+    public var maxSegmentSeconds = 18
+    public var provider = "local"
+    public var apiBaseURL = ""
+    public var apiModel = ""
+    public var apiProtocol = "openai"
+
+    public static let fields = ["schema_version", "model_id", "local_model_path", "revision", "language",
                          "preview_interval_ms", "endpoint_mode", "endpoint_silence_ms", "max_segment_seconds",
                          "provider", "api_base_url", "api_model", "api_protocol"]
 
-    var asDict: [String: Any] {
+    public var asDict: [String: Any] {
         ["schema_version": schemaVersion, "model_id": modelID, "local_model_path": localModelPath,
          "revision": revision, "language": language, "preview_interval_ms": previewIntervalMS,
          "endpoint_mode": endpointMode, "endpoint_silence_ms": endpointSilenceMS,
@@ -49,9 +51,9 @@ struct ModelConfig: Equatable {
          "api_model": apiModel, "api_protocol": apiProtocol]
     }
 
-    func save(_ path: URL) throws { try ConfigIO.save(path, asDict) }
+    public func save(_ path: URL) throws { try ConfigIO.save(path, asDict) }
 
-    static func parse(_ values: [String: Any]) throws -> ModelConfig {
+    public static func parse(_ values: [String: Any]) throws -> ModelConfig {
         let unknown = Set(values.keys).subtracting(fields).sorted()
         if !unknown.isEmpty {
             throw BackendError.value("未知配置字段: \(unknown.map { "'\($0)'" }.joined(separator: ", "))")
@@ -126,26 +128,28 @@ struct ModelConfig: Equatable {
     }
 }
 
-struct TranslationConfig: Equatable {
+public struct TranslationConfig: Equatable {
+    public init() {}
+
     /// Saved separately from the ASR config so each model role commits atomically on its own.
-    var schemaVersion = 1
-    var enabled = false
-    var provider = "local"
-    var apiProfile = ""
-    var targetLanguage = "简体中文"
-    var modelID = Backend.defaultTranslator
-    var revision = ""
+    public var schemaVersion = 1
+    public var enabled = false
+    public var provider = "local"
+    public var apiProfile = ""
+    public var targetLanguage = "简体中文"
+    public var modelID = Backend.defaultTranslator
+    public var revision = ""
 
-    static let fields = ["schema_version", "enabled", "provider", "api_profile", "target_language", "model_id", "revision"]
+    public static let fields = ["schema_version", "enabled", "provider", "api_profile", "target_language", "model_id", "revision"]
 
-    var asDict: [String: Any] {
+    public var asDict: [String: Any] {
         ["schema_version": schemaVersion, "enabled": enabled, "provider": provider,
          "api_profile": apiProfile, "target_language": targetLanguage, "model_id": modelID, "revision": revision]
     }
 
-    func save(_ path: URL) throws { try ConfigIO.save(path, asDict) }
+    public func save(_ path: URL) throws { try ConfigIO.save(path, asDict) }
 
-    static func parse(_ values: [String: Any]) throws -> TranslationConfig {
+    public static func parse(_ values: [String: Any]) throws -> TranslationConfig {
         let unknown = Set(values.keys).subtracting(fields).sorted()
         if !unknown.isEmpty {
             throw BackendError.value("未知翻译配置字段: \(unknown.map { "'\($0)'" }.joined(separator: ", "))")

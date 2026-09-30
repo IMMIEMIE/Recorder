@@ -1,7 +1,7 @@
 # 重构实现文档：移除 Python 后端，迁移至 mlx-swift 单进程架构
 
 > 分支：`refactor/mlx-swift-20260929`
-> 状态：Phase 0（spike）、Phase 1（进程内通道与后端骨架）、Phase 2（信号链移植）、Phase 3（模型层，macOS 对拍逐字一致）已完成；Phase 4（下载器）代码已提交、待 macOS 编译与对拍；Phase 5 待实施。实现与规格的偏差记录在 §4 各阶段之后的「实施备注」。
+> 状态：Phase 0（spike）、Phase 1（进程内通道与后端骨架）、Phase 2（信号链移植）、Phase 3（模型层，macOS 对拍逐字一致）、Phase 4（下载器）已完成；Phase 5（拆除与瘦身）代码已提交、待 macOS 编译与回归。实现与规格的偏差记录在 §4 各阶段之后的「实施备注」。
 > 前置结论：安装包 547 MB 中约 96% 是捆绑的 Python ML 推理栈（1.2 GB 磁盘），其中 torch 526 MB 仅为 mlx-whisper 的传递依赖。Swift 应用本体仅 2.5 MB。
 
 ---
@@ -286,6 +286,14 @@ Phase 1–2 实施备注（2026-09-29）：
 - 预期产物：DMG ~100-150 MB。
 
 验收：全新目录安装 → 下载默认模型 → 麦克风转写 + 本地翻译 + 字幕 + 导出全流程回归；旧安装（已有 models 缓存与 config.json）升级后模型与配置直接可用。
+
+**Phase 5 实施备注**（代码已提交，尚未在 macOS 上编译；清单见 `spikes/HANDOFF.md` §4）：
+
+- 为让验证 CLI 复用后端，`Sources/Recorder/Backend` 拆为库 target `RecorderBackend`，引擎适配器拆为 `RecorderEngines`（依赖 `RecorderBackend` + `RecorderMLX`），跨模块 API 标 `public`。测试脚本仍以 swiftc 显式文件列表编译，同一模块内 `public` 无影响；`AppModel` 用 `#if canImport(RecorderBackend)` 兼容 `test_livetranslate.sh` 的单模块编译，app 侧的后端构造集中在 `LocalBackend.swift`（测试用 `tests/LocalBackendStub.swift` 替换）。
+- Metal 内核：mlx-swift 以 JIT 模式构建 MLX（`nojit_kernels.cpp` 被排除），只需预编译 `Source/Cmlx/mlx-generated/metal` 下的 10 个内核（与其 Xcode 工程一致），其余（含 macOS 26.2 的 NAX 内核）运行时编译。因此 `build_metallib.sh` 以 `-mmacosx-version-min=14.0` 编译一个通用 metallib，既不依赖 Python wheel，也无需按系统版本区分。需要完整 Xcode 的 Metal Toolchain。
+- `initial-config.json` 取消：原先 build.sh 用 Python `Config` 钉住本机缓存的 Qwen revision；现在首启无配置时由 `ModelCache` 解析最新有效快照，旧安装的 `config.json` 原样沿用。
+- 验证：`RecorderVerify pipeline` 复现 verify_pipeline / verify_translation / verify_switching 的场景（见 HANDOFF 表格）；verify_endpoints 的「旧版定稿」基线与强制切段断言不再复现（前者依赖给 Python 打补丁，后者与当前「从不强制定稿」设计相悖）。
+- 删除 `backend/`、`requirements.lock`、`setup.sh`、Python 单元测试与 verify 脚本；它们的历史结果保留在 `docs/*.json` 作参照，源码可从 Phase 5 之前的提交取回。
 
 ---
 

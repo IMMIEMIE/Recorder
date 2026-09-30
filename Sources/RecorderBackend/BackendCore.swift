@@ -1,12 +1,12 @@
 import Foundation
 
-enum ASRValidation {
+public enum ASRValidation {
     /// Bundled Whisper assets (Contents/Resources/whisper), set by the app before the backend starts.
     /// nil skips the asset check (builds without the MLX model layer, and the backend tests).
-    static var whisperAssets: URL?
+    public static var whisperAssets: URL?
 
     /// adapter.py validate_config: file-level snapshot checks per architecture.
-    static func validate(config: ModelConfig, path: URL) throws {
+    public static func validate(config: ModelConfig, path: URL) throws {
         var systemInfo = utsname()
         uname(&systemInfo)
         let machine = withUnsafeBytes(of: &systemInfo.machine) { buffer -> String in
@@ -144,9 +144,9 @@ final class SegmentSink {
     var items: [SegmentJob] = []
 }
 
-/// Port of backend/server.py. The actor's mailbox replaces the Condition(RLock) domain: audio
+/// Port of the former Python backend/server.py. The actor's mailbox replaces the Condition(RLock) domain: audio
 /// boundaries, the job queue, and recognition feedback all mutate here, one message at a time.
-actor BackendCore {
+public actor BackendCore {
     static let maxPendingTranslations = 4
     static let translatorBusy = ["downloading", "loading", "warming"]
 
@@ -194,10 +194,14 @@ actor BackendCore {
     private var bootFlushed = false
     private var pumping = false
 
-    init(root: URL, asrEngine: ASREngine = PlaceholderASREngine(),
-         apiRecognizer: APIRecognizing = APIRecognizer(),
-         translator: TranslatorEngine = PlaceholderTranslatorEngine(),
-         downloader: ModelDownloading = HubDownloader()) {
+    /// The app's backend: the given local engines plus the real API recognizer and Hub downloader.
+    public init(root: URL, asrEngine: ASREngine, translator: TranslatorEngine) {
+        self.init(root: root, asrEngine: asrEngine, apiRecognizer: APIRecognizer(), translator: translator,
+                  downloader: HubDownloader())
+    }
+
+    init(root: URL, asrEngine: ASREngine, apiRecognizer: APIRecognizing, translator: TranslatorEngine,
+         downloader: ModelDownloading) {
         self.root = root
         self.asr = asrEngine
         self.apiRecognizer = apiRecognizer
@@ -221,7 +225,7 @@ actor BackendCore {
         }
     }
 
-    func attach(_ sink: any BackendEventSink) {
+    public func attach(_ sink: any BackendEventSink) {
         channel = sink
         for event in pendingEvents { sink.deliver(event) }
         pendingEvents.removeAll()
@@ -619,7 +623,7 @@ actor BackendCore {
 
     // MARK: - Commands (control())
 
-    func control(_ message: [String: Any]) {
+    public func control(_ message: [String: Any]) {
         guard alive else { return }
         do {
             if !bootFlushed {
@@ -850,7 +854,7 @@ actor BackendCore {
 
     // MARK: - Audio
 
-    func audio(_ payload: Data) {
+    public func audio(_ payload: Data) {
         do {
             guard payload.count >= 4 else { throw BackendError.value("音频头过长") }
             let size = (Int(payload[0]) << 24) | (Int(payload[1]) << 16) | (Int(payload[2]) << 8) | Int(payload[3])
@@ -892,7 +896,7 @@ actor BackendCore {
     }
 
     /// Python's shutdown simply terminates the process; the in-process core releases its engines instead.
-    func shutdown() async {
+    public func shutdown() async {
         alive = false
         download?.task.cancel()
         download = nil

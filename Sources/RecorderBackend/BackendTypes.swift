@@ -1,13 +1,13 @@
 import Foundation
 
-enum Backend {
-    static let rate = 16000
-    static let frame = 320  // 20 ms, signed little-endian PCM16 mono
-    static let maxMessage = 256 * 1024
-    static let defaultModel = "mlx-community/Qwen3-ASR-1.7B-bf16"
-    static let defaultTranslator = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
+public enum Backend {
+    public static let rate = 16000
+    public static let frame = 320  // 20 ms, signed little-endian PCM16 mono
+    public static let maxMessage = 256 * 1024
+    public static let defaultModel = "mlx-community/Qwen3-ASR-1.7B-bf16"
+    public static let defaultTranslator = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
     // UI value -> (English name for prompts, Chinese name for Chinese-instruction prompts)
-    static let translationTargets: [String: (english: String, chinese: String)] = [
+    public static let translationTargets: [String: (english: String, chinese: String)] = [
         "简体中文": ("Simplified Chinese", "简体中文"),
         "繁體中文": ("Traditional Chinese", "繁体中文"),
         "English": ("English", "英语"),
@@ -21,27 +21,31 @@ enum Backend {
 }
 
 /// Monotonic seconds, mirroring Python's time.monotonic().
-func backendNow() -> Double { Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000 }
+public func backendNow() -> Double { Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000 }
 
 /// Backend errors carry the original Python exception name so event text stays identical.
-struct BackendError: Error, CustomStringConvertible {
-    let kind: String
-    let message: String
-    var description: String { kind.isEmpty ? message : "\(kind): \(message)" }
-    static func value(_ message: String) -> BackendError { BackendError(kind: "ValueError", message: message) }
+public struct BackendError: Error, CustomStringConvertible {
+    public let kind: String
+    public let message: String
+    public init(kind: String, message: String) {
+        self.kind = kind
+        self.message = message
+    }
+    public var description: String { kind.isEmpty ? message : "\(kind): \(message)" }
+    public static func value(_ message: String) -> BackendError { BackendError(kind: "ValueError", message: message) }
 }
 
-func backendErrorText(_ error: Error) -> String {
+public func backendErrorText(_ error: Error) -> String {
     if let backend = error as? BackendError { return backend.description }
     return "\(String(describing: type(of: error))): \(error.localizedDescription)"
 }
 
-func backendErrorKind(_ error: Error) -> String {
+public func backendErrorKind(_ error: Error) -> String {
     if let backend = error as? BackendError { return backend.kind }
     return String(describing: type(of: error))
 }
 
-func backendErrorMessage(_ error: Error) -> String {
+public func backendErrorMessage(_ error: Error) -> String {
     (error as? BackendError)?.message ?? error.localizedDescription
 }
 
@@ -83,18 +87,18 @@ struct StreamFinal {
     var text: String
 }
 
-protocol Transcriber: AnyObject {
+public protocol Transcriber: AnyObject {
     func transcribe(_ pcm: Data) async throws -> (text: String, elapsedMS: Int)
 }
 
-protocol ASREngine: Transcriber {
+public protocol ASREngine: Transcriber {
     var isLoaded: Bool { get }
     func load(config: ModelConfig, path: String) async throws
     func warmup() async throws
     func unload() async
 }
 
-protocol TranslatorEngine: AnyObject {
+public protocol TranslatorEngine: AnyObject {
     var isLoaded: Bool { get }
     var modelID: String { get }
     func load(config: TranslationConfig, path: String) async throws

@@ -1,8 +1,8 @@
-# 交接文档：mlx-swift 单进程重构（Phase 0–3 已完成 ✅，Phase 4 下载器代码已落地待 macOS 验证）
+# 交接文档：mlx-swift 单进程重构（Phase 0–4 已完成 ✅，Phase 5 拆除 Python 代码已落地待 macOS 验证）
 
 > 分支：`refactor/mlx-swift-20260929`
-> 日期：2026-09-29（Phase 0–2 完成、Phase 3 代码提交）；2026-09-30（Phase 3 在 macOS 上编译并对拍通过；Phase 4 下载器代码提交，尚未在 macOS 上编译）
-> **状态更新：Phase 0 spike 通过（[docs/SPIKE-RESULTS.md](../docs/SPIKE-RESULTS.md)）；Phase 1–2 进程内后端骨架与信号链已落地（提交 `3fa60d2`、`bebad79`）。Phase 3 模型层（Qwen3-ASR、Whisper、本地翻译）已在 Apple Silicon Mac 上编译并对拍：三个 fixture 的 Qwen3-ASR 与 Whisper 转写与 Python 逐字一致（修正见提交 `4b338d2`、`aefe7d2`）。Phase 4 下载器（`Sources/Recorder/Backend/ModelDownloader.swift`）与 BackendCore 的 download/cancel_download 已编写，编写环境为 Linux 云端容器，**代码未经编译**。下一步：在 Mac 上按 §4「Phase 4 验证清单」编译、跑测试、与 Python 缓存对拍。**
+> 日期：2026-09-29（Phase 0–2 完成、Phase 3 代码提交）；2026-09-30（Phase 3、Phase 4 在 macOS 上编译并验证通过；Phase 5 删除 Python 后端并转正单进程构建，尚未在 macOS 上编译）
+> **状态更新：Phase 0–4 已完成并在 Apple Silicon Mac 上验证（Phase 3 对拍逐字一致；Phase 4 下载器测试与真实缓存核对通过，修正见提交 `3f51422`）。Phase 5 已编写：删除 `backend/`、Python 测试与 verify 脚本、`requirements.lock`、`setup.sh`；`RECORDER_INPROCESS` 开关转正（`Package.swift` 无条件依赖 MLX）；`Sources/Recorder/Backend` 拆为 `RecorderBackend` 库、引擎拆为 `RecorderEngines`；`RecorderVerify pipeline` 取代 verify_pipeline/translation/switching；metallib 由 `scripts/build_metallib.sh` 从 mlx-swift 源码编译；版本 0.4.0。编写环境为 Linux 云端容器，**Phase 5 代码未经编译**。下一步：在 Mac 上按 §4「Phase 5 验证清单」编译、跑测试与 pipeline 对拍、打包安装回归。**
 > 总体规格：[docs/REFACTOR-MLX-SWIFT.md](../docs/REFACTOR-MLX-SWIFT.md)（必读；其 §4 Phase 1–2 后已附「实施备注」记录实现与规格的偏差）
 > 本文档面向：接手后续实施的开发者（人或 AI 助手）
 
@@ -10,7 +10,7 @@
 
 ## 1. 项目一句话
 
-声笺要把 Python 双进程后端（`backend/*.py` + 捆绑 1.2 GB Python ML 栈，安装包 547 MB）重写为 mlx-swift 单进程 Swift 实现，目标 ~100-150 MB。重构分 6 阶段（规格文档 §4），**Phase 0–2 已完成；Phase 3 代码（含 Whisper）已全部写完，待 macOS 编译验证**。
+声笺要把 Python 双进程后端（`backend/*.py` + 捆绑 1.2 GB Python ML 栈，安装包 547 MB）重写为 mlx-swift 单进程 Swift 实现，目标 ~100-150 MB。重构分 6 阶段（规格文档 §4），**Phase 0–4 已完成；Phase 5（删除 Python、单进程构建转正，版本 0.4.0）代码已写完，待 macOS 编译验证**。
 
 ## 2. 已完成的工作
 
@@ -85,14 +85,13 @@ AppModel 改动最小化：`transport` 换成 `BackendChannel?`；`launch()` 按
 - `scripts/verify_vad.sh`：VAD 对拍（可复跑）。
 - 双轨开关：`RECORDER_INPROCESS=1`（环境变量）；**默认关闭，仍走 Python sidecar**。Phase 1–2 时为 `-Xswiftc -DRECORDER_INPROCESS`（两种编译均验证通过）；Phase 3 起改由 `Package.swift` 读取环境变量，同时控制 MLX 依赖与 define（见上文）。
 
-## 3. 已知偏差与阶段缺口（均有明确中文报错，不影响双轨默认路径）
+## 3. 已知偏差与阶段缺口
 
-1. **Phase 3 代码未编译**：见上文；首要任务是在 Mac 上 `RECORDER_INPROCESS=1 swift build` 并修正编译错误。
-2. **下载器未编译**（Phase 4）：`ModelDownloader.swift` 与 BackendCore 下载流程已写好、测试已写好，待 Mac 上编译与跑 `scripts/test_download.sh`。
-6. **Phase 3 推理耗时**：对拍中 Swift 单次转写比 Python 慢约 1.6–1.8×（spike 时为 1.0×），文本一致；需在空载机器上复测，若属实再用 Instruments 定位（候选：`MLXRuntime` 队列切换、Whisper/Qwen 首次调用的 kernel 编译、mel 前端）。
-3. **Whisper 未验证**：代码与 Qwen 部分一样未经编译；`ASRValidation.whisperAssets` 为 nil（后端测试、默认构建）时仍跳过资产检查。`word_timestamps`、温度回退、束搜索等 adapter 不用的 mlx_whisper 功能未移植。
-4. **Hunyuan-MT 分词器**：swift-transformers 的 `AutoTokenizer.from(modelFolder:)` 需要 `tokenizer.json`；若 `mlx-community/Hunyuan-MT-7B-4bit` 快照只有 tiktoken 词表，加载会失败（报错会走翻译失败路径，不影响识别），需实测。
-5. **metallib 来源**：开发期与进程内打包都复用 `.venv` 中 mlx 0.32.2 wheel 的 `mlx.metallib`；Phase 5 删 Python 后需改为从 mlx 源码编译（完整 Xcode + `xcrun metal`）。
+1. **Phase 5 代码未编译**：见 §4「Phase 5」；重点是模块拆分后的 `public` 边界（`RecorderBackend`/`RecorderEngines` 被 app 与 `RecorderVerify` 使用的类型、协议、成员）与 `build_metallib.sh`。
+2. **推理耗时**：Phase 3 对拍中 Swift 单次转写比 Python 慢约 1.6–1.8×（spike 时为 1.0×），文本一致；需在空载机器上复测（`verify_inprocess.sh pipeline` 的 `asr_inference_ms` 也可对照 `docs/endpoint-*-smart-metrics.json`），若属实再用 Instruments 定位（候选：`MLXRuntime` 队列切换、首次调用的 kernel JIT、mel 前端）。
+3. **Whisper 功能范围**：`word_timestamps`、温度回退、束搜索等 adapter 不用的 mlx_whisper 功能未移植。
+4. **Hunyuan-MT 分词器**：swift-transformers 的 `AutoTokenizer.from(modelFolder:)` 需要 `tokenizer.json`；若 `mlx-community/Hunyuan-MT-7B-4bit` 快照只有 tiktoken 词表，加载会失败（走翻译失败路径，不影响识别），需实测（`verify_inprocess.sh pipeline --translator mlx-community/Hunyuan-MT-7B-4bit`）。
+5. **定稿基线对比未移植**：Python 的 `verify_endpoints.py` 用一个打补丁的「旧版定稿」服务器对比智能定稿的调用次数与耗时；Swift 版只报告当前（smart/fixed）模式的调用次数与推理耗时，可与 `docs/endpoint-*-metrics.json` 的历史结果对照。强制切段场景（旧 verify_translation 的 `max_segment_seconds=5` 断言 `forced_cut`）与当前「从不强制定稿」的设计相悖，不再复现。
 
 ## 4. 待完成的工作（按序执行）
 
@@ -100,7 +99,7 @@ AppModel 改动最小化：`transport` 换成 `BackendChannel?`；`launch()` 按
 
 对拍清单 1–4 已完成（结果见 §2 Phase 3 表格）。仍待办：app 内切换 Qwen/Whisper/翻译模型时的 GPU 内存观察（清单 5）、结果写入 `docs/VALIDATION.md`（清单 6）、`verify_pipeline`/`verify_endpoints` 场景的 Swift 复现（需把 `Sources/Recorder/Backend` 拆成库 target 或在 CLI 中复用 swiftc 文件列表，按需决定）。
 
-### Phase 4 — 下载器（代码已提交，**未编译**）
+### Phase 4 — 下载器（✅ 已在 macOS 验证）
 
 | 文件 | 内容 |
 | --- | --- |
@@ -115,19 +114,32 @@ AppModel 改动最小化：`transport` 换成 `BackendChannel?`；`launch()` 按
 - 不创建 `<cache>/.locks/`（仅一个下载器，且 rename 是原子的）；Xet 存储的文件走 resolve 的普通 HTTP 回退（huggingface_hub 未装 hf_xet 时同样如此）；不读取 `~/.cache/huggingface/token`（默认模型均为公开仓库）。
 - 进度事件形状沿用 download.py：每个文件开始时发一次累计进度（detail=文件名，total=全部文件大小），传输中发该文件自身进度（detail=tqdm 的 desc，超 40 字符取尾部加「(…)」，≥0.1 s 节流）。进度条因此在两种比例间跳变，与 Python 版一致，保持未改。
 
-**Phase 4 验证清单**（Apple Silicon Mac）：
+**Phase 4 验证清单**（Apple Silicon Mac，已完成；`NSObject.hash` 命名冲突、`FakeASREngine` 初始未加载、hub 核对取链接目标大小三处修正见 `3f51422`）：
 1. `swift build` 与 `RECORDER_INPROCESS=1 swift build -c release` 编译通过（重点核对：`FileTransfer` 的 URLSession 代理方法签名能被调用、`AsyncThrowingStream` 取消时 `onTermination` 触发、CryptoKit `Insecure.SHA1`）。
 2. `./scripts/test_backend.sh`（54 项）与 `./scripts/test_download.sh`（8 项；有 `.venv` 时含 Python 对拍）全绿。
 3. `./scripts/test_download.sh hub mlx-community/Qwen3-4B-Instruct-2507-4bit`：用真实 Hub 的 model_info 核对 `models/` 中 Python 下载的缓存——每个指针的链接目标与大小都应与 Swift 版会写入的一致（不下载权重）。可再加 `--full` 实际下载到临时目录并逐字节比较（约 2.3 GB）。
 4. `RECORDER_INPROCESS=1 ./scripts/build.sh` 后在 app 中：删除（或改名）某个模型缓存后点「下载模型」→ 进度与文件名显示 → 自动加载就绪；下载中点「取消下载」→ 状态回退、再次下载从断点继续；翻译模型同样验证一次（设置 → 翻译 →「下载翻译模型」）。
 5. 双轨互认：Swift 版下载的缓存用默认（Python sidecar）构建加载一次，反之亦然。结果写入 `docs/VALIDATION.md`。
 
-### Phase 5 — 拆除与瘦身（3–5 天）
+### Phase 5 — 拆除与瘦身（代码已提交，**未编译**）
 
-- 删 `Transport.swift` socket 实现、AppModel `launch()` 进程逻辑、`backend/` 目录、`requirements.lock`、runtime 打包。
-- `build.sh`/`package.sh`：去掉 Python runtime 组装与 `initial-config.json` 钉 revision（改由 Swift 端做）；`RECORDER_INPROCESS` 开关转正；metallib 改为源码编译（需完整 Xcode 并接受许可，`xcrun metal`）。
-- 更新 README/CLAUDE 架构描述；版本号 bump。预期 DMG ~100-150 MB。
-- 验收：全新安装全流程回归；旧安装（已有 models 缓存与 config.json/translation.json）升级后无损可用；`scripts/package.sh` 拒绝打包权重的检查继续生效。
+| 改动 | 内容 |
+| --- | --- |
+| 包结构 | `Package.swift` 无条件依赖 mlx-swift（exact 0.32.2）、mlx-swift-lm（revision）、swift-transformers；target：`Cwebrtcvad` → `RecorderBackend`（原 `Sources/Recorder/Backend`，纯 Foundation）→ `RecorderEngines`（原 `Sources/Recorder/Engines`，依赖 `RecorderMLX`）→ `Recorder`（app）/ `RecorderVerify`。跨模块 API 加 `public`：`BackendCore`（新增只收 ASR/翻译引擎的 public init，内部 init 仍可注入 API 识别器与下载器）、`BackendChannel`/`BackendEventSink`/`InProcessChannel`、`ASREngine`/`TranslatorEngine`/`Transcriber`、`ModelConfig`/`TranslationConfig`（含 `public init()`）、`BackendError`、`Backend` 常量、`TranslationText.buildMessages/maxTokens`、`ASRValidation`、`WebRTCVAD`；`MLXASREngine`/`MLXTranslatorEngine` 为 public 并有 `public init()` |
+| App | 删除 `Transport.swift` 与 `AppModel.launch()` 的 Python 进程、socket、stderr 诊断逻辑；新增 `Sources/Recorder/LocalBackend.swift`（建 Application Support 目录、`MLXRuntime.configure(metallib:)`、`ASRValidation.whisperAssets`、`BackendCore` + `InProcessChannel`）。`initial-config.json` 不再生成/拷贝：无配置时 `ModelCache` 按 refs/main → mtime 解析已缓存的最新快照，结果与原先钉住本机 revision 等价 |
+| 构建 | `scripts/build_metallib.sh`：用 `xcrun metal` 编译 mlx-swift 自带的 JIT 模式内核集（`.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal` 下 10 个 `.metal`，与 mlx-swift 的 Xcode 工程一致；其余内核含 NAX 在运行时 JIT），`-mmacosx-version-min=14.0`，按源码哈希缓存到 `.build/metallib/`。`build.sh` 每次从空 bundle 组装（清掉旧版的 `runtime/`、`backend/`），只放二进制、`mlx.metallib`、`whisper/` 资产、图标；版本 0.4.0（build 5）。`package.sh` 的权重检查改为 `find`，安装说明去掉「包含 Python」、注明升级沿用模型与设置 |
+| 验证工具 | `RecorderVerify pipeline`（`Sources/RecorderVerify/Pipeline.swift`）：临时 root + 指向 `models/` 的符号链接，真实 `BackendCore` + `MLXASREngine`（计数包装）+ `MLXTranslatorEngine`，按 20 ms 实时节奏送 PCM。复现 verify_pipeline（前 1 s / 后 2 s 静音、等 final 再 stop、每个 final 的 VAD 语音结束→final 延迟、stop→ready）、verify_translation（5 组 fixture×目标语言，逐单元首字/完成延迟，同语言必须跳过）、verify_switching（Qwen→Whisper→Qwen，回切后 MLX active memory 不高于首次加载的 110%）。失败检查项使进程非零退出。`verify_inprocess.sh pipeline`（`all` 也包含）在缓存有 Whisper 时自动加 `--switch` |
+| 删除 | `backend/`、`requirements.lock`、`scripts/setup.sh`、`tests/test_*.py`、`scripts/verify_{model,pipeline,translation,switching,endpoints}.py`、`endpoint_benchmark_server.py`、`verify_vad.sh`（VAD 对拍已在 Phase 2 完成，C 源未变）；`test_download.sh` 去掉与 `download.py` 的对拍步骤（`hub` 模式仍可核对 Python 写下的真实缓存）。mock 服务器改用系统 `python3`（只用标准库） |
+| 测试脚本 | `test_backend.sh`/`test_download.sh` 编译 `Sources/RecorderBackend/*.swift`；`test_livetranslate.sh` 加编 `RecorderBackend` 源码 + `Cwebrtcvad` 目标文件 + `tests/LocalBackendStub.swift`（占位引擎、临时目录），排除 `LocalBackend.swift`；`AppModel` 以 `#if canImport(RecorderBackend)` 导入 |
+
+**Phase 5 验证清单**（Apple Silicon Mac，完整 Xcode + Metal Toolchain）：
+1. `swift build -c release` 与 `swift build -c release --product RecorderVerify` 编译通过（重点：跨模块 `public` 缺漏、`BackendCore` 两个 init 的调用、`#if canImport(RecorderBackend)`）。
+2. `./scripts/build_metallib.sh` 生成 `.build/metallib/mlx.metallib`；若 `xcrun metal` 报缺少组件，`xcodebuild -downloadComponent MetalToolchain`。
+3. `./scripts/test_backend.sh`（54 项）、`./scripts/test_download.sh`（7 项）、`./scripts/test_livetranslate.sh`、`./scripts/test_ai.sh`、`./scripts/test_audio.sh`、`./scripts/test_streaming_asr.sh` 全绿。
+4. `./scripts/verify_inprocess.sh asr`、`whisper`、`translate`：文本与 `docs/*-verification-swift.json`（Phase 3 结果）一致——这一步同时确认自编 metallib 与 wheel 版等效。
+5. `./scripts/verify_inprocess.sh pipeline`：`passed: true`；各 fixture 的 final 文本与 `docs/pipeline-verification.json`、`whisper-pipeline-verification.json`，译文与 `translation-verification.json`，切换与 `switching-verification.json` 对照。
+6. `./scripts/build.sh && ./scripts/package.sh`：记录 DMG 大小（目标 ~100–150 MB，原 547 MB）；拒绝打包权重的检查仍生效（可临时放一个 `x.safetensors` 进 bundle 验证后删除）。
+7. 回归：全新用户目录（临时改名 `~/Library/Application Support/LocalRecorder`）安装 → 下载默认模型 → 麦克风转写 + 本地翻译 + 字幕 + 导出；旧安装（0.3.x 留下的 models 缓存与 `config.json`/`translation.json`）升级后直接加载可用；API 识别、WebSocket 流式识别、LiveTranslate 各走一遍。结果写入 `docs/VALIDATION.md`。
 
 ## 5. 重要约束（不可破坏）
 
@@ -142,8 +154,8 @@ AppModel 改动最小化：`transport` 换成 `BackendChannel?`；`launch()` 按
 ## 6. 环境备忘
 
 - 模型快照（已缓存）：`~/Library/Application Support/LocalRecorder/models/models--mlx-community--Qwen3-ASR-1.7B-bf16/snapshots/e1f6c266914abc5a46e8756e02580f834a6cf8a7`；翻译模型 `models--mlx-community--Qwen3-4B-Instruct-2507-4bit` 也在。
-- Python 参照实现：`.venv/lib/python3.12/site-packages/` 下 `mlx_audio/stt/models/qwen3_asr/`、`mlx_audio/lm/generate.py`、`transformers/audio_utils.py`、`transformers/models/whisper/feature_extraction_whisper.py`；webrtcvad C 源取自 webrtcvad-wheels 2.0.14 sdist。
+- Python 参照实现（历史，Phase 5 后本地已无 `.venv` 依赖）：`.venv/lib/python3.12/site-packages/` 下 `mlx_audio/stt/models/qwen3_asr/`、`mlx_audio/lm/generate.py`、`transformers/audio_utils.py`、`transformers/models/whisper/feature_extraction_whisper.py`；webrtcvad C 源取自 webrtcvad-wheels 2.0.14 sdist。
 - Swift 6.3.3 / macOS arm64；mlx-swift 解析为 0.32.2。注意：新版工具链下 `AsyncThrowingStream` 用 `makeAsyncIterator()`（`makeIterator` 不存在）。
-- 常用命令：`swift build`（默认，Python sidecar）/ `RECORDER_INPROCESS=1 swift build`（进程内，含 MLX 依赖；不再需要 `-Xswiftc -D`）；`./scripts/test_backend.sh`；`./scripts/verify_vad.sh`；`./scripts/verify_inprocess.sh [asr|whisper|translate]`；`./scripts/test_download.sh [hub <model_id> [--full]]`。
+- 常用命令：`swift build`（单进程 app，含 MLX 依赖）；`./scripts/build_metallib.sh`；`./scripts/test_backend.sh`；`./scripts/test_download.sh [hub <model_id> [--full]]`；`./scripts/verify_inprocess.sh [asr|whisper|translate|pipeline]`。Python 参照实现已从仓库删除，需要时从 Phase 5 之前的提交（如 `3f51422`）检出 `backend/`。
 - 依赖参照源码：mlx-whisper 0.4.3 wheel（`transcribe.py`、`decoding.py`、`whisper.py`、`tokenizer.py`、`audio.py`）；mlx-swift 0.32.2（`GPU.metallib`、`Memory.clearCache`、`quantize(model:filter:)`）、mlx-swift-lm main（`MLXLMCommon/Evaluate.swift` 的 `TokenIterator`、`ModelFactory.swift` 的 `load(from:using:)`、`MLXHuggingFaceMacros` 中分词器桥的写法）、mlx-audio 0.5.1 wheel（`mlx_audio/stt/models/qwen3_asr/qwen3_asr.py`）。
 - 提交记录：`3fa60d2` Phase 0 spike；`bebad79` Phase 1–2；Phase 3 模型层见本分支后续提交。spike 的调试经验（对拍方法、常见数值坑）在 `docs/SPIKE-RESULTS.md`，Phase 3 移植时先读。

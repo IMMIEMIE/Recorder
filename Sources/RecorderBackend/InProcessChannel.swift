@@ -1,25 +1,23 @@
 import Foundation
 
 /// Event delivery sink implemented by the frontend-side channel.
-protocol BackendEventSink: AnyObject {
-    func deliver(_ event: [String: Any])
+public protocol BackendEventSink: AnyObject {
+    public func deliver(_ event: [String: Any])
 }
 
-/// Wire shape shared by Transport (dual-process) and InProcessChannel (single-process);
-/// AppModel talks to the backend exclusively through this surface.
-protocol BackendChannel: AnyObject {
-    var onEvent: (([String: Any]) -> Void)? { get set }
-    var onFailure: ((String) -> Void)? { get set }
-    func send(_ message: [String: Any])
-    func audio(_ pcm: Data, session: String, sequence: Int, start: Int) -> Bool
-    func close()
+/// The surface AppModel talks to the backend through (formerly shared with the Unix-socket Transport
+/// of the Python sidecar; event dictionaries keep the protocol_version 1 wire shapes).
+public protocol BackendChannel: AnyObject {
+    public var onEvent: (([String: Any]) -> Void)? { get set }
+    public var onFailure: ((String) -> Void)? { get set }
+    public func send(_ message: [String: Any])
+    public func audio(_ pcm: Data, session: String, sequence: Int, start: Int) -> Bool
+    public func close()
 }
 
-// Transport conforms to BackendChannel via the extension in Transport.swift.
-
-/// In-process replacement for the Unix-socket Transport: same event dictionary shapes, same
+/// In-process replacement for the former Unix-socket Transport: same event dictionary shapes, same
 /// ordering (hello -> config + translator + status), same 320 KB audio backpressure semantics.
-final class InProcessChannel: BackendChannel, BackendEventSink, @unchecked Sendable {
+public final class InProcessChannel: BackendChannel, BackendEventSink, @unchecked Sendable {
     private let core: BackendCore
     // Audio frames must reach the core in capture order; a serial queue spawns the actor tasks
     // in FIFO order so the actor mailbox receives them in sequence.
@@ -28,19 +26,19 @@ final class InProcessChannel: BackendChannel, BackendEventSink, @unchecked Senda
     private var buffered = 0
     private var closed = false
 
-    var onEvent: (([String: Any]) -> Void)?
-    var onFailure: ((String) -> Void)?
+    public var onEvent: (([String: Any]) -> Void)?
+    public var onFailure: ((String) -> Void)?
 
-    init(core: BackendCore) {
+    public init(core: BackendCore) {
         self.core = core
         Task { await core.attach(self) }
     }
 
-    func deliver(_ event: [String: Any]) {
+    public func deliver(_ event: [String: Any]) {
         DispatchQueue.main.async { [weak self] in self?.onEvent?(event) }
     }
 
-    func send(_ message: [String: Any]) {
+    public func send(_ message: [String: Any]) {
         lock.lock()
         let isClosed = closed
         lock.unlock()
@@ -49,7 +47,7 @@ final class InProcessChannel: BackendChannel, BackendEventSink, @unchecked Senda
         Task { await core.control(message) }
     }
 
-    func audio(_ pcm: Data, session: String, sequence: Int, start: Int) -> Bool {
+    public func audio(_ pcm: Data, session: String, sequence: Int, start: Int) -> Bool {
         let meta: [String: Any] = ["session_id": session, "sequence": sequence, "start_sample": start,
                                    "sample_rate": 16000, "channels": 1, "format": "s16le"]
         guard let header = try? JSONSerialization.data(withJSONObject: meta) else { return false }
@@ -80,7 +78,7 @@ final class InProcessChannel: BackendChannel, BackendEventSink, @unchecked Senda
         lock.unlock()
     }
 
-    func close() {
+    public func close() {
         lock.lock()
         closed = true
         lock.unlock()

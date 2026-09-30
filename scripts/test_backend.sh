@@ -9,7 +9,7 @@ bin=$(swift build --show-bin-path)
 swift build --target Cwebrtcvad >/dev/null
 objects=$(find "$bin/Cwebrtcvad.build" -name '*.o')
 swiftc \
-  Sources/Recorder/Backend/*.swift \
+  Sources/RecorderBackend/*.swift \
   tests/BackendTests.swift \
   $objects \
   -Xcc -fmodule-map-file="$bin/Cwebrtcvad.build/module.modulemap" \

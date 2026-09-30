@@ -10,7 +10,7 @@ struct TranslationUnit {
     var source: String
 }
 
-enum TranslationText {
+public enum TranslationText {
     static let architectures = ["qwen2", "qwen3", "hunyuan_v1_dense", "llama", "mistral"]
     static let contextPairs = 2
     static let maxCarry = 400
@@ -65,7 +65,7 @@ enum TranslationText {
         return normalize(left) == normalize(right)
     }
 
-    static func buildMessages(architecture: String, text: String, target: String,
+    public static func buildMessages(architecture: String, text: String, target: String,
                               context: [(String, String)] = []) -> [[String: String]] {
         guard let names = Backend.translationTargets[target] else { return [] }
         if architecture == "hunyuan_v1_dense" {
@@ -91,7 +91,7 @@ enum TranslationText {
     }
 
     // Python len() counts code points, not grapheme clusters.
-    static func maxTokens(_ text: String) -> Int { min(1024, 64 + 3 * text.unicodeScalars.count) }
+    public static func maxTokens(_ text: String) -> Int { min(1024, 64 + 3 * text.unicodeScalars.count) }
 }
 
 /// Worker-thread only. Resets itself when a final from a new session arrives.

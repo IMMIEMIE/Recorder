@@ -1,15 +1,17 @@
-#if RECORDER_INPROCESS
 import Foundation
+import RecorderBackend
 import RecorderMLX
 
 /// Local translation engine for BackendCore (translation.py Translator).
-final class MLXTranslatorEngine: TranslatorEngine {
+public final class MLXTranslatorEngine: TranslatorEngine {
     private var generator: MLXTextGenerator?
-    private(set) var modelID = ""
+    public private(set) var modelID = ""
 
-    var isLoaded: Bool { generator != nil }
+    public init() {}
 
-    func load(config: TranslationConfig, path: String) async throws {
+    public var isLoaded: Bool { generator != nil }
+
+    public func load(config: TranslationConfig, path: String) async throws {
         await unload()
         do {
             generator = try await MLXTextGenerator.load(directory: URL(fileURLWithPath: path))
@@ -20,11 +22,11 @@ final class MLXTranslatorEngine: TranslatorEngine {
         }
     }
 
-    func warmup() async throws {
+    public func warmup() async throws {
         for try await _ in stream("Good morning.", target: "简体中文", context: []) {}
     }
 
-    func unload() async {
+    public func unload() async {
         generator = nil
         modelID = ""
         _ = try? await MLXRuntime.run { MLXRuntime.clearCache() }
@@ -32,7 +34,7 @@ final class MLXTranslatorEngine: TranslatorEngine {
 
     /// Yields the cumulative translation, one token per pull. BackendCore stops pulling while ASR
     /// jobs are queued, which leaves the GPU to them; dropping the iterator releases the KV cache.
-    func stream(_ text: String, target: String, context: [(String, String)]) -> AsyncThrowingStream<String, Error> {
+    public func stream(_ text: String, target: String, context: [(String, String)]) -> AsyncThrowingStream<String, Error> {
         guard let generator else {
             return AsyncThrowingStream { $0.finish(throwing: BackendError.value("翻译模型未加载")) }
         }
@@ -55,4 +57,3 @@ final class MLXTranslatorEngine: TranslatorEngine {
 private final class GenerationState: @unchecked Sendable {
     var session: MLXGenerationSession?
 }
-#endif

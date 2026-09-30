@@ -694,7 +694,8 @@ final class CoreHarness {
 func testHelloBeforeAttachBuffersEvents() async throws {
     let dir = tempRoot()
     defer { try? FileManager.default.removeItem(at: dir) }
-    let core = BackendCore(root: dir, asrEngine: FakeASREngine(), apiRecognizer: APIRecognizer(), translator: FakeTranslatorEngine())
+    let core = BackendCore(root: dir, asrEngine: FakeASREngine(), apiRecognizer: APIRecognizer(), translator: FakeTranslatorEngine(),
+                           downloader: FakeDownloader())
     // The first command may win the race against the async attach; its reply must be buffered.
     await core.control(command("hello"))
     let recorder = EventRecorder()

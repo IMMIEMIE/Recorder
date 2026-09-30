@@ -44,6 +44,10 @@ public enum MLXRuntime {
     }
 
     public static var peakMemory: Int { Memory.peakMemory }
+
+    /// Bytes held by live arrays (weights included); read on the MLX queue after an unload to
+    /// confirm a model was released.
+    public static var activeMemory: Int { Memory.activeMemory }
 }
 
 /// Model-layer failures, with Chinese messages the app surfaces verbatim.

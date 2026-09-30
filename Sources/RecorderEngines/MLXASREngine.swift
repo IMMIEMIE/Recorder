@@ -1,10 +1,10 @@
-#if RECORDER_INPROCESS
 import Foundation
+import RecorderBackend
 import RecorderMLX
 
 /// Local ASR engine for BackendCore (adapter.py Adapter): one Qwen3-ASR or Whisper snapshot at a
 /// time, all model work serialized on the MLX queue.
-final class MLXASREngine: ASREngine {
+public final class MLXASREngine: ASREngine {
     /// adapter.py WHISPER_LANGUAGES (nil = detect).
     static let whisperLanguages: [String: String?] = [
         "auto": nil, "Chinese": "zh", "English": "en", "Cantonese": "yue", "Japanese": "ja", "Korean": "ko",
@@ -18,9 +18,11 @@ final class MLXASREngine: ASREngine {
     private var runner: Runner?
     private var language: String?  // model-specific language name or code; nil = auto-detect
 
-    var isLoaded: Bool { runner != nil }
+    public init() {}
 
-    func load(config: ModelConfig, path: String) async throws {
+    public var isLoaded: Bool { runner != nil }
+
+    public func load(config: ModelConfig, path: String) async throws {
         await unload()
         let directory = URL(fileURLWithPath: path)
         let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("config.json"))) as? [String: Any] ?? [:]
@@ -47,11 +49,11 @@ final class MLXASREngine: ASREngine {
     }
 
     /// adapter.py warmup: half a second of silence.
-    func warmup() async throws {
+    public func warmup() async throws {
         _ = try await transcribe(Data(count: 16000))
     }
 
-    func unload() async {
+    public func unload() async {
         runner = nil
         language = nil
         // Queued behind any in-flight step, so the freed weights' buffers are actually returned
@@ -59,7 +61,7 @@ final class MLXASREngine: ASREngine {
         _ = try? await MLXRuntime.run { MLXRuntime.clearCache() }
     }
 
-    func transcribe(_ pcm: Data) async throws -> (text: String, elapsedMS: Int) {
+    public func transcribe(_ pcm: Data) async throws -> (text: String, elapsedMS: Int) {
         guard let runner else { throw BackendError.value("识别模型未加载") }
         let language = language
         // np.frombuffer(pcm, '<i2').astype(np.float32) / 32768.0
@@ -78,4 +80,3 @@ final class MLXASREngine: ASREngine {
         return (text, elapsed)
     }
 }
-#endif
