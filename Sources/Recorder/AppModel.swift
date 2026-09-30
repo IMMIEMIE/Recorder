@@ -257,6 +257,7 @@ final class AppModel: ObservableObject {
         } catch { self.error = "无法创建本地配置目录"; state = "error"; return }
         // SwiftPM builds of mlx-swift carry no Metal kernels; build.sh bundles mlx.metallib.
         MLXRuntime.configure(metallib: Bundle.main.resourceURL?.appendingPathComponent("mlx.metallib"))
+        ASRValidation.whisperAssets = Bundle.main.resourceURL?.appendingPathComponent("whisper")
         let core = BackendCore(root: root, asrEngine: MLXASREngine(), translator: MLXTranslatorEngine())
         let channel = InProcessChannel(core: core)
         channel.onEvent = { [weak self] event in DispatchQueue.main.async {

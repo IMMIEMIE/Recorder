@@ -19,7 +19,7 @@ final class ASRTokenizer {
     init(directory: URL) throws {
         let vocabData = try Data(contentsOf: directory.appendingPathComponent("vocab.json"))
         guard let vocabRaw = try JSONSerialization.jsonObject(with: vocabData) as? [String: Int] else {
-            throw Qwen3ASRError("vocab.json 解析失败")
+            throw MLXModelError("vocab.json 解析失败")
         }
         vocab = vocabRaw
         var idToTok = [Int: String](minimumCapacity: vocabRaw.count)
@@ -151,10 +151,4 @@ final class ASRTokenizer {
         }
         return String(decoding: bytes, as: UTF8.self)
     }
-}
-
-public struct Qwen3ASRError: Error, CustomStringConvertible, LocalizedError {
-    public let description: String
-    init(_ message: String) { description = message }
-    public var errorDescription: String? { description }
 }

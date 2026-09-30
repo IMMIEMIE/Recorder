@@ -33,7 +33,8 @@ public final class Qwen3ASR {
         eval(model.parameters())
 
         self.model = model
-        tokenizer = try ASRTokenizer(directory: directory)
+        let tokenizer = try ASRTokenizer(directory: directory)
+        self.tokenizer = tokenizer
         frontend = MelFrontend(nMels: configuration.audio.numMelBins)
         // _eos_token_ids: tokenizer eos plus <|im_end|>/<|endoftext|>, Qwen defaults as fallback.
         var eos = Set<Int>()
@@ -48,7 +49,7 @@ public final class Qwen3ASR {
     private static func loadWeights(directory: URL, tied: Bool) throws -> [String: MLXArray] {
         let files = try FileManager.default.contentsOfDirectory(atPath: directory.path)
             .filter { $0.hasSuffix(".safetensors") }.sorted()
-        guard !files.isEmpty else { throw Qwen3ASRError("离线资源缺失: *.safetensors 权重") }
+        guard !files.isEmpty else { throw MLXModelError("离线资源缺失: *.safetensors 权重") }
         var raw = [String: MLXArray]()
         for file in files {
             for (key, value) in try loadArrays(url: directory.appendingPathComponent(file)) { raw[key] = value }

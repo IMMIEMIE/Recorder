@@ -1,8 +1,11 @@
 import Foundation
 
 enum ASRValidation {
-    /// adapter.py validate_config: file-level snapshot checks per architecture. The whisper
-    /// mlx_whisper asset check is deferred until the Whisper port ships its assets with the app.
+    /// Bundled Whisper assets (Contents/Resources/whisper), set by the app before the backend starts.
+    /// nil skips the asset check (builds without the MLX model layer, and the backend tests).
+    static var whisperAssets: URL?
+
+    /// adapter.py validate_config: file-level snapshot checks per architecture.
     static func validate(config: ModelConfig, path: URL) throws {
         var systemInfo = utsname()
         uname(&systemInfo)
@@ -51,6 +54,16 @@ enum ASRValidation {
             let hasWeights = FileManager.default.fileExists(atPath: path.appendingPathComponent("weights.safetensors").path) ||
                 FileManager.default.fileExists(atPath: path.appendingPathComponent("weights.npz").path)
             guard hasWeights else { throw BackendError.value("离线资源缺失: weights.safetensors 或 weights.npz") }
+            if let assets = whisperAssets {
+                guard FileManager.default.fileExists(atPath: assets.path) else {
+                    throw BackendError.value("Whisper 运行环境缺失，请重新安装应用")
+                }
+                for name in ["mel_filters.npz", "multilingual.tiktoken", "gpt2.tiktoken"] {
+                    guard FileManager.default.fileExists(atPath: assets.appendingPathComponent(name).path) else {
+                        throw BackendError.value("Whisper 离线辅助资源缺失: \(name)")
+                    }
+                }
+            }
         } else {
             throw BackendError.value("仅支持 MLX Qwen3-ASR 和 MLX Whisper 架构")
         }

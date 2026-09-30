@@ -20,8 +20,11 @@ cp .build/release/Recorder "$app/Contents/MacOS/Recorder"
 cp -R backend "$app/Contents/Resources/"
 if [ "${RECORDER_INPROCESS:-0}" = "1" ]; then
   cp "$metallib" "$app/Contents/Resources/mlx.metallib"
+  rm -rf "$app/Contents/Resources/whisper"
+  cp -R assets/whisper "$app/Contents/Resources/whisper"
+  rm -f "$app/Contents/Resources/whisper/README.md"
 else
-  rm -f "$app/Contents/Resources/mlx.metallib"
+  rm -rf "$app/Contents/Resources/mlx.metallib" "$app/Contents/Resources/whisper"
 fi
 python_base=$(.venv/bin/python -c 'import sys; print(sys.base_prefix)')
 if [ ! -d "$app/Contents/Resources/runtime" ]; then

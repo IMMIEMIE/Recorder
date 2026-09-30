@@ -2,11 +2,21 @@
 import Foundation
 import RecorderMLX
 
-/// Local ASR engine for BackendCore (adapter.py Adapter): one Qwen3-ASR snapshot at a time,
-/// all model work serialized on the MLX queue.
+/// Local ASR engine for BackendCore (adapter.py Adapter): one Qwen3-ASR or Whisper snapshot at a
+/// time, all model work serialized on the MLX queue.
 final class MLXASREngine: ASREngine {
-    private var runner: Qwen3ASR?
-    private var language: String?  // nil = auto-detect
+    /// adapter.py WHISPER_LANGUAGES (nil = detect).
+    static let whisperLanguages: [String: String?] = [
+        "auto": nil, "Chinese": "zh", "English": "en", "Cantonese": "yue", "Japanese": "ja", "Korean": "ko",
+    ]
+
+    private enum Runner {
+        case qwen(Qwen3ASR)
+        case whisper(Whisper)
+    }
+
+    private var runner: Runner?
+    private var language: String?  // model-specific language name or code; nil = auto-detect
 
     var isLoaded: Bool { runner != nil }
 
@@ -14,18 +24,26 @@ final class MLXASREngine: ASREngine {
         await unload()
         let directory = URL(fileURLWithPath: path)
         let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("config.json"))) as? [String: Any] ?? [:]
-        guard raw["model_type"] as? String == "qwen3_asr" else {
-            // The Whisper port is still pending (spikes/HANDOFF.md, Phase 3 item 3).
-            throw BackendError.value("Whisper 本地识别引擎尚未接入，请等待后续版本更新或暂时使用 Qwen3-ASR")
-        }
+        let architecture = raw["model_type"] as? String
         do {
-            runner = try await MLXRuntime.run { try Qwen3ASR(directory: directory) }
+            switch architecture {
+            case "whisper":
+                guard let assets = ASRValidation.whisperAssets else {
+                    throw BackendError.value("Whisper 运行环境缺失，请重新安装应用")
+                }
+                runner = .whisper(try await MLXRuntime.run { try Whisper(directory: directory, assets: assets) })
+                language = Self.whisperLanguages[config.language] ?? nil
+            case "qwen3_asr":
+                runner = .qwen(try await MLXRuntime.run { try Qwen3ASR(directory: directory) })
+                language = config.language == "auto" ? nil : config.language
+            default:
+                throw BackendError.value("仅支持 MLX Qwen3-ASR 和 MLX Whisper 架构")
+            }
         } catch {
             await unload()
-            if let error = error as? Qwen3ASRError { throw BackendError.value(error.description) }
+            if let error = error as? MLXModelError { throw BackendError.value(error.description) }
             throw error
         }
-        language = config.language == "auto" ? nil : config.language
     }
 
     /// adapter.py warmup: half a second of silence.
@@ -37,7 +55,7 @@ final class MLXASREngine: ASREngine {
         runner = nil
         language = nil
         // Queued behind any in-flight step, so the freed weights' buffers are actually returned
-        // (Python: gc.collect(); mx.clear_cache()).
+        // (Python: gc.collect(); mx.clear_cache(); the mlx_whisper ModelHolder is cleared too).
         _ = try? await MLXRuntime.run { MLXRuntime.clearCache() }
     }
 
@@ -49,7 +67,13 @@ final class MLXASREngine: ASREngine {
             (0..<(raw.count / 2)).map { Float(Int16(littleEndian: raw.loadUnaligned(fromByteOffset: $0 * 2, as: Int16.self))) / 32768 }
         }
         let start = DispatchTime.now().uptimeNanoseconds
-        let text = try await MLXRuntime.run { runner.transcribe(samples: samples, language: language) }
+        let text: String
+        switch runner {
+        case .qwen(let model):
+            text = try await MLXRuntime.run { model.transcribe(samples: samples, language: language) }
+        case .whisper(let model):
+            text = try await MLXRuntime.run { model.transcribe(samples: samples, language: language) }
+        }
         let elapsed = Int((DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
         return (text, elapsed)
     }

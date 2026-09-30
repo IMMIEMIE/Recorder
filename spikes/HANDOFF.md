@@ -10,7 +10,7 @@
 
 ## 1. 项目一句话
 
-声笺要把 Python 双进程后端（`backend/*.py` + 捆绑 1.2 GB Python ML 栈，安装包 547 MB）重写为 mlx-swift 单进程 Swift 实现，目标 ~100-150 MB。重构分 6 阶段（规格文档 §4），**Phase 0–2 已完成；Phase 3 除 Whisper 外的代码已写完，待 macOS 编译验证**。
+声笺要把 Python 双进程后端（`backend/*.py` + 捆绑 1.2 GB Python ML 栈，安装包 547 MB）重写为 mlx-swift 单进程 Swift 实现，目标 ~100-150 MB。重构分 6 阶段（规格文档 §4），**Phase 0–2 已完成；Phase 3 代码（含 Whisper）已全部写完，待 macOS 编译验证**。
 
 ## 2. 已完成的工作
 
@@ -58,7 +58,12 @@ AppModel 改动最小化：`transport` 换成 `BackendChannel?`；`launch()` 按
 | `Sources/RecorderMLX/Qwen3ASR/ASRTokenizer.swift` | spike BPE 固化（`<asr_text>` special:false 保留、字节表顺序计数）；读取 `eos_token` |
 | `Sources/RecorderMLX/Qwen3ASR/Qwen3ASR.swift` | `load_model + generate` 对应：权重 sanitize（剥 `thinker.`、tie 时丢 `lm_head`、未转换 HF 卷积转置）、`NestedItem.unflattened` + `.noUnusedKeys`；**不足 1 s 补零到 1 s**（`split_audio_into_chunks` 的 `min_chunk_duration`，spike 未覆盖，影响预热与短片段的音频 token 数）；`support_languages` 大小写匹配；EOS = tokenizer eos ∪ `<|im_end|>`/`<|endoftext|>`；auto 模式按 `extract_language` 语义剥「language X<asr_text>」；`max_tokens=512` |
 | `Sources/RecorderMLX/TextGenerator.swift` | 翻译：`LLMModelFactory.load(from: 目录)` + 自写 swift-transformers 分词器桥（等价 MLXHuggingFace 宏展开，免宏插件与 Hub 客户端）；qwen3 模板传 `enable_thinking: false`；贪心（temperature 0）；停止词 = config/generation_config eos ∪ tokenizer eos。`MLXGenerationSession.step()` **拉一次只解一个 token**（`TokenIterator`，首步做 prefill），返回累计译文（结尾 U+FFFD 的半个字符暂扣，结束时补发） |
-| `Sources/Recorder/Engines/MLXASREngine.swift` | `ASREngine` 实现：只接受 `qwen3_asr`（Whisper 给出明确中文报错）；预热 16000 字节静音；卸载后在 MLX 队列上 `clearCache` |
+| `Sources/Recorder/Engines/MLXASREngine.swift` | `ASREngine` 实现：按 `model_type` 分派 Qwen3-ASR / Whisper（Whisper 语言按 `WHISPER_LANGUAGES` 映射：auto→自动检测、Chinese→zh、Cantonese→yue…）；预热 16000 字节静音；卸载后在 MLX 队列上 `clearCache` |
+| `Sources/RecorderMLX/NPZ.swift` | `.npz` 读取器（mlx-swift 只能读 safetensors）：按中央目录取尺寸（numpy 的本地文件头是 zip64 占位）、支持 zip64、stored/deflate（Compression 框架 `COMPRESSION_ZLIB` 即裸 DEFLATE）、`.npy` v1–v3。用于 `mel_filters.npz` 与旧式 `weights.npz` |
+| `Sources/RecorderMLX/Whisper/WhisperModel.swift` | mlx_whisper `whisper.py` 移植：编码器（Conv1d×2 + 正弦位置编码）、解码器（`positional_embedding` 参数、fp16 下饱和为 -inf 的因果 mask）、q/k 各乘 `head_dim^-0.25` + `precise` softmax、自注意力/交叉注意力 KV cache；支持 `quantization`（Linear/Embedding 且存在 `.scales`） |
+| `Sources/RecorderMLX/Whisper/WhisperTokenizer.swift` | tiktoken 字节级 BPE（按 rank 合并）+ Whisper 特殊 token 编号（语言数随 `n_vocab`）；`non_speech_tokens` 用同一算法的 Python 原型在 multilingual.tiktoken 上核对过，与 Whisper 公开的 suppress 列表逐项一致 |
+| `Sources/RecorderMLX/Whisper/Whisper.swift` | `transcribe()` 等价实现（adapter 参数：fp16、temperature 0 无回退、不以前文为条件、`sample_len=224`、默认 no_speech 0.6 / logprob -1.0、开时间戳）：GPU 上以相同 float32 算子算 log-mel（尾部补 30 s 静音）；auto 时用前 30 s 检测语言；逐窗口贪心解码 + SuppressBlank / SuppressTokens / ApplyTimestampRules（mlx-whisper 0.4.3 中「时间戳不递减」规则因用序号切片而实际为空操作，照此不复现）；无语音跳窗、按连续时间戳切段与 seek 推进、清掉瞬时/空白段；另加一处保护：seek 不前进时强制跳过整窗（Python 在该极端情况下会死循环） |
+| `assets/whisper/` | mlx-whisper 0.4.3 的 `mel_filters.npz`、`multilingual.tiktoken`、`gpt2.tiktoken` 原样入库（MIT，sha256 见该目录 README）；`build.sh` 进程内分支拷到 `Contents/Resources/whisper/`，AppModel 设 `ASRValidation.whisperAssets` 指向它，校验缺失时报与 Python 相同的「Whisper 运行环境缺失…」「Whisper 离线辅助资源缺失: …」 |
 | `Sources/Recorder/Engines/MLXTranslatorEngine.swift` | `TranslatorEngine` 实现：`AsyncThrowingStream(unfolding:)` 惰性拉取——BackendCore 在 jobs 非空时停止调用 `next()`，GPU 即让给识别，与 Python 挂起生成器语义一致；丢弃迭代器即释放 KV cache；`build_messages`/`max_tokens` 复用 `TranslationText` |
 | `Sources/RecorderVerify/main.swift` + `scripts/verify_inprocess.sh` | 对拍 CLI：`asr`（等价 verify_model.py：AVAudioFile→16 kHz→PCM16 量化→转写，输出 load/warmup/逐文件耗时/`mlx_peak_bytes`）与 `translate`（首 token 延迟、tokens/s）。报告写入 `docs/model-verification-swift.json`、`docs/translation-verification-swift.json` |
 
@@ -74,7 +79,7 @@ AppModel 改动最小化：`transport` 换成 `BackendChannel?`；`launch()` 按
 
 1. **Phase 3 代码未编译**：见上文；首要任务是在 Mac 上 `RECORDER_INPROCESS=1 swift build` 并修正编译错误。
 2. **模型下载未接入**（Phase 4）：in-process 模式下 `download` 命令与翻译模型下载返回「下载功能尚未接入，请等待后续版本更新」；`cancel_download` 为 no-op。
-3. **Whisper 未移植**（Phase 3 第 3 项）：`MLXASREngine` 对 `whisper` 架构报「Whisper 本地识别引擎尚未接入…」；`ASRValidation` 的 whisper 分支仍跳过资产检查。
+3. **Whisper 未验证**：代码与 Qwen 部分一样未经编译；`ASRValidation.whisperAssets` 为 nil（后端测试、默认构建）时仍跳过资产检查。`word_timestamps`、温度回退、束搜索等 adapter 不用的 mlx_whisper 功能未移植。
 4. **Hunyuan-MT 分词器**：swift-transformers 的 `AutoTokenizer.from(modelFolder:)` 需要 `tokenizer.json`；若 `mlx-community/Hunyuan-MT-7B-4bit` 快照只有 tiktoken 词表，加载会失败（报错会走翻译失败路径，不影响识别），需实测。
 5. **metallib 来源**：开发期与进程内打包都复用 `.venv` 中 mlx 0.32.2 wheel 的 `mlx.metallib`；Phase 5 删 Python 后需改为从 mlx 源码编译（完整 Xcode + `xcrun metal`）。
 
@@ -86,13 +91,13 @@ AppModel 改动最小化：`transport` 换成 `BackendChannel?`；`launch()` 按
 
 1. `RECORDER_INPROCESS=1 swift build -c release`：修正编译错误（重点核对：`quantize(model:filter:)` 重载、`TokenIterator`/`GenerateParameters` 初始化、`LLMModelFactory.load(from:using:)`、`AsyncThrowingStream(unfolding:)`、AVAudioConverter 回调）。同时确认默认 `swift build`、`scripts/test_backend.sh` 等仍通过。
 2. `./scripts/verify_inprocess.sh asr`：三个 fixture 与 `docs/model-verification.json`（Python）对比，要求逐字一致或仅标点/空格差异；另跑 `--language Chinese`。若与 spike 结论出现偏差，先怀疑 MelFrontend 改为「不补 30 s」这一处（可临时补零到 480000 样本对照）。
-3. `./scripts/verify_inprocess.sh translate`：确认 `enable_thinking=False` 生效（输出不含 `<think>`）、译文合理；对比 `docs/translation-verification.json` 的吞吐（±30%）。Hunyuan-MT 若已缓存一并试。
-4. `RECORDER_INPROCESS=1 ./scripts/build.sh` 后运行 app：加载→预热→麦克风转写→开启本地翻译→切换 Qwen/翻译模型；观察翻译逐 token 让位（识别 final 不被翻译拖慢）、切模型先卸载后加载的 GPU 内存（`MLXRuntime.peakMemory`/活动监视器）。
-5. 结果写入 `docs/VALIDATION.md`，并在规格文档 §4 Phase 3「实施备注」补上验证结论。
+3. `./scripts/verify_inprocess.sh whisper`（需已缓存 `whisper-large-v3-turbo`）：与 `docs/whisper-verification.json` 对比文本；另跑 `--language Chinese`。`./scripts/test_backend.sh` 新增的 `whisper validation` 用例也应通过。
+4. `./scripts/verify_inprocess.sh translate`：确认 `enable_thinking=False` 生效（输出不含 `<think>`）、译文合理；对比 `docs/translation-verification.json` 的吞吐（±30%）。Hunyuan-MT 若已缓存一并试。
+5. `RECORDER_INPROCESS=1 ./scripts/build.sh` 后运行 app：加载→预热→麦克风转写→开启本地翻译→切换 Qwen/Whisper/翻译模型；观察翻译逐 token 让位（识别 final 不被翻译拖慢）、切模型先卸载后加载的 GPU 内存（`MLXRuntime.peakMemory`/活动监视器）。
+6. 结果写入 `docs/VALIDATION.md`，并在规格文档 §4 Phase 3「实施备注」补上验证结论。
 
 **Phase 3 剩余开发**：
 
-- `WhisperModel.swift`（备选模型，可后置到 Phase 5 前）：mlx_whisper 对应移植（fp16、`temperature=0.0`、`condition_on_previous_text=false`、`sample_len=224`、语言映射 `WHISPER_LANGUAGES`）+ mel filters/tiktoken 资产随 app 打包；补全 `ASRValidation` whisper 分支并去掉 `MLXASREngine` 中的拒绝。
 - `verify_pipeline.py`/`verify_endpoints.py` 场景（实时节奏 PCM 经 BackendCore 全链路）可在 `RecorderVerify` 增加 `pipeline` 子命令复现——需要把 `Sources/Recorder/Backend` 拆成库 target 或在 CLI 中复用 swiftc 文件列表方式，按需决定。
 
 ### Phase 4 — 下载器（1 周）
@@ -122,5 +127,5 @@ AppModel 改动最小化：`transport` 换成 `BackendChannel?`；`launch()` 按
 - Python 参照实现：`.venv/lib/python3.12/site-packages/` 下 `mlx_audio/stt/models/qwen3_asr/`、`mlx_audio/lm/generate.py`、`transformers/audio_utils.py`、`transformers/models/whisper/feature_extraction_whisper.py`；webrtcvad C 源取自 webrtcvad-wheels 2.0.14 sdist。
 - Swift 6.3.3 / macOS arm64；mlx-swift 解析为 0.32.2。注意：新版工具链下 `AsyncThrowingStream` 用 `makeAsyncIterator()`（`makeIterator` 不存在）。
 - 常用命令：`swift build`（默认，Python sidecar）/ `RECORDER_INPROCESS=1 swift build`（进程内，含 MLX 依赖；不再需要 `-Xswiftc -D`）；`./scripts/test_backend.sh`；`./scripts/verify_vad.sh`；`./scripts/verify_inprocess.sh [asr|translate]`。
-- 依赖参照源码：mlx-swift 0.32.2（`GPU.metallib`、`Memory.clearCache`、`quantize(model:filter:)`）、mlx-swift-lm main（`MLXLMCommon/Evaluate.swift` 的 `TokenIterator`、`ModelFactory.swift` 的 `load(from:using:)`、`MLXHuggingFaceMacros` 中分词器桥的写法）、mlx-audio 0.5.1 wheel（`mlx_audio/stt/models/qwen3_asr/qwen3_asr.py`）。
+- 依赖参照源码：mlx-whisper 0.4.3 wheel（`transcribe.py`、`decoding.py`、`whisper.py`、`tokenizer.py`、`audio.py`）；mlx-swift 0.32.2（`GPU.metallib`、`Memory.clearCache`、`quantize(model:filter:)`）、mlx-swift-lm main（`MLXLMCommon/Evaluate.swift` 的 `TokenIterator`、`ModelFactory.swift` 的 `load(from:using:)`、`MLXHuggingFaceMacros` 中分词器桥的写法）、mlx-audio 0.5.1 wheel（`mlx_audio/stt/models/qwen3_asr/qwen3_asr.py`）。
 - 提交记录：`3fa60d2` Phase 0 spike；`bebad79` Phase 1–2；Phase 3 模型层见本分支后续提交。spike 的调试经验（对拍方法、常见数值坑）在 `docs/SPIKE-RESULTS.md`，Phase 3 移植时先读。

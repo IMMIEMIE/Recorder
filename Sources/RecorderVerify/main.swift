@@ -6,7 +6,8 @@ import RecorderMLX
 // Swift counterpart of scripts/verify_model.py and scripts/verify_translation.py; run it through
 // scripts/verify_inprocess.sh, which builds it and bundles the Metal kernels.
 //
-//   RecorderVerify asr --model <snapshot> [--language auto|Chinese|...] [--output file.json] audio...
+//   RecorderVerify asr --model <snapshot> [--language auto|Chinese|...] [--assets assets/whisper] [--output file.json] audio...
+//     (Qwen3-ASR or MLX Whisper, chosen by config.json model_type; --assets only matters for Whisper)
 //   RecorderVerify translate --model <snapshot> [--target 简体中文] [--output file.json] text...
 // Common: --metallib <path/to/mlx.metallib>
 
@@ -133,22 +134,35 @@ let machine = withUnsafeBytes(of: &host.machine) { String(decoding: $0.prefix { 
 do {
     if command == "asr" {
         let language = options["language"].flatMap { $0 == "auto" ? nil : $0 }
+        let config = try JSONSerialization.jsonObject(with: Data(contentsOf: snapshot.appendingPathComponent("config.json"))) as? [String: Any] ?? [:]
+        let transcribe: ([Float]) -> String
         var start = monotonic()
-        let model = try MLXRuntime.sync { try Qwen3ASR(directory: snapshot) }
+        if config["model_type"] as? String == "whisper" {
+            // adapter.py WHISPER_LANGUAGES; Whisper codes pass through unchanged.
+            let codes = ["Chinese": "zh", "English": "en", "Cantonese": "yue", "Japanese": "ja", "Korean": "ko"]
+            let code = language.map { codes[$0] ?? $0 }
+            let assets = URL(fileURLWithPath: options["assets"] ?? "assets/whisper")
+            let model = try MLXRuntime.sync { try Whisper(directory: snapshot, assets: assets) }
+            transcribe = { samples in MLXRuntime.sync { model.transcribe(samples: samples, language: code) } }
+        } else {
+            let model = try MLXRuntime.sync { try Qwen3ASR(directory: snapshot) }
+            transcribe = { samples in MLXRuntime.sync { model.transcribe(samples: samples, language: language) } }
+        }
         let load = monotonic() - start
         start = monotonic()
-        _ = MLXRuntime.sync { model.transcribe(samples: [Float](repeating: 0, count: 8000), language: language) }
+        _ = transcribe([Float](repeating: 0, count: 8000))
         let warmup = monotonic() - start
         var results: [[String: Any]] = []
         for path in inputs {
             let samples = try loadPCM16Samples(path)
             start = monotonic()
-            let text = MLXRuntime.sync { model.transcribe(samples: samples, language: language) }
+            let text = transcribe(samples)
             results.append(["file": URL(fileURLWithPath: path).lastPathComponent, "audio_seconds": Double(samples.count) / 16000,
                             "elapsed_ms": (monotonic() - start) * 1000, "text": text])
         }
         try writeReport(["platform": ProcessInfo.processInfo.operatingSystemVersionString, "architecture": machine,
                          "model_path": modelPath, "revision": snapshot.lastPathComponent, "language": language ?? "auto",
+                         "model_type": config["model_type"] as? String ?? "",
                          "load_seconds": load, "warmup_seconds": warmup, "mlx_peak_bytes": MLXRuntime.peakMemory,
                          "implementation": "mlx-swift", "results": results],
                         to: options["output"] ?? "docs/model-verification-swift.json")

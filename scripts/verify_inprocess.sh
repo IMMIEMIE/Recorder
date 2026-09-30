@@ -4,8 +4,10 @@
 # Needs Apple Silicon, the cached default models under models/, and .venv (for mlx.metallib).
 #   ./scripts/verify_inprocess.sh                       # both, default cached snapshots
 #   ./scripts/verify_inprocess.sh asr [--language Chinese]
+#   ./scripts/verify_inprocess.sh whisper [--language Chinese]   # needs a cached whisper-large-v3-turbo
 #   ./scripts/verify_inprocess.sh translate [--target English]
-# Reports go to docs/model-verification-swift.json and docs/translation-verification-swift.json.
+# Reports go to docs/model-verification-swift.json, docs/whisper-verification-swift.json and
+# docs/translation-verification-swift.json.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export RECORDER_INPROCESS=1
@@ -27,6 +29,11 @@ mode=${1:-all}
 [ $# -gt 0 ] && shift
 if [ "$mode" = "asr" ] || [ "$mode" = "all" ]; then
   "$bin" asr --metallib "$metallib" --model "$(snapshot mlx-community/Qwen3-ASR-1.7B-bf16)" "$@" \
+    tests/fixtures/chinese.aiff tests/fixtures/english.aiff tests/fixtures/mixed.aiff
+fi
+if [ "$mode" = "whisper" ]; then
+  "$bin" asr --metallib "$metallib" --assets assets/whisper --output docs/whisper-verification-swift.json \
+    --model "$(snapshot mlx-community/whisper-large-v3-turbo)" "$@" \
     tests/fixtures/chinese.aiff tests/fixtures/english.aiff tests/fixtures/mixed.aiff
 fi
 if [ "$mode" = "translate" ] || [ "$mode" = "all" ]; then

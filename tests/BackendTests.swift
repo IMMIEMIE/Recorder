@@ -568,6 +568,40 @@ func testValidateTranslator() throws {
     try rejects { try validateTranslator(missingShard) }
 }
 
+func testWhisperValidation() throws {
+    // test_models.py: MLX Whisper layout, Transformers format rejected, plus the bundled asset check.
+    let dir = tempRoot()
+    defer { try? FileManager.default.removeItem(at: dir); ASRValidation.whisperAssets = nil }
+    let dims: [String: Any] = ["model_type": "whisper", "n_mels": 128, "n_audio_ctx": 1500, "n_audio_state": 1280,
+                               "n_audio_head": 20, "n_audio_layer": 32, "n_vocab": 51866, "n_text_ctx": 448,
+                               "n_text_state": 1280, "n_text_head": 20, "n_text_layer": 4]
+    func message(_ action: () throws -> Void) -> String {
+        do { try action() } catch { return backendErrorMessage(error) }
+        return ""
+    }
+    try JSONSerialization.data(withJSONObject: dims).write(to: dir.appendingPathComponent("config.json"))
+    let weights = dir.appendingPathComponent("weights.safetensors")
+    try Data().write(to: weights)
+    try ASRValidation.validate(config: ModelConfig(), path: dir)
+    try FileManager.default.removeItem(at: weights)
+    try expect(message { try ASRValidation.validate(config: ModelConfig(), path: dir) }.contains("weights.safetensors"), "missing weights")
+    try Data().write(to: dir.appendingPathComponent("weights.npz"))
+    try ASRValidation.validate(config: ModelConfig(), path: dir)
+
+    let assets = dir.appendingPathComponent("assets")
+    ASRValidation.whisperAssets = assets
+    try expect(message { try ASRValidation.validate(config: ModelConfig(), path: dir) } == "Whisper 运行环境缺失，请重新安装应用", "no assets dir")
+    try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
+    try Data().write(to: assets.appendingPathComponent("mel_filters.npz"))
+    try Data().write(to: assets.appendingPathComponent("multilingual.tiktoken"))
+    try expect(message { try ASRValidation.validate(config: ModelConfig(), path: dir) } == "Whisper 离线辅助资源缺失: gpt2.tiktoken", "missing asset")
+    try Data().write(to: assets.appendingPathComponent("gpt2.tiktoken"))
+    try ASRValidation.validate(config: ModelConfig(), path: dir)
+
+    try JSONSerialization.data(withJSONObject: ["model_type": "whisper", "d_model": 1280]).write(to: dir.appendingPathComponent("config.json"))
+    try expect(message { try ASRValidation.validate(config: ModelConfig(), path: dir) }.contains("MLX Whisper 格式"), "transformers format")
+}
+
 func testResolveCachedModel() throws {
     let dir = tempRoot()
     defer { try? FileManager.default.removeItem(at: dir) }
@@ -1018,6 +1052,7 @@ func testInvalidTargetRejectedWithoutChangingConfig() async throws {
         await run("same text", testSameText)
         await run("build messages", testBuildMessages)
         await run("validate translator", testValidateTranslator)
+        await run("whisper validation", testWhisperValidation)
         await run("resolve cached model", testResolveCachedModel)
         await run("hello before attach", testHelloBeforeAttachBuffersEvents)
         await run("stop finalizes once", testStopFinalizesOnceAndPreservesRepetition)

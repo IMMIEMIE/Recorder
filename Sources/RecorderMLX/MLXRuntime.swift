@@ -45,3 +45,10 @@ public enum MLXRuntime {
 
     public static var peakMemory: Int { Memory.peakMemory }
 }
+
+/// Model-layer failures, with Chinese messages the app surfaces verbatim.
+public struct MLXModelError: Error, CustomStringConvertible, LocalizedError {
+    public let description: String
+    init(_ message: String) { description = message }
+    public var errorDescription: String? { description }
+}

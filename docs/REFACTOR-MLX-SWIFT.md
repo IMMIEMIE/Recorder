@@ -260,7 +260,7 @@ Phase 1–2 实施备注（2026-09-29）：
 - Metal kernel：`build.sh` 进程内分支把 `.venv` 中 mlx 0.32.2 的 `mlx.metallib` 放进 `Contents/Resources/`，启动时经 `GPU.metallib` 指定（Phase 5 改为源码编译）。
 - 全部模型计算串行在一条专用队列上（对应 Python 单 worker 线程）；翻译用 `TokenIterator` 拉一次解一个 token，BackendCore 停止拉取即让出 GPU，取代计划中的「cancel/drop 两层取消」——丢弃迭代器即释放 KV cache。
 - 与 spike 的有意差异：mel 前端不再补零到 30 s（mlx_audio 以 `padding=True` 调用特征提取器）；不足 1 s 的输入补零到 1 s（`min_chunk_duration`）；Qwen3-ASR 支持 `quantization` 配置。
-- Whisper 未移植：进程内加载 whisper 架构时报「Whisper 本地识别引擎尚未接入…」。
+- Whisper 已移植（`Sources/RecorderMLX/Whisper/` + `NPZ.swift`）：只覆盖 adapter.py 用到的 transcribe 路径（fp16、temperature 0、无条件前文、`sample_len=224`、时间戳规则与无语音跳窗），mel 用与 mlx_whisper 相同的 MLX float32 算子；mel filters / tiktoken 资产入库于 `assets/whisper/` 并随 app 打包，`ASRValidation.whisperAssets` 恢复 Python 的资产检查。
 
 ### Phase 4 — 下载器（1 周）
 
