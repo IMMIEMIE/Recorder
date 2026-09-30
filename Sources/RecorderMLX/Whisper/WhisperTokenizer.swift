@@ -39,7 +39,19 @@ final class WhisperTokenizer {
         var ranks = [Data: Int]()
         for line in text.split(separator: "\n") {
             let parts = line.split(separator: " ")
-            guard parts.count == 2, let token = Data(base64Encoded: String(parts[0])), let rank = Int(parts[1]) else { continue }
+            guard parts.count == 2, let rank = Int(parts[1]) else { continue }
+            let encoded = String(parts[0])
+            let token: Data
+            if let data = Data(base64Encoded: encoded) {
+                token = data
+            } else if encoded.allSatisfy({ $0 == "=" }) {
+                // The file's last entry is a lone "=" (rank 50256), which Python's lenient
+                // b64decode maps to empty bytes; Swift's strict decoder rejects it, and
+                // skipping it would shift every special token id down by one.
+                token = Data()
+            } else {
+                continue
+            }
             ranks[token] = rank
         }
         guard !ranks.isEmpty else { throw MLXModelError("Whisper 离线辅助资源缺失: \(name).tiktoken") }

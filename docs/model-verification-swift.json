@@ -1,32 +1,20 @@
 {
   "architecture" : "arm64",
   "implementation" : "mlx-swift",
-  "language" : "auto",
-  "load_seconds" : 2.0686129160458222,
-  "mlx_peak_bytes" : 4953113620,
-  "model_path" : "models\/models--mlx-community--Qwen3-ASR-1.7B-bf16\/snapshots\/e1f6c266914abc5a46e8756e02580f834a6cf8a7",
-  "model_type" : "qwen3_asr",
+  "language" : "Chinese",
+  "load_seconds" : 0.52228291693609208,
+  "mlx_peak_bytes" : 2184948662,
+  "model_path" : "models\/models--mlx-community--whisper-large-v3-turbo\/snapshots\/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+  "model_type" : "whisper",
   "platform" : "Version 27.0 (Build 26A428)",
   "results" : [
     {
       "audio_seconds" : 8.0056250000000002,
-      "elapsed_ms" : 864.784250035882,
+      "elapsed_ms" : 503.85129102505744,
       "file" : "chinese.aiff",
-      "text" : "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。"
-    },
-    {
-      "audio_seconds" : 5.1880625,
-      "elapsed_ms" : 929.89045800641179,
-      "file" : "english.aiff",
-      "text" : "This is a local speech recognition test. Please remember the number one, two, three, four, five."
-    },
-    {
-      "audio_seconds" : 6.5996249999999996,
-      "elapsed_ms" : 744.33883291203529,
-      "file" : "mixed.aiff",
-      "text" : "今天我们测试 Python 和 Swift，所有音频都在本地处理。谢谢，谢谢。"
+      "text" : "你好,这是一个本地语音识别测试,今天下午三点开会,请记住数字12345。"
     }
   ],
-  "revision" : "e1f6c266914abc5a46e8756e02580f834a6cf8a7",
-  "warmup_seconds" : 3.7905611660098657
+  "revision" : "a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+  "warmup_seconds" : 0.56101308297365904
 }

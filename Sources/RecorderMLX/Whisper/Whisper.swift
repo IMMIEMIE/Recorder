@@ -248,7 +248,6 @@ public final class Whisper {
                 next = eot
             }
             tokens.append(next)
-            if ProcessInfo.processInfo.environment["RECORDER_WHISPER_TRACE"] != nil { print("TRACE \(tokens)") }
             completed = next == eot
         }
         // finalize: slice after the sot sequence, up to the first EOT.
