@@ -2,17 +2,17 @@ import Foundation
 
 /// Event delivery sink implemented by the frontend-side channel.
 public protocol BackendEventSink: AnyObject {
-    public func deliver(_ event: [String: Any])
+    func deliver(_ event: [String: Any])
 }
 
 /// The surface AppModel talks to the backend through (formerly shared with the Unix-socket Transport
 /// of the Python sidecar; event dictionaries keep the protocol_version 1 wire shapes).
 public protocol BackendChannel: AnyObject {
-    public var onEvent: (([String: Any]) -> Void)? { get set }
-    public var onFailure: ((String) -> Void)? { get set }
-    public func send(_ message: [String: Any])
-    public func audio(_ pcm: Data, session: String, sequence: Int, start: Int) -> Bool
-    public func close()
+    var onEvent: (([String: Any]) -> Void)? { get set }
+    var onFailure: ((String) -> Void)? { get set }
+    func send(_ message: [String: Any])
+    func audio(_ pcm: Data, session: String, sequence: Int, start: Int) -> Bool
+    func close()
 }
 
 /// In-process replacement for the former Unix-socket Transport: same event dictionary shapes, same
