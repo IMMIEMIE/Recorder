@@ -66,6 +66,33 @@ class EndpointTests(unittest.TestCase):
         self.feed(50, False); self.assertFalse(self.finals())
         self.feed(40, False); self.assertEqual(len(self.finals()), 1)
 
+    def preview_frames(self, config, frames=240, ratio=0.0, low_power=False):
+        self.events = []
+        self.s = Segmenter(config, self.events.append, low_power=low_power)
+        self.s.cost_ratio = ratio  # inference ms per ms of audio, as measured by earlier previews
+        self.feed(frames, True)
+        return [e['end_sample'] // FRAME for e in self.events if not e['final']]
+    def test_power_mode_config(self):
+        self.assertEqual((Config().power_mode, Config().idle_release_minutes), ('balanced', 15))
+        for bad in ({'power_mode':'turbo'}, {'idle_release_minutes':7}, {'idle_release_minutes':True}):
+            with self.assertRaises(ValueError): Config.parse(bad)
+    def test_preview_budget_scales_with_measured_cost(self):
+        # Next preview once L - last >= max(interval, factor * ratio * L), L = segment length.
+        self.assertEqual(self.preview_frames(Config(power_mode='performance'), ratio=0.25), [60, 120, 180, 240])
+        self.assertEqual(self.preview_frames(Config(), ratio=0.05), [60, 120, 180, 240])
+        self.assertEqual(self.preview_frames(Config(), ratio=0.25), [60, 120, 240])
+        self.assertEqual(self.preview_frames(Config(power_mode='saver'), frames=400), [120, 240, 360])
+        self.assertEqual(self.preview_frames(Config(power_mode='saver'), frames=500, ratio=0.125), [120, 480])
+    def test_low_power_uses_saver_budget_unless_performance(self):
+        self.assertEqual(self.preview_frames(Config(), frames=400, low_power=True), [120, 240, 360])
+        self.assertEqual(self.preview_frames(Config(power_mode='performance'), frames=180, low_power=True), [60, 120, 180])
+    def test_preview_cost_is_measured_per_audio_ms_and_cached_results_ignored(self):
+        self.feed(60, True)
+        self.s.accept_preview(dict(self.events[-1]), '还没说完', elapsed_ms=300)
+        self.assertEqual(self.s.cost_ratio, 0.25)
+        self.s.accept_preview(dict(self.events[-1]), '还没说完', elapsed_ms=0)
+        self.assertEqual(self.s.cost_ratio, 0.25)
+
     def test_never_force_cut_speech(self):
         self.feed(2000, True)
         self.assertFalse(self.finals())

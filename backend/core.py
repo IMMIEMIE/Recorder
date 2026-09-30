@@ -14,6 +14,9 @@ FRAME = 320  # 20 ms, signed little-endian PCM16 mono
 MAX_MESSAGE = 256 * 1024
 DEFAULT_MODEL = 'mlx-community/Qwen3-ASR-1.7B-bf16'
 DEFAULT_TRANSLATOR = 'mlx-community/Qwen3-4B-Instruct-2507-4bit'
+# Previews wait this many times their predicted inference time, capping preview GPU duty at 1/(1+n).
+PREVIEW_BUDGET = {'performance': 0, 'balanced': 2, 'saver': 6}
+IDLE_RELEASE_MINUTES = (0, 5, 15, 30, 60)
 # UI value -> (English name for prompts, Chinese name for Chinese-instruction prompts)
 TRANSLATION_TARGETS = {
     '简体中文': ('Simplified Chinese', '简体中文'),
@@ -58,6 +61,9 @@ class Config:
     api_base_url: str = ''
     api_model: str = ''
     api_protocol: str = 'openai'
+    power_mode: str = 'balanced'
+    # Loaded models are released after this many idle minutes and reloaded on start; 0 keeps them resident.
+    idle_release_minutes: int = 15
 
     @classmethod
     def parse(cls, values):
@@ -75,6 +81,10 @@ class Config:
                 raise ValueError(f'{key} 必须在 {low}–{high} 范围内')
         if c.endpoint_mode not in ('smart', 'fixed'):
             raise ValueError('不支持的定稿模式')
+        if c.power_mode not in PREVIEW_BUDGET:
+            raise ValueError('不支持的能耗模式')
+        if type(c.idle_release_minutes) is not int or c.idle_release_minutes not in IDLE_RELEASE_MINUTES:
+            raise ValueError('空闲释放时间必须为 0、5、15、30 或 60 分钟')
         if c.language not in ('auto', 'Chinese', 'English', 'Cantonese', 'Japanese', 'Korean'):
             raise ValueError('不支持的语言选项')
         if c.provider not in ('local', 'api'):
@@ -182,9 +192,12 @@ def sentence_complete(text):
 
 class Segmenter:
     """One lock guards audio boundaries and asynchronous recognition feedback."""
-    def __init__(self, config, emit, lock=None):
+    def __init__(self, config, emit, lock=None, low_power=False):
         self.config, self.emit = config, emit
         self.lock = lock or threading.RLock()
+        # Low Power Mode or thermal pressure turns the balanced budget into the saver budget for this session.
+        self.low_power = low_power
+        self.cost_ratio = 0.0  # preview inference ms per ms of segment audio, measured on this device
         self.preroll = deque(maxlen=12)
         self.frames = []
         self.position = self.start = self.segment = self.revision = 0
@@ -218,11 +231,20 @@ class Segmenter:
         self.silent = 0 if voiced else self.silent + 1
         if self.silent * 20 >= self.threshold():
             self.finish()
-        elif (self.voiced >= 3 and self.last_voiced > self.snapshot_voiced
-              and len(self.frames) * 20 - self.last_preview >= self.config.preview_interval_ms):
+        elif self.voiced >= 3 and self.last_voiced > self.snapshot_voiced and self.preview_due():
             self.snapshot(False)
             self.snapshot_voiced = self.last_voiced
             self.last_preview = len(self.frames) * 20
+
+    def preview_due(self):
+        mode = self.config.power_mode
+        if self.low_power and mode == 'balanced':
+            mode = 'saver'
+        length = len(self.frames) * 20
+        interval = self.config.preview_interval_ms * (2 if mode == 'saver' else 1)
+        # A preview re-reads the whole segment, so its predicted cost grows with the segment.
+        budget = PREVIEW_BUDGET[mode] * self.cost_ratio * length
+        return length - self.last_preview >= max(interval, budget)
 
     def threshold(self):
         if self.config.endpoint_mode == 'fixed':
@@ -236,8 +258,11 @@ class Segmenter:
             return 1000
         return 500 if self.results[-2]['text'] == latest['text'] else 1800
 
-    def accept_preview(self, item, text):
+    def accept_preview(self, item, text, elapsed_ms=0):
         with self.lock:
+            audio_ms = (item.get('end_sample', 0) - item['start_sample']) / (RATE / 1000)
+            if elapsed_ms > 0 and audio_ms > 0:  # cached results cost nothing and say nothing about speed
+                self.cost_ratio = elapsed_ms / audio_ms
             if (not self.frames or item['segment_id'] != self.segment
                     or item['start_sample'] != self.start
                     or (self.results and item['revision'] <= self.results[-1]['revision'])):

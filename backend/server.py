@@ -11,7 +11,7 @@ from collections import deque
 from dataclasses import asdict
 from pathlib import Path
 from core import Config, FRAME, RATE, TranslationConfig, read_message, encode_message, Segmenter
-from adapter import Adapter
+from adapter import Adapter, release_mlx_cache
 from asr_api import APIRecognizer
 from recognition import RecognitionCache
 from translation import CONTEXT_PAIRS, TranslationPlanner, Translator, already_in_target, same_text, validate_translator
@@ -52,6 +52,10 @@ class Server:
         self.context = deque(maxlen=CONTEXT_PAIRS)
         self.unit = 0
         self.overload_session = None
+        # Idle release: the snapshot path of a model unloaded while idle, reloaded by the next start.
+        self.last_activity = time.monotonic()
+        self.released = None
+        self.translator_released = False
         self.config_path = self.root / 'config.json'
         self.translation_path = self.root / 'translation.json'
         try:
@@ -112,13 +116,29 @@ class Server:
             self.jobs.append(('finish', self.session))
             self.cv.notify()
 
+    def release_deadline(self):
+        minutes = self.config.idle_release_minutes
+        if (not minutes or self.state != 'ready' or self.downloader or self.translator_state in TRANSLATOR_BUSY
+                or (self.adapter.model is None and self.translator.model is None)):
+            return None
+        return self.last_activity + minutes * 60
+
     def worker(self):
         while self.alive:
             with self.cv:
-                self.cv.wait_for(lambda: self.jobs or self.preview or self.translating or self.translations or not self.alive)
+                kind = None
+                while not (self.jobs or self.preview or self.translating or self.translations or not self.alive):
+                    deadline = self.release_deadline()
+                    if deadline is not None and time.monotonic() >= deadline:
+                        kind, value = 'release', None
+                        break
+                    # Settings and state change on other threads; a slow re-check avoids notifying from each of them.
+                    self.cv.wait(60 if deadline is None else min(60, deadline - time.monotonic()))
                 if not self.alive:
                     return
-                if self.jobs:
+                if kind == 'release':
+                    pass
+                elif self.jobs:
                     kind, value = self.jobs.popleft()
                 elif self.translating or self.translations:
                     # Translation outranks previews but yields to every queued job between tokens.
@@ -130,6 +150,11 @@ class Server:
             try:
                 if kind in ('load_translator', 'unload_translator', 'translate'):
                     self.translator_job(kind, value)
+                elif kind == 'release':
+                    self.release_models()
+                elif kind == 'begin':
+                    if self.state == 'ready' and self.adapter.model is not None:
+                        self.begin(value)
                 elif kind == 'load_api':
                     config, key = value
                     if config.api_protocol == 'openai':
@@ -138,6 +163,7 @@ class Server:
                         self.api_recognizer.key = ''
                     self.adapter.unload()
                     self.recognition.clear()
+                    self.released = None
                     config.save(self.config_path)
                     self.config = config
                     self.send(type='config', config=asdict(config))
@@ -155,6 +181,7 @@ class Server:
                     self.status('warming', '正在预热模型…')
                     self.adapter.warmup()
                     self.api_recognizer.key = ''
+                    self.released = None
                     config.save(self.config_path)
                     self.config = config
                     self.send(type='config', config=asdict(config))
@@ -196,6 +223,7 @@ class Server:
                 elif kind == 'finish':
                     self.queue_unit(value, self.planner.flush(value))
                     if value == self.session:
+                        release_mlx_cache()  # buffers of the session's largest segment are not needed while idle
                         self.status('ready', '尾句处理完成')
             except Exception as e:
                 with self.cv:
@@ -210,8 +238,42 @@ class Server:
             finally:
                 with self.cv:
                     self.active = False
+                    self.last_activity = time.monotonic()
+
+    def release_models(self):
+        """Frees ASR and translator memory; the next start reloads them."""
+        # Holding the lock serializes with start: it either begins before this or sees the released model.
+        with self.cv:
+            if self.state != 'ready':
+                return
+            if self.adapter.model is not None:
+                self.released = self.adapter.path
+                self.recognition.clear()
+                self.adapter.unload()
+            if self.translator.model is not None:
+                self.cancel_translations()
+                self.translator.unload()
+                self.translator_released = True
+                self.translator_status('idle', '空闲已释放翻译模型 · 开始转写时重新加载')
+            release_mlx_cache()
+            self.status('ready', f'空闲 {self.config.idle_release_minutes} 分钟，已释放模型内存 · 开始转写时自动重新加载')
+
+    def begin(self, message):
+        low_power = message.get('low_power', False)
+        import webrtcvad
+        with self.cv:
+            self.vad = webrtcvad.Vad(2)
+            self.session = message['session_id']
+            self.final_segments.clear()
+            self.pending.clear()
+            self.seq = self.samples = 0
+            # Streaming sessions get audio and sentence ends from the cloud via the app; no local VAD.
+            self.segmenter = None if self.streaming() else Segmenter(self.config, self.enqueue, self.cv, low_power)
+            self.state = 'recording'  # under the lock, so an idle release can no longer start
+        self.status('recording', '正在聆听…')
 
     def queue_translator_load(self, config, path=''):
+        self.translator_released = False
         self.translator_status('loading', '等待加载翻译模型…')
         with self.cv:
             self.jobs.append(('load_translator', (config, path)))
@@ -389,6 +451,7 @@ class Server:
     def control(self, message):
         if message.get('protocol_version') != 1:
             raise ValueError('协议版本不兼容')
+        self.last_activity = time.monotonic()
         self.request = message.get('request_id', '')
         cmd = message['command']
         if cmd == 'hello':
@@ -429,6 +492,15 @@ class Server:
                     else:
                         self.jobs.append(('load', (config, config.local_model_path)))
                     self.cv.notify()
+        elif cmd == 'power_settings':
+            config = Config.parse({**asdict(self.config),
+                                   **{key: message[key] for key in ('power_mode', 'idle_release_minutes') if key in message}})
+            config.save(self.config_path)
+            with self.cv:
+                self.config = config
+                if self.segmenter is not None:
+                    self.segmenter.config = config  # the budget applies to the running session too
+            # No config echo: it would overwrite unsaved model edits in the app's settings form.
         elif cmd == 'translation_settings':
             values = asdict(self.translation)
             values.update({key: message[key] for key in ('enabled', 'target_language', 'provider', 'api_profile') if key in message})
@@ -472,25 +544,30 @@ class Server:
                 if self.download_role == 'translator':
                     self.translator_status('ready' if self.translator.model is not None else 'idle', '下载已取消，可重试续传')
                 else:
-                    self.status('ready' if self.adapter.model is not None else 'idle', '下载已取消，可重试续传')
+                    self.status('ready' if self.adapter.model is not None or self.released else 'idle', '下载已取消，可重试续传')
         elif cmd == 'start':
             if self.state != 'ready':
                 raise ValueError('模型尚未就绪')
             config = Config.parse({**asdict(self.config),
                                    'endpoint_mode': message.get('endpoint_mode', self.config.endpoint_mode),
                                    'endpoint_silence_ms': message.get('endpoint_silence_ms', self.config.endpoint_silence_ms)})
+            if type(message.get('low_power', False)) is not bool or not isinstance(message.get('session_id'), str):
+                raise ValueError('开始指令参数无效')
             if config != self.config:
                 config.save(self.config_path)
                 self.config = config
-            import webrtcvad
-            self.vad = webrtcvad.Vad(2)
-            self.session = message['session_id']
-            self.final_segments.clear()
-            self.pending.clear()
-            self.seq = self.samples = 0
-            # Streaming sessions get audio and sentence ends from the cloud via the app; no local VAD.
-            self.segmenter = None if self.streaming() else Segmenter(self.config, self.enqueue, self.cv)
-            self.status('recording', '正在聆听…')
+            with self.cv:
+                if self.released and self.config.provider == 'local' and self.adapter.model is None:
+                    # Released while idle: reload the same snapshot, then begin; a failed load drops the begin job.
+                    self.status('loading', '正在重新加载空闲时释放的模型…')
+                    self.jobs.append(('load', (Config(**asdict(self.config)), self.released)))
+                    self.jobs.append(('begin', message))
+                    self.cv.notify()
+                    return
+            if (self.translator_released and self.translation.enabled and self.translation.provider == 'local'
+                    and self.translator.model is None and self.translator_state not in TRANSLATOR_BUSY):
+                self.queue_translator_load(TranslationConfig(**asdict(self.translation)))
+            self.begin(message)
         elif cmd == 'stop':
             if message.get('session_id') == self.session:
                 self.flush()

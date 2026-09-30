@@ -87,7 +87,15 @@ The default shortcut is `Control + Option + Space`. Open subtitle mode from the 
 | Preset / 预设 | Model ID | Approx. download / 约下载大小 |
 | --- | --- | --- |
 | Qwen3-ASR 1.7B (default / 默认) | `mlx-community/Qwen3-ASR-1.7B-bf16` | 4.08 GB |
+| Qwen3-ASR 1.7B 8-bit | `mlx-community/Qwen3-ASR-1.7B-8bit` | ~2.5 GB |
+| Qwen3-ASR 0.6B 8-bit | `mlx-community/Qwen3-ASR-0.6B-8bit` | ~1 GB |
 | Whisper Large v3 Turbo | `mlx-community/whisper-large-v3-turbo` | 1.61 GB |
+
+The 8-bit presets use less memory and power; 0.6B is slightly less accurate.
+8-bit 预设内存占用和发热更低；0.6B 准确率略低。
+
+**Power / 能耗**: Settings → 转写 → 能耗. Balanced (default) caps preview GPU time at about 1/3 of speech time using this Mac's measured speed; Saver caps it at about 1/7; Low Power Mode or thermal pressure applies Saver automatically. Finals are unaffected. Idle models are released after 15 minutes by default and reloaded on the next start. Details: [docs/POWER-SAVING.md](docs/POWER-SAVING.md).
+**能耗**：设置 → 转写 → 能耗。均衡（默认）按本机实测速度把预览占用的 GPU 时间限制在语音时长的约 1/3，省电约 1/7；系统低电量模式或过热时自动按省电处理。定稿文字不受影响。空闲 15 分钟（可调）后释放模型内存，下次开始时自动重新加载。详见 [docs/POWER-SAVING.md](docs/POWER-SAVING.md)。
 
 Custom MLX-compatible Qwen3-ASR or Whisper IDs and local model directories are supported. Arbitrary Hugging Face and raw PyTorch/Transformers checkpoints are not directly supported.
 支持兼容 MLX 的自定义 Qwen3-ASR / Whisper ID 与本地模型目录；不直接支持任意 Hugging Face 模型或原始 PyTorch/Transformers 权重。

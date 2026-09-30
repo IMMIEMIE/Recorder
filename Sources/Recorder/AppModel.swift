@@ -21,6 +21,18 @@ struct Transcript: Identifiable {
     var translating: Bool { translations.values.contains { !$0.done } }
 }
 
+/// Audio level lives outside AppModel so ~20 updates a second redraw only the meter, not the whole window.
+final class LevelMeter: ObservableObject {
+    @Published private(set) var value: Float = 0
+    private var shown = Date.distantPast
+    func update(_ level: Float) {
+        let now = Date()
+        if level == 0 { if value != 0 { value = 0 }; return }
+        guard abs(level - value) >= 0.02, now.timeIntervalSince(shown) >= 1.0 / 15 else { return }
+        shown = now; value = level
+    }
+}
+
 final class AppModel: ObservableObject {
     @Published private(set) var subtitleMode = false
     private var subtitleWindow: SubtitleWindowController?
@@ -29,7 +41,11 @@ final class AppModel: ObservableObject {
     @Published var error = ""
     @Published var finalText: [Transcript] = []
     @Published var partial = ""
-    @Published var level: Float = 0
+    let meter = LevelMeter()
+    var level: Float {
+        get { meter.value }
+        set { meter.update(newValue) }
+    }
     @Published var microphones: [Microphone] = []
     @Published var audioSource = "microphone"
     @Published var audioFileURL: URL?
@@ -55,6 +71,11 @@ final class AppModel: ObservableObject {
     private var activeAPIProtocol = "openai"
     static let qwenID = "mlx-community/Qwen3-ASR-1.7B-bf16"
     static let whisperID = "mlx-community/whisper-large-v3-turbo"
+    /// Quantized builds need less memory and far less GPU work per decoded token.
+    static let qwen8bitID = "mlx-community/Qwen3-ASR-1.7B-8bit"
+    static let qwenSmallID = "mlx-community/Qwen3-ASR-0.6B-8bit"
+    static let asrPresets = [(qwenID, "Qwen3-ASR 1.7B"), (qwen8bitID, "Qwen3-ASR 1.7B 8-bit"),
+                             (qwenSmallID, "Qwen3-ASR 0.6B 8-bit"), (whisperID, "Whisper Large v3 Turbo")]
     @Published var activeModelID = "mlx-community/Qwen3-ASR-1.7B-bf16"
     @Published var preset = "mlx-community/Qwen3-ASR-1.7B-bf16"
     @Published var localPath = ""
@@ -64,6 +85,8 @@ final class AppModel: ObservableObject {
     @Published var endpointMode = "smart"
     @Published var silence = 1000
     @Published var maxSegment = 18
+    @Published private(set) var powerMode = "balanced"
+    @Published private(set) var idleRelease = 15
     @Published var progress = 0.0
     @Published var progressLabel = ""
     static let translatorQwenID = "mlx-community/Qwen3-4B-Instruct-2507-4bit"
@@ -352,7 +375,19 @@ final class AppModel: ObservableObject {
         ["schema_version":1, "model_id":modelID, "local_model_path":localPath,
          "revision":revision, "language":language, "preview_interval_ms":previewInterval,
          "endpoint_mode":endpointMode, "endpoint_silence_ms":silence, "max_segment_seconds":maxSegment,
-         "provider":asrProvider, "api_base_url":asrAPIBaseURL, "api_model":asrAPIModel, "api_protocol":asrAPIProtocol]
+         "provider":asrProvider, "api_base_url":asrAPIBaseURL, "api_model":asrAPIModel, "api_protocol":asrAPIProtocol,
+         "power_mode":powerMode, "idle_release_minutes":idleRelease]
+    }
+    /// Saved by the backend immediately without a model reload or a config echo; later config events keep it in sync.
+    func setPowerSettings(mode: String? = nil, idleRelease minutes: Int? = nil) {
+        guard !liveEnabled, transport != nil else { return }
+        powerMode = mode ?? powerMode; idleRelease = minutes ?? idleRelease
+        command("power_settings", extra: ["power_mode": powerMode, "idle_release_minutes": idleRelease])
+    }
+    /// macOS Low Power Mode or thermal pressure: the backend spends less GPU time on previews this session.
+    var lowPower: Bool {
+        let info = ProcessInfo.processInfo
+        return info.isLowPowerModeEnabled || info.thermalState == .serious || info.thermalState == .critical
     }
     func load(download: Bool = false) {
         guard !liveEnabled, !asrTesting else { return }
@@ -380,11 +415,8 @@ final class AppModel: ObservableObject {
     var activeModelName: String {
         if liveEnabled { return "Qwen3.8 LiveTranslate" }
         if activeASRProvider == "api" { return "API · \(activeAPIModel)" }
-        switch activeModelID {
-        case Self.qwenID: return "Qwen3-ASR 1.7B"
-        case Self.whisperID: return "Whisper Large v3 Turbo"
-        default: return activeModelID.split(separator: "/").last.map(String.init) ?? activeModelID
-        }
+        if let preset = Self.asrPresets.first(where: { $0.0 == activeModelID }) { return preset.1 }
+        return activeModelID.split(separator: "/").last.map(String.init) ?? activeModelID
     }
     func selectPreset(_ id: String) {
         guard !busy else { return }
@@ -533,7 +565,8 @@ final class AppModel: ObservableObject {
             self.partial = ""; self.revisions.removeAll()
             if self.liveEnabled { self.connectLive(test: false); return }
             if self.streamingActive { self.connectStreaming(); return }
-            self.command("start", extra: ["endpoint_mode": self.endpointMode, "endpoint_silence_ms": self.silence])
+            self.command("start", extra: ["endpoint_mode": self.endpointMode, "endpoint_silence_ms": self.silence,
+                                          "low_power": self.lowPower])
         }
         if audioSource == "microphone" {
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in DispatchQueue.main.async {
@@ -675,12 +708,14 @@ final class AppModel: ObservableObject {
             activeModelID = modelID
             localPath = c["local_model_path"] as? String ?? ""
             revision = c["revision"] as? String ?? ""
-            preset = localPath.isEmpty && [Self.qwenID, Self.whisperID].contains(modelID) ? modelID : "custom"
+            preset = localPath.isEmpty && Self.asrPresets.contains(where: { $0.0 == modelID }) ? modelID : "custom"
             language = c["language"] as? String ?? "auto"
             previewInterval = c["preview_interval_ms"] as? Int ?? 1200
             endpointMode = c["endpoint_mode"] as? String ?? "smart"
             silence = c["endpoint_silence_ms"] as? Int ?? 1000
             maxSegment = c["max_segment_seconds"] as? Int ?? 18
+            powerMode = c["power_mode"] as? String ?? "balanced"
+            idleRelease = c["idle_release_minutes"] as? Int ?? 15
             migrateLegacyStreamingConfig()
         case "status":
             let next = event["state"] as? String ?? "idle"
@@ -691,6 +726,8 @@ final class AppModel: ObservableObject {
                 stream?.cancel()
             }
             state = next; detail = event["detail"] as? String ?? ""
+            // A start that first reloads an idle-released model can fail before recording begins.
+            if pendingStart, next == "error" || next == "idle" { pendingStart = false }
             if next == "recording" { beginCapture() }
             if next == "ready" { partial = "" }
         case "partial", "final":

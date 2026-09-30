@@ -10,6 +10,21 @@ import time
 from pathlib import Path
 
 WHISPER_LANGUAGES = {'auto': None, 'Chinese': 'zh', 'English': 'en', 'Cantonese': 'yue', 'Japanese': 'ja', 'Korean': 'ko'}
+# MLX keeps freed buffers for reuse up to its memory limit by default; a cap hands them back between segments.
+MLX_CACHE_LIMIT = 512 * 1024 * 1024
+
+
+def limit_mlx_cache():
+    mx = sys.modules.get('mlx.core')
+    if mx is not None:
+        mx.set_cache_limit(MLX_CACHE_LIMIT)
+
+
+def release_mlx_cache():
+    mx = sys.modules.get('mlx.core')
+    if mx is not None:
+        mx.clear_cache()
+
 
 class Adapter:
     capabilities = {'language': True, 'partial_snapshots': True, 'incremental_audio': False}
@@ -79,6 +94,7 @@ class Adapter:
             else:
                 from mlx_audio.stt.utils import load_model
                 self.model = load_model(self.path)
+            limit_mlx_cache()
         except Exception:
             self.unload()
             raise
@@ -97,8 +113,7 @@ class Adapter:
         self.architecture = None
         self.path = None
         gc.collect()
-        if 'mlx.core' in sys.modules:
-            sys.modules['mlx.core'].clear_cache()
+        release_mlx_cache()
 
     def transcribe(self, pcm):
         import numpy as np

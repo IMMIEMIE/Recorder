@@ -78,9 +78,7 @@ struct MainView: View {
                     } else {
                         Text("采集其他应用播放的声音，不使用麦克风。首次使用需允许屏幕与系统音频录制权限。").font(.caption).foregroundStyle(.secondary)
                     }
-                    HStack(spacing: 3) {
-                        ForEach(0..<24) { i in Capsule().fill(Float(i)/24 < model.level ? accent : accent.opacity(0.12)).frame(height: 5 + CGFloat(i % 4) * 3) }
-                    }.frame(height: 22)
+                    LevelMeterView(meter: model.meter, accent: accent)
                     if model.audioSource == "microphone" { Button("刷新设备") { model.refreshDevices() }.buttonStyle(.link).font(.caption) }
                 }
                 Divider()
@@ -218,6 +216,38 @@ struct MainView: View {
     }
 }
 
+struct LevelMeterView: View {
+    @ObservedObject var meter: LevelMeter
+    let accent: Color
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<24) { i in Capsule().fill(Float(i)/24 < meter.value ? accent : accent.opacity(0.12)).frame(height: 5 + CGFloat(i % 4) * 3) }
+        }.frame(height: 22)
+    }
+}
+
+struct PowerSettingsView: View {
+    @ObservedObject var model: AppModel
+    var body: some View {
+        Picker("能耗", selection: Binding(get: { model.powerMode }, set: { model.setPowerSettings(mode: $0) })) {
+            Text("均衡（默认）").tag("balanced")
+            Text("省电").tag("saver")
+            Text("性能").tag("performance")
+        }
+        Text("转写中的预览会反复识别整句，最耗电。均衡模式按本机实测速度限制预览占用 GPU 的比例（约三分之一），省电模式约七分之一且预览间隔加倍；系统开启低电量模式或过热时，均衡自动按省电处理。更少的预览只会让中途文字更新变慢、智能定稿偶尔多等一会儿，定稿文字不受影响。")
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        Picker("空闲释放模型内存", selection: Binding(get: { model.idleRelease }, set: { model.setPowerSettings(idleRelease: $0) })) {
+            Text("从不").tag(0)
+            Text("5 分钟后").tag(5)
+            Text("15 分钟后（默认）").tag(15)
+            Text("30 分钟后").tag(30)
+            Text("60 分钟后").tag(60)
+        }
+        Text("空闲达到设定时间后卸载本地识别与翻译模型并归还内存；再次开始转写时自动重新加载，需等待数秒，加载完成后才开始录音。")
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var model: AppModel
     @State private var advanced = false
@@ -232,10 +262,13 @@ struct SettingsView: View {
             }.disabled(model.inputBusy)
             if model.asrProvider == "local" {
                 Picker("识别模型", selection: Binding(get: { model.preset }, set: { model.selectPreset($0) })) {
-                    Text("Qwen3-ASR 1.7B").tag(AppModel.qwenID)
-                    Text("Whisper Large v3 Turbo").tag(AppModel.whisperID)
+                    ForEach(AppModel.asrPresets, id: \.0) { Text($0.1).tag($0.0) }
                     Text("自定义模型…").tag("custom")
                 }.disabled(model.busy)
+                if [AppModel.qwen8bitID, AppModel.qwenSmallID].contains(model.preset) {
+                    Text("量化模型内存与发热明显更低：1.7B 8-bit 约 2.5 GB，0.6B 8-bit 约 1 GB（默认 1.7B 约 4 GB）；0.6B 准确率略低。需先下载。")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 if model.preset == "custom" {
                     TextField("Hugging Face 模型 ID", text: Binding(get: { model.modelID }, set: { model.modelID = $0; model.revision = "" }))
                     HStack { TextField("本地目录（可选）", text: $model.localPath); Button("选择…") { model.chooseFolder() } }
@@ -303,6 +336,7 @@ struct SettingsView: View {
                 Stepper("停顿定稿：\(Double(model.silence) / 1000, specifier: "%.2f") 秒", value: $model.silence, in: 300...2000, step: 20)
                     .disabled(model.inputBusy)
             }
+            PowerSettingsView(model: model)
             DisclosureGroup("高级", isExpanded: $advanced) {
                 VStack(alignment: .leading, spacing: 12) {
                     if model.endpointMode == "fixed" && !model.streamingASR {

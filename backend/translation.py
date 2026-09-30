@@ -11,6 +11,7 @@ import platform
 import re
 import sys
 from pathlib import Path
+from adapter import limit_mlx_cache
 from core import TRANSLATION_TARGETS
 
 ARCHITECTURES = ('qwen2', 'qwen3', 'hunyuan_v1_dense', 'llama', 'mistral')
@@ -153,6 +154,7 @@ class Translator:
         try:
             from mlx_lm import load
             self.model, self.tokenizer = load(str(path))
+            limit_mlx_cache()
             self.architecture = json.loads((path / 'config.json').read_text())['model_type']
             self.model_id = config.model_id
         except Exception:

@@ -128,9 +128,11 @@ class CoreTests(unittest.TestCase):
         a.close(); b.close()
 
 class FakeAdapter:
-    def __init__(self): self.model=True
+    def __init__(self): self.model=True; self.path='/models/snapshot'; self.loads=[]
     def transcribe(self,pcm): return '重复重复', 1
-    def unload(self): self.model=None
+    def unload(self): self.model=None; self.path=None
+    def load(self,config,path): self.model=True; self.path=path; self.loads.append(path)
+    def warmup(self): pass
 
 class ServerTests(unittest.TestCase):
     def setUp(self):
@@ -248,5 +250,53 @@ class ServerTests(unittest.TestCase):
         self.command('asr_stream_final', segment_id=3, text='会话已结束', start_sample=0)
         self.command('hello')
         self.assertEqual(self.event()['type'], 'config')
+
+    def until(self, predicate):
+        events=[]
+        while True:
+            event=self.event(); events.append(event)
+            if predicate(event): return events
+
+    def test_power_settings_save_and_apply_to_running_session(self):
+        self.command('start', low_power=True); self.assertEqual(self.event()['state'], 'recording')
+        self.assertTrue(self.s.segmenter.low_power)
+        self.command('power_settings', power_mode='saver', idle_release_minutes=0)
+        self.command('power_settings', power_mode='fast')
+        self.assertEqual(self.event()['type'], 'error')  # the valid update before it sends nothing back
+        saved=json.loads(self.s.config_path.read_text())
+        self.assertEqual((saved['power_mode'], saved['idle_release_minutes']), ('saver', 0))
+        self.assertEqual(self.s.segmenter.config.power_mode, 'saver')
+        self.assertEqual(self.s.config.power_mode, 'saver')
+
+    def test_invalid_low_power_flag_does_not_start(self):
+        self.command('start', low_power='yes')
+        self.assertEqual(self.event()['type'], 'error')
+        self.assertEqual(self.s.state, 'ready')
+
+    def test_idle_release_frees_model_and_start_reloads_it_before_recording(self):
+        self.s.config=Config(idle_release_minutes=5)
+        with self.s.cv:
+            self.s.last_activity=time.monotonic()-301
+            self.s.cv.notify()
+        released=self.until(lambda e: e.get('type')=='status')[-1]
+        self.assertIn('已释放模型内存', released['detail'])
+        self.assertEqual(released['state'], 'ready')
+        self.assertIsNone(self.s.adapter.model)
+        self.assertEqual(self.s.released, '/models/snapshot')
+        self.command('start', session_id='after-release')
+        states=[e['state'] for e in self.until(lambda e: e.get('state')=='recording') if e['type']=='status']
+        self.assertEqual(states, ['loading', 'loading', 'warming', 'ready', 'recording'])
+        self.assertEqual(self.s.adapter.loads, ['/models/snapshot'])
+        self.assertIsNone(self.s.released)
+        self.assertEqual(self.s.session, 'after-release')
+        self.assertIsNotNone(self.s.segmenter)
+
+    def test_models_are_never_released_while_recording(self):
+        self.s.config=Config(idle_release_minutes=5)
+        self.command('start'); self.assertEqual(self.event()['state'], 'recording')
+        self.s.last_activity=time.monotonic()-3600
+        self.assertIsNone(self.s.release_deadline())
+        self.s.release_models()
+        self.assertTrue(self.s.adapter.model)
 
 if __name__=='__main__': unittest.main()
