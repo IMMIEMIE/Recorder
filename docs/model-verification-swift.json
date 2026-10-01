@@ -2,7 +2,7 @@
   "architecture" : "arm64",
   "implementation" : "mlx-swift",
   "language" : "auto",
-  "load_seconds" : 1.7161230830242857,
+  "load_seconds" : 1.6174691249616444,
   "mlx_peak_bytes" : 4953113620,
   "model_path" : "models\/models--mlx-community--Qwen3-ASR-1.7B-bf16\/snapshots\/e1f6c266914abc5a46e8756e02580f834a6cf8a7",
   "model_type" : "qwen3_asr",
@@ -10,23 +10,23 @@
   "results" : [
     {
       "audio_seconds" : 8.0056250000000002,
-      "elapsed_ms" : 875.75820903293788,
+      "elapsed_ms" : 810.01291691791266,
       "file" : "chinese.aiff",
       "text" : "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。"
     },
     {
       "audio_seconds" : 5.1880625,
-      "elapsed_ms" : 918.59720798674971,
+      "elapsed_ms" : 859.98724994715303,
       "file" : "english.aiff",
       "text" : "This is a local speech recognition test. Please remember the number one, two, three, four, five."
     },
     {
       "audio_seconds" : 6.5996249999999996,
-      "elapsed_ms" : 730.13475001789629,
+      "elapsed_ms" : 703.54387501720339,
       "file" : "mixed.aiff",
       "text" : "今天我们测试 Python 和 Swift，所有音频都在本地处理。谢谢，谢谢。"
     }
   ],
   "revision" : "e1f6c266914abc5a46e8756e02580f834a6cf8a7",
-  "warmup_seconds" : 5.3208234580233693
+  "warmup_seconds" : 3.0638311250368133
 }

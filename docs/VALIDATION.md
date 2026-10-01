@@ -108,6 +108,21 @@ Swift 版单次转写慢约 1.6–1.8×（spike 时 ≈1.0×），待空载复�
 
 按 `spikes/HANDOFF.md` 的 Phase 4 清单在 macOS 上验证通过（提交 `3f51422` 含三处编译/测试修正）：缓存布局与 huggingface_hub 相同，Python 与 Swift 两版可共用同一份缓存。
 
-### Phase 5（删除 Python 后端）
+### Phase 5（删除 Python 后端）— 2026-10-01 在 macOS 27.0（Apple Silicon，Xcode 27.0 + Metal Toolchain 27A266a）验证通过
 
-待验证：编译、全部 Swift 测试、`verify_inprocess.sh pipeline`、DMG 体积、全新安装与旧版升级回归（清单见 `spikes/HANDOFF.md` §4）。
+按 `spikes/HANDOFF.md` §4 清单逐项执行：
+
+- **编译**：`swift build -c release` 与 `--product RecorderVerify` 通过。修正一处编译错误：`InProcessChannel.swift` 协议成员误标 `public`（Swift 不允许，协议本身已 `public`），见提交 `b018e08`。其余仅警告（Swift 6 并发、`cblas_dgemm` 弃用）。
+- **metallib**：`scripts/build_metallib.sh` 从 mlx-swift 0.32.2 源码编出 `.build/metallib/mlx.metallib`（2.35 MB）。前置条件：`sudo xcodebuild -license accept` + `xcodebuild -downloadComponent MetalToolchain`；xcode-select 指向 CommandLineTools 时需 `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`。
+- **测试脚本**：`test_backend.sh` 54 项、`test_download.sh` 7 项、`test_livetranslate.sh`、`test_ai.sh`、`test_audio.sh`、`test_streaming_asr.sh` 全绿。
+- **模型对拍**（自编 metallib）：`verify_inprocess.sh asr / whisper` 三个 fixture 文本与 Python 基线（`docs/*-verification.json`）逐字一致——同时证明自编 metallib 与 wheel 版 `mlx.metallib` 等效。`translate`：译文干净无 `<think>`，首 token 175–176 ms，24–30 tok/s。
+- **pipeline**（`docs/pipeline-verification-swift.json`）：`passed: true`。三个 fixture final 文本与 Python 基线一致（mixed 仅空格级差异 `Python 和 Swift`/`Python和Swift`，近义 token 浮动，规格允许）；Qwen→Whisper→Qwen 切换文本逐字一致，回切后 active bytes 4,082,276,760 → 4,082,281,900（ratio 1.000 ≤ 1.10）；同语言目标（中→简体中文）正确跳过。译文与 Python 基线存在生成级浮动（日译「スピーキング/スピーチ」等），语义等价。
+- **打包**：`build.sh && package.sh` 产出 `声笺-0.4.0-arm64.dmg` **15.3 MB**（0.3.1 为 574 MB；app 本体 50 MB，无 Python runtime）。向 bundle 临时放入 `x.safetensors` 后 `package.sh` 正确拒绝打包；移除后重打通过，sha256 校验 OK。
+- **升级回归**（0.3.x 数据）：DMG 替换安装 /Applications 旧版，模型缓存与 `config.json`（钉 revision `e1f6c26…`）/`translation.json` 原地沿用，启动无 Python sidecar。人工实测：麦克风转写、本地翻译、字幕模式、TXT 导出、API 识别、WebSocket 流式识别、LiveTranslate 全部正常。
+- 全新用户目录安装（无 config → refs/main→mtime 解析 + 应用内下载默认模型）路径未在本轮覆盖。
+
+### 遗留开放项
+
+- **推理速度**：Phase 3 单发 1.6–1.8× 差距仍在；pipeline 实测单次调用 534–737 ms（Python smart 定稿历史值 ~288 ms/call，段长不同非严格可比）。待空载复测 + Instruments 定位（候选：MLXRuntime 队列切换、kernel JIT、mel 前端）。
+- Hunyuan-MT-7B-4bit 分词器：未缓存未测；若快照无 `tokenizer.json`，`AutoTokenizer.from(modelFolder:)` 会失败（走翻译失败路径，不影响识别）。
+- `verify_endpoints.py` 的旧定稿对比未移植（与「从不强制定稿」设计矛盾）；智能定稿指标可与 `docs/endpoint-*-metrics.json` 历史值对照。

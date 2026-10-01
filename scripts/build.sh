@@ -3,7 +3,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache"
-swift build -c release --disable-sandbox --product Recorder
+# The app target must be built with the default CommandLineTools chain: SwiftPM under the Xcode
+# toolchain stamps the package's declared deployment target into LC_BUILD_VERSION's sdk field
+# (14.0 here), while the CLT chain stamps the real SDK — macOS gates the Liquid Glass look
+# (traffic lights included) on a linked SDK >= 26. build_metallib.sh picks Xcode on its own.
+env -u DEVELOPER_DIR swift build -c release --disable-sandbox --product Recorder
 metallib=$(scripts/build_metallib.sh)
 app="$PWD/dist/声笺.app"
 # Start from an empty bundle: earlier builds carried the Python runtime and backend/.

@@ -38,7 +38,7 @@ Qwen 约 4.08 GB，Whisper 约 1.61 GB；下载后可离线切换。
 模型和配置目录：~/Library/Application Support/LocalRecorder/
 默认快捷键：Control + Option + Space。
 
-此版本仅支持 Apple Silicon，要求 macOS 14 或更新；已实测 macOS 26.5.1。
+此版本仅支持 Apple Silicon，要求 macOS 14 或更新；已实测 macOS 27.0。
 本机试用构建使用临时签名，未通过 Apple 开发者签名与公证。
 不保存录音和文字历史，不上传音频。退出前可将文字另存为 TXT。
 「AI 提问」支持摘要、翻译与自定义问题，在「设置 → AI 服务」中填写 Base URL、模型 ID 和 API Key。

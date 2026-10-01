@@ -12,6 +12,11 @@ out=${1:-.build/metallib/mlx.metallib}
 src=.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal
 [ -d "$src" ] || swift package resolve >&2
 [ -d "$src" ] || { echo "未找到 $src，请确认 mlx-swift 依赖已解析" >&2; exit 1; }
+# Xcode's Metal compiler (CommandLineTools has none): fall back to a full Xcode when the
+# active developer directory lacks it, so callers need not export DEVELOPER_DIR themselves.
+if ! xcrun --find metal >/dev/null 2>&1 && [ -d /Applications/Xcode.app/Contents/Developer ]; then
+  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
 if ! echo '' | xcrun -sdk macosx metal -x metal -E - >/dev/null 2>&1; then
   echo "缺少 Metal 编译器：请安装完整 Xcode（xcode-select 指向 Xcode），并执行 xcodebuild -downloadComponent MetalToolchain" >&2
   exit 1
