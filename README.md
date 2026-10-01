@@ -40,7 +40,7 @@ Local transcription does not upload audio. LiveTranslate streams audio to the se
 | --- | --- |
 | Hardware / 硬件 | Apple Silicon Mac |
 | Operating system / 系统 | macOS 14 Sonoma 或更高版本 |
-| Build tools / 构建工具 | Xcode Command Line Tools |
+| Build tools / 构建工具 | Xcode with the Metal Toolchain component (`xcodebuild -downloadComponent MetalToolchain`) / 完整 Xcode 及 Metal Toolchain 组件 |
 | Disk & network / 磁盘与网络 | Model weights are downloaded separately; the default ASR model is about 4.08 GB / 模型权重需另行下载；默认识别模型约 4.08 GB |
 
 > The app is currently locally signed and not notarized, so macOS may require manual approval on first launch.
@@ -53,14 +53,13 @@ Local transcription does not upload audio. LiveTranslate streams audio to the se
 ```bash
 git clone https://github.com/IMMIEMIE/Recorder.git
 cd Recorder
-./scripts/setup.sh
 ./scripts/build.sh
 open "dist/声笺.app"
 ```
 
-`setup.sh` creates a project-local Python 3.12.14 environment and installs locked dependencies. `build.sh` produces `dist/声笺.app`. To make a DMG as well:
+`build.sh` builds the single-process Swift app (MLX inference via [mlx-swift](https://github.com/ml-explore/mlx-swift), dependencies pinned in `Package.resolved`), compiles the MLX Metal kernels, and produces `dist/声笺.app`. No Python environment is needed. To make a DMG as well:
 
-`setup.sh` 会创建项目内的 Python 3.12.14 环境并安装锁定依赖；`build.sh` 生成 `dist/声笺.app`。如需 DMG，可继续运行：
+`build.sh` 构建单进程 Swift 应用（通过 mlx-swift 在进程内推理，依赖版本锁定于 `Package.resolved`），编译 MLX 的 Metal 内核，生成 `dist/声笺.app`，无需 Python 环境。如需 DMG，可继续运行：
 
 ```bash
 ./scripts/package.sh
@@ -101,7 +100,7 @@ API 识别请填写 Base URL（如 `https://api.example.com/v1`）和支持 `POS
 
 点击**保存 / 启用**，可先用**测试连接**确认密钥和模型权限，再回到主窗口开始转写。若已开启 LiveTranslate 独立模式，先在 LiveTranslate 页将它关闭。测试连接只启动识别任务，不采集或发送音频。
 
-录音期间，音频约每 100 ms 一帧持续发送到服务端，识别中的文字实时显示；服务端检测到停顿后定稿整句，定稿句照常进入逐句翻译。停顿时长用转写设置中的「停顿定稿」调整（对应服务端 `max_sentence_silence`），「语言」设置作为识别语种提示。全部录音都会上传，按音频时长计费（模型页标价 ¥0.00033/秒）。密钥只在原生客户端使用，不发送给 Python 后端或写入配置文件。早期版本保存的其他地址或模型（如千问实时语音 `…/api-ws/v1/realtime`）会自动改为上述固定值，并沿用已保存的密钥。阿里云百炼的密钥不能用于此接口。
+录音期间，音频约每 100 ms 一帧持续发送到服务端，识别中的文字实时显示；服务端检测到停顿后定稿整句，定稿句照常进入逐句翻译。停顿时长用转写设置中的「停顿定稿」调整（对应服务端 `max_sentence_silence`），「语言」设置作为识别语种提示。全部录音都会上传，按音频时长计费（模型页标价 ¥0.00033/秒）。密钥只在原生客户端使用，不交给本地推理后端或写入配置文件。早期版本保存的其他地址或模型（如千问实时语音 `…/api-ws/v1/realtime`）会自动改为上述固定值，并沿用已保存的密钥。阿里云百炼的密钥不能用于此接口。
 
 协议依据：[模型页面](https://www.qianwenai.com/models/qwen-audio-3.0-asr-flash-streaming)、[WebSocket 接入指南](https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api)、[客户端事件](https://help.aliyun.com/zh/model-studio/fun-asr-client-events)、[服务端事件](https://help.aliyun.com/zh/model-studio/fun-asr-server-events)。
 
@@ -128,7 +127,7 @@ Targets are Simplified Chinese, Traditional Chinese, English, Japanese, Korean, 
 - 有完整译音的定稿文本块右下角显示「播放译音」，可重复点击重播；播放中再次点击可停止，点击其他段可切换。重播会停止本次自动译音，字幕继续更新。译音仅缓存在内存，不写入磁盘；清空文本或退出应用后释放。缓存最多 128 MB，超出后移除最早的译音；单段上限 30 秒，与播放器队列限制一致。未开启音频输出或译音未完整接收的文本块没有重播按钮。
 - 译音使用同一 LiveTranslate 会话生成，不调用其他模型。停止转写后会播完已收到的尾句，也可点击「停止译音」立即停止本次播放；字幕继续保留。输出设备变化或音频播放异常时暂停本次播放，字幕继续更新。麦克风模式建议使用耳机以避免回录；系统声音采集排除声笺自身的播放声音。译音可能增加云端音频输出费用。
 - 目标语言：中文、英语、日语、韩语、法语、德语、西班牙语、俄语。默认中文使用 `zh`，不进行简繁转换。
-- 启用后关闭本地推理进程，停用其他识别、翻译及 AI 提问入口；下次启动直接进入 LiveTranslate 模式。关闭该模式可恢复原有服务配置。
+- 启用后关闭本地推理后端，停用其他识别、翻译及 AI 提问入口；下次启动直接进入 LiveTranslate 模式。关闭该模式可恢复原有服务配置。
 - 停止采集后等待尾句处理，最长 30 秒；录音及处理尾句期间不能修改连接或目标语言。连接出错时保留收到的文字，未完成句子会标注，不自动切换其他模型。
 - 服务地址、语言和开关保存在应用偏好设置；专用 API Key 按地址分别存入钥匙串，留空保存会保留已有密钥。音频持续上传至所选服务并可能产生费用；**测试连接只配置会话，不发送音频**。
 
@@ -151,20 +150,21 @@ The app does not retain raw recordings or transcript history. System-audio captu
 
 ## Development / 开发与测试
 
-After `./scripts/setup.sh`, run:
+Model-free tests (local mock servers need only the system `python3`):
 
 ```bash
+./scripts/test_backend.sh
+./scripts/test_download.sh
 ./scripts/test_ai.sh
 ./scripts/test_audio.sh
+./scripts/test_streaming_asr.sh
 ./scripts/test_livetranslate.sh
-.venv/bin/python -m unittest discover -s tests -v
 ```
 
-Model-dependent verification requires cached weights and Metal access:
+Model-dependent verification requires cached weights under `models/` and Metal access:
 
 ```bash
-.venv/bin/python scripts/verify_endpoints.py
-.venv/bin/python scripts/verify_translation.py
+./scripts/verify_inprocess.sh            # per-model checks + paced real-time pipeline, reports in docs/
 ```
 
 Synthetic samples and local test servers are regression checks, not guarantees of recognition quality in every real-world environment. Read [docs/SMART-ENDPOINTS.md](docs/SMART-ENDPOINTS.md) and [docs/VALIDATION.md](docs/VALIDATION.md) for measurements and limitations.

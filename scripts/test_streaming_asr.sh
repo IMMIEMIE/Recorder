@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 port_file=$(mktemp /tmp/recorder-streaming-port.XXXXXX)
-.venv/bin/python tests/mock_streaming_asr_server.py "$port_file" &
+python3 tests/mock_streaming_asr_server.py "$port_file" &
 mock_pid=$!
 trap 'kill "$mock_pid" 2>/dev/null || true; rm -f "$port_file"' EXIT
 for attempt in {1..50}; do

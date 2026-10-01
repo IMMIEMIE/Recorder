@@ -51,6 +51,11 @@ struct LiveTranslatePlaybackQueue {
     private var audioDone = Set<String>()
     private var released = Set<String>()
     private var bufferedBytes = 0
+
+    init(timing: LiveTranslatePlaybackTiming) {
+        self.timing = timing
+    }
+
     var hasPendingAudio: Bool { bufferedBytes > 0 }
     var hasIncompleteSample: Bool { decoder.hasIncompleteSample }
 

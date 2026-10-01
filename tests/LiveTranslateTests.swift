@@ -151,7 +151,7 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         }
         let model = AppModel(defaults: defaults, integrateSystem: false)
         defer { model.shutdown() }
-        try check(model.liveEnabled && model.canStart, "Live mode starts without bundled Python or local models")
+        try check(model.liveEnabled && model.canStart, "Live mode starts without local models")
         model.load(); model.loadTranslator()
         try check(model.state == "ready", "local model load routes disabled")
         let target = model.translationTarget

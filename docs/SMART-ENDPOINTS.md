@@ -29,4 +29,4 @@
 - 60 项 Python 测试通过，包括 500/1000/1800 ms 阈值、预览改写、缩写和数字、恢复讲话、迟到/乱序结果、尾字保留、真实重复、缓存隔离及定稿只翻译一次。
 - 长语音完整块复用以确定性测试验证；此次真实模型对比使用短样本，不能代表长会议、噪声、所有语言和说话习惯，也不是具有人工逐词时间标注的误切率评测。
 - 应用 release 构建和签名校验通过。
-- 可复现命令：`.venv/bin/python scripts/verify_endpoints.py`；完整原始结果见 `endpoint-comparison.json`。
+- 可复现命令（Python 版，0.4.0 起已随 `backend/` 删除，见 Phase 5 之前的提交）：`.venv/bin/python scripts/verify_endpoints.py`；完整原始结果见 `endpoint-comparison.json`。Swift 版用 `./scripts/verify_inprocess.sh pipeline` 报告当前模式的识别调用次数与推理耗时（`asr_calls`/`asr_inference_ms`）。

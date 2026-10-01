@@ -1,0 +1,571 @@
+{
+  "architecture" : "arm64",
+  "asr_load_and_warmup_seconds" : 2.3439852090086788,
+  "asr_model" : "mlx-community\/Qwen3-ASR-1.7B-bf16",
+  "checks" : [
+    {
+      "detail" : "",
+      "name" : "chinese: 至少一个 final",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        1
+      ],
+      "name" : "chinese: final 段号不重复",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "chinese: 不强制切段",
+      "passed" : true
+    },
+    {
+      "detail" : [
+
+      ],
+      "name" : "chinese: 无错误事件",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "english: 至少一个 final",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        1
+      ],
+      "name" : "english: final 段号不重复",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "english: 不强制切段",
+      "passed" : true
+    },
+    {
+      "detail" : [
+
+      ],
+      "name" : "english: 无错误事件",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "mixed: 至少一个 final",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        1
+      ],
+      "name" : "mixed: final 段号不重复",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "mixed: 不强制切段",
+      "passed" : true
+    },
+    {
+      "detail" : [
+
+      ],
+      "name" : "mixed: 无错误事件",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "english-简体中文: 至少一个 final",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        1
+      ],
+      "name" : "english-简体中文: final 段号不重复",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "english-简体中文: 不强制切段",
+      "passed" : true
+    },
+    {
+      "detail" : [
+
+      ],
+      "name" : "english-简体中文: 无错误事件",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        {
+          "final_to_done_seconds" : 0.56233445799443871,
+          "final_to_first_text_seconds" : 0.20535233290866017,
+          "generation_ms" : 562,
+          "segment_id" : 1,
+          "skipped" : false,
+          "text" : "这是一个本地语音识别测试。请记住一、二、三、四、五。"
+        }
+      ],
+      "name" : "english→简体中文: 有译文",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "english-日本語: 至少一个 final",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        1
+      ],
+      "name" : "english-日本語: final 段号不重复",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "english-日本語: 不强制切段",
+      "passed" : true
+    },
+    {
+      "detail" : [
+
+      ],
+      "name" : "english-日本語: 无错误事件",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        {
+          "final_to_done_seconds" : 0.69317450001835823,
+          "final_to_first_text_seconds" : 0.22132262494415045,
+          "generation_ms" : 693,
+          "segment_id" : 1,
+          "skipped" : false,
+          "text" : "これはローカルスピーチ認識テストです。1、2、3、4、5を覚えましょう。"
+        }
+      ],
+      "name" : "english→日本語: 有译文",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "chinese-English: 至少一个 final",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        1
+      ],
+      "name" : "chinese-English: final 段号不重复",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "chinese-English: 不强制切段",
+      "passed" : true
+    },
+    {
+      "detail" : [
+
+      ],
+      "name" : "chinese-English: 无错误事件",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        {
+          "final_to_done_seconds" : 0.80661175004206598,
+          "final_to_first_text_seconds" : 0.2027683750493452,
+          "generation_ms" : 806,
+          "segment_id" : 1,
+          "skipped" : false,
+          "text" : "Hello, this is a local speech recognition test. We have a meeting at three in the afternoon, please remember the numbers one two three four five."
+        }
+      ],
+      "name" : "chinese→English: 有译文",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "mixed-English: 至少一个 final",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        1
+      ],
+      "name" : "mixed-English: final 段号不重复",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "mixed-English: 不强制切段",
+      "passed" : true
+    },
+    {
+      "detail" : [
+
+      ],
+      "name" : "mixed-English: 无错误事件",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        {
+          "final_to_done_seconds" : 0.60624154191464186,
+          "final_to_first_text_seconds" : 0.21864820900373161,
+          "generation_ms" : 606,
+          "segment_id" : 1,
+          "skipped" : false,
+          "text" : "Today we are testing Python and Swift, all audio is processed locally. Thank you, thank you."
+        }
+      ],
+      "name" : "mixed→English: 有译文",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "chinese-简体中文: 至少一个 final",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        1
+      ],
+      "name" : "chinese-简体中文: final 段号不重复",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "chinese-简体中文: 不强制切段",
+      "passed" : true
+    },
+    {
+      "detail" : [
+
+      ],
+      "name" : "chinese-简体中文: 无错误事件",
+      "passed" : true
+    },
+    {
+      "detail" : [
+
+      ],
+      "name" : "chinese→简体中文: 同语言不翻译",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "switch-1: 至少一个 final",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        1
+      ],
+      "name" : "switch-1: final 段号不重复",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "switch-1: 不强制切段",
+      "passed" : true
+    },
+    {
+      "detail" : [
+
+      ],
+      "name" : "switch-1: 无错误事件",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "switch-2: 至少一个 final",
+      "passed" : true
+    },
+    {
+      "detail" : [
+        1
+      ],
+      "name" : "switch-2: final 段号不重复",
+      "passed" : true
+    },
+    {
+      "detail" : "",
+      "name" : "switch-2: 不强制切段",
+      "passed" : true
+    },
+    {
+      "detail" : [
+
+      ],
+      "name" : "switch-2: 无错误事件",
+      "passed" : true
+    },
+    {
+      "detail" : {
+        "after_switch_back" : 4082281900,
+        "first" : 4082277676
+      },
+      "name" : "切换回原模型后显存回落（上一模型已释放）",
+      "passed" : true
+    }
+  ],
+  "endpoint_mode" : "smart",
+  "implementation" : "mlx-swift",
+  "language" : "auto",
+  "mlx_active_bytes_after_load" : 4082277676,
+  "mlx_peak_bytes" : 7211012224,
+  "offline_environment" : true,
+  "paced_audio" : true,
+  "passed" : true,
+  "platform" : "Version 27.0 (Build 26A428)",
+  "sessions" : [
+    {
+      "asr_calls" : 7,
+      "asr_inference_ms" : 4114,
+      "boundaries" : [
+        {
+          "end_sample" : 174400,
+          "start_sample" : 12160,
+          "text" : "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+          "vad_speech_to_final_ms" : 1783.4652910009031
+        }
+      ],
+      "finals" : 1,
+      "fixture" : "chinese",
+      "label" : "chinese",
+      "partials" : 7,
+      "session_id" : "pipeline-1-chinese",
+      "stop_to_last_event_seconds" : 0.00010112498421221972,
+      "stop_to_ready_seconds" : 0.00010112498421221972,
+      "text" : "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+      "units" : [
+
+      ]
+    },
+    {
+      "asr_calls" : 5,
+      "asr_inference_ms" : 3128,
+      "boundaries" : [
+        {
+          "end_sample" : 128640,
+          "start_sample" : 12160,
+          "text" : "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+          "vad_speech_to_final_ms" : 1783.2486249879
+        }
+      ],
+      "finals" : 1,
+      "fixture" : "english",
+      "label" : "english",
+      "partials" : 5,
+      "session_id" : "pipeline-2-english",
+      "stop_to_last_event_seconds" : 0.00011283298954367638,
+      "stop_to_ready_seconds" : 0.00011283298954367638,
+      "text" : "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+      "units" : [
+
+      ]
+    },
+    {
+      "asr_calls" : 6,
+      "asr_inference_ms" : 3205,
+      "boundaries" : [
+        {
+          "end_sample" : 151680,
+          "start_sample" : 13120,
+          "text" : "今天我们测试 Python 和 Swift，所有音频都在本地处理。谢谢，谢谢。",
+          "vad_speech_to_final_ms" : 1783.6369580402973
+        }
+      ],
+      "finals" : 1,
+      "fixture" : "mixed",
+      "label" : "mixed",
+      "partials" : 6,
+      "session_id" : "pipeline-3-mixed",
+      "stop_to_last_event_seconds" : 5.4958043619990349e-05,
+      "stop_to_ready_seconds" : 5.4958043619990349e-05,
+      "text" : "今天我们测试 Python 和 Swift，所有音频都在本地处理。谢谢，谢谢。",
+      "units" : [
+
+      ]
+    }
+  ],
+  "switching" : [
+    {
+      "active_bytes" : 4082277676,
+      "load_and_warmup_seconds" : 2.3439852090086788,
+      "model" : "mlx-community\/Qwen3-ASR-1.7B-bf16"
+    },
+    {
+      "active_bytes" : 1618312090,
+      "load_and_warmup_seconds" : 0.96258375002071261,
+      "model" : "mlx-community\/whisper-large-v3-turbo",
+      "text" : "你好,这是一个本地语音识别测试,今天下午三点开会,请记住数字12345。"
+    },
+    {
+      "active_bytes" : 4082281900,
+      "load_and_warmup_seconds" : 1.2867649999679998,
+      "model" : "mlx-community\/Qwen3-ASR-1.7B-bf16",
+      "text" : "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。"
+    }
+  ],
+  "translation" : {
+    "load_and_warmup_seconds" : 1.6050732500152662,
+    "model" : "mlx-community\/Qwen3-4B-Instruct-2507-4bit",
+    "sessions" : [
+      {
+        "asr_calls" : 5,
+        "asr_inference_ms" : 3685,
+        "boundaries" : [
+          {
+            "end_sample" : 99200,
+            "start_sample" : 12160,
+            "text" : "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+            "vad_speech_to_final_ms" : 977.03500005882211
+          }
+        ],
+        "finals" : 1,
+        "fixture" : "english",
+        "label" : "english-简体中文",
+        "partials" : 3,
+        "session_id" : "pipeline-4-english-简体中文",
+        "stop_to_last_event_seconds" : 1.5350839580642059,
+        "stop_to_ready_seconds" : 0.97278050007298589,
+        "target" : "简体中文",
+        "text" : "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+        "units" : [
+          {
+            "final_to_done_seconds" : 0.56233445799443871,
+            "final_to_first_text_seconds" : 0.20535233290866017,
+            "generation_ms" : 562,
+            "segment_id" : 1,
+            "skipped" : false,
+            "text" : "这是一个本地语音识别测试。请记住一、二、三、四、五。"
+          }
+        ]
+      },
+      {
+        "asr_calls" : 5,
+        "asr_inference_ms" : 3179,
+        "boundaries" : [
+          {
+            "end_sample" : 99200,
+            "start_sample" : 12160,
+            "text" : "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+            "vad_speech_to_final_ms" : 1037.1856250101698
+          }
+        ],
+        "finals" : 1,
+        "fixture" : "english",
+        "label" : "english-日本語",
+        "partials" : 3,
+        "session_id" : "pipeline-5-english-日本語",
+        "stop_to_last_event_seconds" : 1.7263462080154568,
+        "stop_to_ready_seconds" : 1.0331955419387668,
+        "target" : "日本語",
+        "text" : "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+        "units" : [
+          {
+            "final_to_done_seconds" : 0.69317450001835823,
+            "final_to_first_text_seconds" : 0.22132262494415045,
+            "generation_ms" : 693,
+            "segment_id" : 1,
+            "skipped" : false,
+            "text" : "これはローカルスピーチ認識テストです。1、2、3、4、5を覚えましょう。"
+          }
+        ]
+      },
+      {
+        "asr_calls" : 7,
+        "asr_inference_ms" : 4033,
+        "boundaries" : [
+          {
+            "end_sample" : 144320,
+            "start_sample" : 12160,
+            "text" : "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+            "vad_speech_to_final_ms" : 808.19229096639947
+          }
+        ],
+        "finals" : 1,
+        "fixture" : "chinese",
+        "label" : "chinese-English",
+        "partials" : 6,
+        "session_id" : "pipeline-6-chinese-English",
+        "stop_to_last_event_seconds" : 1.6131597079802305,
+        "stop_to_ready_seconds" : 0.8065560000250116,
+        "target" : "English",
+        "text" : "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+        "units" : [
+          {
+            "final_to_done_seconds" : 0.80661175004206598,
+            "final_to_first_text_seconds" : 0.2027683750493452,
+            "generation_ms" : 806,
+            "segment_id" : 1,
+            "skipped" : false,
+            "text" : "Hello, this is a local speech recognition test. We have a meeting at three in the afternoon, please remember the numbers one two three four five."
+          }
+        ]
+      },
+      {
+        "asr_calls" : 6,
+        "asr_inference_ms" : 3211,
+        "boundaries" : [
+          {
+            "end_sample" : 121600,
+            "start_sample" : 13120,
+            "text" : "今天我们测试Python和Swift，所有音频都在本地处理。谢谢，谢谢。",
+            "vad_speech_to_final_ms" : 761.41750006936525
+          }
+        ],
+        "finals" : 1,
+        "fixture" : "mixed",
+        "label" : "mixed-English",
+        "partials" : 5,
+        "session_id" : "pipeline-7-mixed-English",
+        "stop_to_last_event_seconds" : 1.3639349169097841,
+        "stop_to_ready_seconds" : 0.75771662499755621,
+        "target" : "English",
+        "text" : "今天我们测试Python和Swift，所有音频都在本地处理。谢谢，谢谢。",
+        "units" : [
+          {
+            "final_to_done_seconds" : 0.60624154191464186,
+            "final_to_first_text_seconds" : 0.21864820900373161,
+            "generation_ms" : 606,
+            "segment_id" : 1,
+            "skipped" : false,
+            "text" : "Today we are testing Python and Swift, all audio is processed locally. Thank you, thank you."
+          }
+        ]
+      },
+      {
+        "asr_calls" : 7,
+        "asr_inference_ms" : 3967,
+        "boundaries" : [
+          {
+            "end_sample" : 144320,
+            "start_sample" : 12160,
+            "text" : "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+            "vad_speech_to_final_ms" : 812.02029101084963
+          }
+        ],
+        "finals" : 1,
+        "fixture" : "chinese",
+        "label" : "chinese-简体中文",
+        "partials" : 6,
+        "session_id" : "pipeline-8-chinese-简体中文",
+        "stop_to_last_event_seconds" : 0.80813283391762525,
+        "stop_to_ready_seconds" : 0.80813283391762525,
+        "target" : "简体中文",
+        "text" : "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+        "units" : [
+
+        ]
+      }
+    ]
+  }
+}
