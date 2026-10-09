@@ -75,4 +75,12 @@ Version bumps: the version string is hardcoded in `scripts/build.sh` (Info.plist
 - The settings directory and model cache layout stay compatible with existing installs (`config.json`, `translation.json`, `models/models--<owner>--<model>/snapshots/<sha>`).
 - Dependencies are pinned (`Package.resolved`, mlx-swift exact version matching the compiled kernels), and nothing is installed at runtime.
 
+## Android (`android/`)
+
+声笺安卓版 is a separate Gradle project that keeps only LiveTranslate (cloud real-time transcription + translation); none of the local backend, models, or other API routes are ported. Plan and phases: `docs/ANDROID-PLAN.md`.
+
+- `android/core` (Kotlin/JVM, no Android SDK): a port of `LiveTranslate.swift`/`LiveTranslateAudio.swift` — `LiveTranslateConfig`, `LiveTranslateEvents`, `LiveTranslateAudioDecoder`/`LiveTranslatePlaybackQueue`, and an OkHttp `LiveTranslateClient`. Keep protocol behaviour, limits and Chinese error texts in sync with the Swift versions. It uses `org.json` as `compileOnly` (Android provides it).
+- `android/app` (Compose): `SessionController` (main-thread state), `MicrophoneSource`, `SpeechPlayer`, `SecretStore` (Keystore AES-GCM), `RecordingService` (microphone foreground service).
+- Tests: `cd android && ./gradlew -PcoreOnly=true :core:test` (runs against `tests/mock_livetranslate_server.py`; if you change that fixture, run both this and `scripts/test_livetranslate.sh`). `./gradlew :app:assembleDebug` needs the Android SDK; CI is `.github/workflows/android.yml`.
+
 Release notes and verification history are in `docs/RELEASE-*.md` and `docs/VALIDATION.md`.
