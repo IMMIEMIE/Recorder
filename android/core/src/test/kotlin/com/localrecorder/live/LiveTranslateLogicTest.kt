@@ -136,4 +136,26 @@ class LiveTranslateLogicTest {
         events.apply(json("type" to "conversation.item.input_audio_transcription.completed", "item_id" to "s2", "transcript" to "完整原文"))
         assertEquals("repeated speech is never deduplicated by text", 2, events.rows.size)
     }
+
+    @Test
+    fun longSessionBookkeepingIsBounded() {
+        val events = LiveTranslateEvents()
+        events.apply(mapping("s", "t")); events.apply(sourceFinal("s"))
+        events.apply(json("type" to "response.text.done", "item_id" to "t", "text" to "译文"))
+        events.apply(sourceFinal("keep"))
+        events.retire("s")
+        assertEquals(listOf("keep"), events.order)
+        assertTrue(events.outputs.isEmpty())
+        // Late events for a retired row or its translation never bring it back.
+        events.apply(sourceFinal("s")); events.apply(mapping("s", "t2"))
+        events.apply(json("type" to "response.text.delta", "item_id" to "t", "delta" to "迟到"))
+        assertEquals(listOf("keep"), events.order)
+        assertFalse(events.hasUnmatchedOutput)
+
+        val recent = RecentIds(limit = 3)
+        assertTrue(recent.add("a")); assertFalse("duplicate", recent.add("a"))
+        assertTrue(recent.add("b")); assertTrue(recent.add("c")); assertTrue(recent.add("d"))
+        assertFalse(recent.add("d"))
+        assertTrue("only the most recent IDs are remembered", recent.add("a"))
+    }
 }

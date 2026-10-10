@@ -1,13 +1,26 @@
 package com.localrecorder.shengjian
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.media.AudioRecordingConfiguration
+import android.net.ConnectivityManager
+import android.net.Network
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import com.localrecorder.live.Cancellable
+import com.localrecorder.live.LiveSession
 import com.localrecorder.live.LiveTranslateClient
 import com.localrecorder.live.LiveTranslateConfig
-import com.localrecorder.live.LiveTranslateEvents
 import com.localrecorder.live.LiveTranslateException
-import com.localrecorder.live.LiveTranslatePlaybackQueue
+import com.localrecorder.live.LiveTransport
+import com.localrecorder.live.SessionPlatform
+import com.localrecorder.live.SessionSnapshot
+import com.localrecorder.live.SessionState
+import com.localrecorder.live.SpeechOutput
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -15,132 +28,82 @@ import kotlinx.coroutines.flow.update
 import org.json.JSONObject
 import java.util.concurrent.Executor
 
-enum class SessionState { IDLE, CONNECTING, RECORDING, FINISHING }
-
-data class SubtitleRow(
-    val key: String,
-    val source: String,
-    val sourceDone: Boolean,
-    val translation: String,
-    val translationDone: Boolean,
-)
-
 data class UiState(
-    val state: SessionState = SessionState.IDLE,
+    val session: SessionSnapshot = SessionSnapshot(),
     val config: LiveTranslateConfig = LiveTranslateConfig(),
+    val options: AppOptions = AppOptions(),
     val hasKey: Boolean = false,
-    val rows: List<SubtitleRow> = emptyList(),
-    val status: String = "",
-    val error: String = "",
-    val notice: String = "",
-    val playing: Boolean = false,
     val testing: Boolean = false,
     val settingsMessage: String = "",
-)
+) {
+    val status: String get() = session.status.ifEmpty { "就绪 · 目标语言 ${config.languageName}" }
+}
 
 /**
- * Owns the LiveTranslate session, microphone and speech player. All state changes happen on the
- * main thread; transcripts live only in memory (nothing is persisted).
+ * The Android side of [LiveSession] (microphone, speech player, foreground service, network and
+ * audio-routing callbacks) plus settings. Everything runs on the main thread; the session logic
+ * itself lives in `:core` and is tested there.
  */
-class SessionController(private val context: Context) {
+class SessionController(private val context: Context) : SessionPlatform {
     private val settings = SettingsStore(context)
     private val secrets = SecretStore(context)
     private val main = Handler(Looper.getMainLooper())
     private val mainExecutor = Executor { main.post(it) }
+    private val audioManager = context.getSystemService(AudioManager::class.java)
+    private val connectivity = context.getSystemService(ConnectivityManager::class.java)
+    private val routing = AudioRouting(audioManager)
+
+    /** Debug builds accept ws://127.0.0.1 to run against tests/mock_livetranslate_server.py (adb reverse). */
+    private val allowLocalhost = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
     private var config = settings.load()
-    private val history = mutableListOf<SubtitleRow>()
-    private var events = LiveTranslateEvents()
-    private var session = 0
-    private var client: LiveTranslateClient? = null
+    private var options = settings.loadOptions()
+    private val engine = LiveSession(this, ::render)
     private var microphone: MicrophoneSource? = null
     private var player: SpeechPlayer? = null
-    private var playback: LiveTranslatePlaybackQueue? = null
     private var tester: LiveTranslateClient? = null
+    private var monitoringNetwork = false
+
+    // Ongoing notification: the latest translation of this session, at most one update per second.
+    private var firstRowKey: String? = null
+    private var notified = ""
+    private var notifiedAt = 0L
+    private var notificationPending = false
+    private val notificationUpdate = Runnable {
+        notificationPending = false
+        pushNotification()
+    }
 
     init {
-        _ui.update { it.copy(config = config, hasKey = secrets.has(config.keyAccount), status = readyStatus()) }
+        _ui.update { it.copy(config = config, options = options, hasKey = secrets.has(config.keyAccount)) }
     }
-
-    private fun readyStatus() = "就绪 · 目标语言 ${config.languageName}"
 
     /** Starts a session; the caller has already obtained RECORD_AUDIO. */
-    fun start() {
-        if (_ui.value.state != SessionState.IDLE) return
-        val key = secrets.get(config.keyAccount).orEmpty()
-        val token = ++session
-        events = LiveTranslateEvents()
-        val next = LiveTranslateClient(SessionListener(token), mainExecutor)
-        try {
-            next.connect(config, key)
-        } catch (e: LiveTranslateException) {
-            _ui.update { it.copy(error = e.message.orEmpty()) }
-            return
-        }
-        client = next
-        stopPlayback()
-        if (config.audioOutput) playback = LiveTranslatePlaybackQueue(config.playbackTiming)
-        _ui.update { it.copy(state = SessionState.CONNECTING, status = "正在连接 LiveTranslate…", error = "", notice = "") }
-        try {
-            RecordingService.start(context)
-        } catch (e: Exception) {
-            next.cancel()
-            end("无法启动前台录音服务，请在应用位于前台时开始")
-        }
-    }
+    fun start() = engine.start(config, secrets.get(config.keyAccount).orEmpty(), options.autoReconnect)
 
-    /** Stops capture; the server still delivers the tail before the session ends. */
-    fun stop() {
-        when (_ui.value.state) {
-            SessionState.CONNECTING -> {
-                client?.cancel()
-                end(null)
-            }
-            SessionState.RECORDING -> {
-                // Joins the capture thread, so every chunk is queued before session.finish.
-                microphone?.stop()
-                microphone = null
-                client?.finish()
-                _ui.update { it.copy(state = SessionState.FINISHING, status = "正在等待尾句结果…") }
-            }
-            else -> Unit
-        }
-    }
-
-    fun clear() {
-        if (_ui.value.state != SessionState.IDLE) return
-        history.clear()
-        events = LiveTranslateEvents()
-        publishRows()
-    }
-
-    fun exportText(): String = _ui.value.rows.joinToString("\n\n") { row ->
-        listOf(row.source, row.translation).filter { it.isNotBlank() }.joinToString("\n")
-    }
-
-    fun stopPlayback() {
-        player?.stop()
-        player = null
-        _ui.update { it.copy(playing = false) }
-    }
-
-    fun dismissMessages() = _ui.update { it.copy(error = "", notice = "") }
+    fun stop() = engine.stop()
+    fun clear() = engine.clear()
+    fun exportText(): String = engine.exportText()
+    fun stopPlayback() = engine.stopPlayback()
+    fun dismissMessages() = engine.dismissMessages()
 
     /** Saves settings; a blank key keeps the key already saved for this endpoint. */
-    fun saveSettings(draft: LiveTranslateConfig, key: String): Boolean {
-        if (_ui.value.state != SessionState.IDLE) {
+    fun saveSettings(draft: LiveTranslateConfig, key: String, draftOptions: AppOptions): Boolean {
+        if (engine.snapshot.state != SessionState.IDLE) {
             _ui.update { it.copy(settingsMessage = "转写进行中，停止后再修改设置") }
             return false
         }
         return try {
-            val saved = settings.save(draft)
+            val saved = settings.save(draft, allowLocalhost)
+            settings.saveOptions(draftOptions)
             if (key.isNotBlank()) secrets.put(saved.keyAccount, key.trim())
             config = saved
+            options = draftOptions
             _ui.update {
-                it.copy(config = saved, hasKey = secrets.has(saved.keyAccount), settingsMessage = "已保存", status = readyStatus())
+                it.copy(config = saved, options = draftOptions, hasKey = secrets.has(saved.keyAccount), settingsMessage = "已保存")
             }
             true
         } catch (e: LiveTranslateException) {
@@ -152,13 +115,22 @@ class SessionController(private val context: Context) {
         }
     }
 
-    fun hasKey(endpoint: String): Boolean = secrets.has(LiveTranslateConfig(endpoint = endpoint).keyAccount)
+    /** Keys are stored under the normalized address. */
+    fun hasKey(endpoint: String): Boolean {
+        val draft = LiveTranslateConfig(endpoint = endpoint)
+        val account = try {
+            draft.normalized(allowLocalhost).keyAccount
+        } catch (_: LiveTranslateException) {
+            draft.keyAccount
+        }
+        return secrets.has(account)
+    }
 
     /** Establishes a session without capturing or sending audio. */
     fun testConnection(draft: LiveTranslateConfig, key: String) {
-        if (_ui.value.testing || _ui.value.state != SessionState.IDLE) return
+        if (_ui.value.testing || engine.snapshot.state != SessionState.IDLE) return
         val draftConfig = try {
-            draft.normalized()
+            draft.normalized(allowLocalhost)
         } catch (e: LiveTranslateException) {
             _ui.update { it.copy(settingsMessage = e.message.orEmpty()) }
             return
@@ -168,12 +140,12 @@ class SessionController(private val context: Context) {
         probe = LiveTranslateClient(object : LiveTranslateClient.Listener {
             override fun onReady() = probe.finish()
             override fun onEvent(event: JSONObject) = Unit
-            override fun onEnd(error: String?) {
+            override fun onEnd(error: String?, recoverable: Boolean) {
                 if (tester !== probe) return
                 tester = null
                 _ui.update { it.copy(testing = false, settingsMessage = error ?: "连接成功：会话已建立并确认配置，未发送音频") }
             }
-        }, mainExecutor, finishTimeoutMs = 10_000)
+        }, mainExecutor, finishTimeoutMs = 10_000, allowLocalhost = allowLocalhost)
         try {
             probe.connect(draftConfig, secret)
         } catch (e: LiveTranslateException) {
@@ -184,113 +156,143 @@ class SessionController(private val context: Context) {
         _ui.update { it.copy(testing = true, settingsMessage = "正在测试连接…") }
     }
 
-    private inner class SessionListener(private val token: Int) : LiveTranslateClient.Listener {
-        override fun onReady() {
-            if (token != session || _ui.value.state != SessionState.CONNECTING) return
-            if (config.audioOutput) {
-                try {
-                    player = SpeechPlayer().also { it.start(config.volume) }
-                    _ui.update { it.copy(playing = true) }
-                } catch (e: Exception) {
+    private fun render(snapshot: SessionSnapshot) {
+        _ui.update { it.copy(session = snapshot) }
+        if (snapshot.state == SessionState.IDLE || notificationPending) return
+        val wait = notifiedAt + 1_000 - SystemClock.elapsedRealtime()
+        if (wait <= 0) {
+            pushNotification()
+        } else {
+            notificationPending = true
+            main.postDelayed(notificationUpdate, wait)
+        }
+    }
+
+    private fun pushNotification() {
+        val snapshot = engine.snapshot
+        if (snapshot.state == SessionState.IDLE) return
+        val title = if (snapshot.state == SessionState.RECONNECTING) "声笺正在重新连接…" else RecordingService.DEFAULT_TITLE
+        val latest = snapshot.rows.asReversed().asSequence()
+            .takeWhile { it.key != firstRowKey }
+            .firstOrNull { it.translation.isNotEmpty() }
+        val text = latest?.translation ?: RecordingService.DEFAULT_TEXT
+        val content = "$title\n$text"
+        if (content == notified) return
+        if (RecordingService.update(context, title, text)) {
+            notified = content
+            notifiedAt = SystemClock.elapsedRealtime()
+        }
+    }
+
+    // SessionPlatform
+
+    override fun post(block: () -> Unit) {
+        main.post(block)
+    }
+
+    override fun schedule(delayMs: Long, block: () -> Unit): Cancellable {
+        val task = Runnable(block)
+        main.postDelayed(task, delayMs)
+        return Cancellable { main.removeCallbacks(task) }
+    }
+
+    override fun transport(listener: LiveTranslateClient.Listener): LiveTransport =
+        LiveTranslateClient(listener, mainExecutor, allowLocalhost = allowLocalhost)
+
+    override fun startCapture(onChunk: (ByteArray) -> Unit, onError: (String) -> Unit) {
+        val notices = mutableListOf<String>()
+        var headset: AudioDeviceInfo? = null
+        if (options.bluetoothMicrophone) {
+            headset = routing.startBluetoothMicrophone()
+            if (headset == null) notices += "未找到可用的蓝牙耳机麦克风，已改用手机麦克风"
+        }
+        // Translated speech from the loudspeaker would be captured and translated again.
+        val loudspeaker = config.audioOutput && headset == null && !routing.hasHeadphones()
+        val source = MicrophoneSource(onChunk, onError, communication = loudspeaker || headset != null, preferredDevice = headset)
+        try {
+            source.start()
+        } catch (e: Exception) {
+            routing.stopBluetoothMicrophone()
+            throw e
+        }
+        microphone = source
+        if (loudspeaker) {
+            notices += if (source.echoCancelled) "未检测到耳机：已启用回声消除，外放的译音仍可能被再次收录，建议佩戴耳机"
+            else "未检测到耳机，本机也不支持回声消除：外放的译音可能被再次收录，建议佩戴耳机"
+        }
+        audioManager.registerAudioRecordingCallback(recordingCallback, main)
+        if (notices.isNotEmpty()) engine.notice(notices.joinToString("\n"))
+    }
+
+    override fun stopCapture() {
+        main.removeCallbacks(silenceCheck)
+        audioManager.unregisterAudioRecordingCallback(recordingCallback)
+        microphone?.stop()
+        microphone = null
+        releaseRouting()
+    }
+
+    override fun speech(): SpeechOutput {
+        lateinit var created: SpeechPlayer
+        created = SpeechPlayer(
+            audioManager, main, voiceRoute = routing.bluetoothActive,
+            onFocusLost = {
+                if (player === created) engine.interruptPlayback("通话或其他应用占用了音频输出，已停止译音；字幕继续更新")
+            },
+            onStopped = {
+                if (player === created) {
                     player = null
-                    _ui.update { it.copy(notice = "无法启动译音播放，仅显示字幕") }
+                    releaseRouting()
                 }
+            },
+        )
+        player = created
+        return created
+    }
+
+    override fun sessionActive(active: Boolean) {
+        if (active) {
+            firstRowKey = engine.snapshot.rows.lastOrNull()?.key
+            notified = ""
+            RecordingService.start(context)
+            if (!monitoringNetwork) {
+                connectivity.registerDefaultNetworkCallback(networkCallback, main)
+                monitoringNetwork = true
             }
-            val transport = client ?: return
-            val mic = MicrophoneSource(
-                onChunk = { pcm -> if (!transport.append(pcm)) main.post { backlog(token) } },
-                onError = { message -> main.post { failCapture(token, message) } },
-            )
-            try {
-                mic.start()
-            } catch (e: Exception) {
-                client?.cancel()
-                end(e.message ?: "无法打开麦克风")
-                return
+        } else {
+            if (monitoringNetwork) {
+                monitoringNetwork = false
+                connectivity.unregisterNetworkCallback(networkCallback)
             }
-            microphone = mic
-            _ui.update { it.copy(state = SessionState.RECORDING, status = "正在转写 → ${config.languageName}") }
-        }
-
-        override fun onEvent(event: JSONObject) {
-            if (token != session) return
-            events.apply(event)
-            playback?.let { queue ->
-                try {
-                    for (pcm in queue.consume(event, events)) {
-                        if (player?.append(pcm) == false) {
-                            stopSpeech("译音播放积压超过 30 秒，已停止播放；字幕继续更新")
-                            break
-                        }
-                    }
-                } catch (e: LiveTranslateException) {
-                    stopSpeech(e.message.orEmpty())
-                }
-            }
-            publishRows()
-        }
-
-        override fun onEnd(error: String?) {
-            if (token != session) return
-            end(error)
+            main.removeCallbacks(notificationUpdate)
+            notificationPending = false
+            RecordingService.stop(context)
         }
     }
 
-    private fun backlog(token: Int) {
-        if (token != session || _ui.value.state != SessionState.RECORDING) return
-        failCapture(token, "网络发送积压过多，已停止录音；已有文字已保留")
+    /** The Bluetooth headset stays selected until both capture and the tail of the speech are done. */
+    private fun releaseRouting() {
+        if (microphone == null && player == null) routing.stopBluetoothMicrophone()
     }
 
-    private fun failCapture(token: Int, message: String) {
-        if (token != session || _ui.value.state != SessionState.RECORDING) return
-        microphone?.stop()
-        microphone = null
-        client?.cancel()
-        end(message)
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) = engine.networkAvailable(network.networkHandle)
+        override fun onLost(network: Network) = engine.networkLost()
     }
 
-    private fun stopSpeech(message: String) {
-        playback = null
-        stopPlayback()
-        _ui.update { it.copy(notice = message) }
+    // A call or another recorder with priority silences this capture (reported on Android 10+).
+    private val silenceCheck = Runnable {
+        engine.captureInterrupted("麦克风被通话或其他应用占用，已停止录音；已有文字已保留")
     }
 
-    private fun end(error: String?) {
-        microphone?.stop()
-        microphone = null
-        client = null
-        playback = null
-        // Freeze this session's rows; later sessions append below them.
-        history.addAll(currentRows())
-        events = LiveTranslateEvents()
-        session++
-        player?.let { speech ->
-            speech.finish { main.post { if (player === speech) stopPlayback() } }
+    private val recordingCallback = object : AudioManager.AudioRecordingCallback() {
+        override fun onRecordingConfigChanged(configs: List<AudioRecordingConfiguration>) {
+            val session = microphone?.sessionId ?: return
+            val silenced = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                configs.any { it.clientAudioSessionId == session && it.isClientSilenced }
+            main.removeCallbacks(silenceCheck)
+            // Brief silencing (e.g. a voice assistant hotword) is tolerated.
+            if (silenced) main.postDelayed(silenceCheck, 2_000)
         }
-        _ui.update {
-            it.copy(state = SessionState.IDLE, status = readyStatus(), error = error.orEmpty())
-        }
-        publishRows()
-        RecordingService.stop(context)
-    }
-
-    private fun currentRows(): List<SubtitleRow> {
-        val prefix = "$session:"
-        val rows = events.order.mapNotNull { id ->
-            val row = events.rows[id] ?: return@mapNotNull null
-            val translation = events.translation(row)
-            if (row.source.text.isEmpty() && translation.text.isEmpty()) return@mapNotNull null
-            SubtitleRow(prefix + id, row.source.text, row.source.done, translation.text, translation.done)
-        }
-        // Translations whose source association has not arrived yet.
-        val pending = events.unmatchedOutputs.map { (id, part) ->
-            SubtitleRow(prefix + "out:" + id, "", false, part.text, part.done)
-        }
-        return rows + pending
-    }
-
-    private fun publishRows() {
-        val rows = history + currentRows()
-        _ui.update { it.copy(rows = rows) }
     }
 }

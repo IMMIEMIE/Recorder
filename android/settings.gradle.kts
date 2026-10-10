@@ -32,6 +32,12 @@ dependencyResolutionManagement {
     }
 }
 
+// Gradle 8.14 cannot run on the JDK 25 bundled with current Android Studio; the daemon JDK is pinned in
+// gradle/gradle-daemon-jvm.properties (regenerate with `./gradlew updateDaemonJvm`) and downloaded on demand.
+plugins {
+    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
+}
+
 rootProject.name = "shengjian-android"
 
 // :core is plain Kotlin/JVM (protocol, event joining, PCM decoding) and builds without the Android SDK.

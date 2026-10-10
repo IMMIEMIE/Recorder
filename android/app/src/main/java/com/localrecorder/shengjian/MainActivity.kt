@@ -14,8 +14,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -39,6 +41,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -55,10 +58,12 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -68,10 +73,14 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.live.PlaybackTiming
+import com.localrecorder.live.SessionState
+import com.localrecorder.live.SubtitleRow
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -109,7 +118,8 @@ private fun App(controller: SessionController) {
 private fun TranscriptScreen(controller: SessionController, ui: UiState, onSettings: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val activity = context as? MainActivity
-    val active = ui.state != SessionState.IDLE
+    val session = ui.session
+    val active = session.state != SessionState.IDLE
     DisposableEffect(active) {
         activity?.keepScreenOn(active)
         onDispose { }
@@ -136,7 +146,7 @@ private fun TranscriptScreen(controller: SessionController, ui: UiState, onSetti
         bottomBar = {
             Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(16.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    when (ui.state) {
+                    when (session.state) {
                         SessionState.IDLE -> Button(onClick = { requestStart() }, modifier = Modifier.weight(1f).height(56.dp)) {
                             Text("开始实时翻译")
                         }
@@ -144,6 +154,11 @@ private fun TranscriptScreen(controller: SessionController, ui: UiState, onSetti
                             CircularProgressIndicator(Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
                             Spacer(Modifier.width(8.dp))
                             Text("连接中，点击取消")
+                        }
+                        SessionState.RECONNECTING -> OutlinedButton(onClick = controller::stop, modifier = Modifier.weight(1f).height(56.dp)) {
+                            CircularProgressIndicator(Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("重新连接中，点击停止")
                         }
                         SessionState.RECORDING -> Button(
                             onClick = controller::stop,
@@ -154,15 +169,15 @@ private fun TranscriptScreen(controller: SessionController, ui: UiState, onSetti
                             Text("正在收尾…")
                         }
                     }
-                    if (ui.playing) OutlinedButton(onClick = controller::stopPlayback) { Text("停播") }
+                    if (session.playing) OutlinedButton(onClick = controller::stopPlayback) { Text("停播") }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = {
                         val clipboard = context.getSystemService(ClipboardManager::class.java)
                         clipboard?.setPrimaryClip(ClipData.newPlainText("声笺", controller.exportText()))
                         Toast.makeText(context, "已复制原文和译文", Toast.LENGTH_SHORT).show()
-                    }, enabled = ui.rows.isNotEmpty()) { Text("复制全部") }
-                    TextButton(onClick = controller::clear, enabled = !active && ui.rows.isNotEmpty()) { Text("清空") }
+                    }, enabled = session.rows.isNotEmpty()) { Text("复制全部") }
+                    TextButton(onClick = controller::clear, enabled = !active && session.rows.isNotEmpty()) { Text("清空") }
                 }
             }
         },
@@ -176,9 +191,10 @@ private fun TranscriptScreen(controller: SessionController, ui: UiState, onSetti
             if (!ui.hasKey && !active) {
                 Message("尚未保存 LiveTranslate API Key，请先在“设置”中配置。", MaterialTheme.colorScheme.secondaryContainer, onSettings)
             }
-            if (ui.error.isNotEmpty()) Message(ui.error, MaterialTheme.colorScheme.errorContainer, controller::dismissMessages)
-            if (ui.notice.isNotEmpty()) Message(ui.notice, MaterialTheme.colorScheme.tertiaryContainer, controller::dismissMessages)
-            Subtitles(ui.rows, Modifier.weight(1f))
+            if (session.error.isNotEmpty()) Message(session.error, MaterialTheme.colorScheme.errorContainer, controller::dismissMessages)
+            if (session.notice.isNotEmpty()) Message(session.notice, MaterialTheme.colorScheme.tertiaryContainer, controller::dismissMessages)
+            if (session.slowNetwork) Message("网络较慢，音频发送有积压，字幕可能延迟。", MaterialTheme.colorScheme.tertiaryContainer) {}
+            Subtitles(session.rows, session.trimmed, Modifier.weight(1f))
         }
     }
 }
@@ -193,39 +209,74 @@ private fun Message(text: String, color: Color, onClick: () -> Unit) {
 }
 
 @Composable
-private fun Subtitles(rows: List<SubtitleRow>, modifier: Modifier) {
-    val list = rememberLazyListState()
-    LaunchedEffect(rows.size, rows.lastOrNull()) {
-        if (rows.isNotEmpty()) list.animateScrollToItem(rows.size - 1)
-    }
+private fun Subtitles(rows: List<SubtitleRow>, trimmed: Boolean, modifier: Modifier) {
     if (rows.isEmpty()) {
         Column(modifier.fillMaxWidth().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
             Text("点击下方按钮开始说话，原文和译文会实时显示在这里。", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         return
     }
-    LazyColumn(modifier.fillMaxWidth(), state = list) {
-        items(rows, key = { it.key }) { row ->
-            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
-                if (row.source.isNotEmpty()) {
-                    Text(
-                        row.source, style = MaterialTheme.typography.bodyLarge,
-                        color = if (row.sourceDone) MaterialTheme.colorScheme.onSurfaceVariant
-                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    )
-                }
-                if (row.translation.isNotEmpty()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        row.translation, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
-                        color = if (row.translationDone) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    )
-                }
-            }
-            HorizontalDivider()
+    val list = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val last = rows.size - 1 + if (trimmed) 1 else 0
+    // Follow new text only while the reader is at the end; scrolling back to read stays put.
+    val following by remember {
+        derivedStateOf {
+            val info = list.layoutInfo
+            val visible = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
+            visible.index >= info.totalItemsCount - 2
         }
     }
+    LaunchedEffect(rows.size, rows.lastOrNull()) {
+        if (following) list.animateScrollToItem(last)
+    }
+    Box(modifier.fillMaxWidth()) {
+        LazyColumn(Modifier.fillMaxSize(), state = list) {
+            if (trimmed) {
+                item(key = "trimmed") { Marker("较早的字幕已移除（最多保留约 1000 条）") }
+            }
+            items(rows, key = { it.key }) { row ->
+                if (row.marker.isNotEmpty()) {
+                    Marker(row.marker)
+                    return@items
+                }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+                    if (row.source.isNotEmpty()) {
+                        Text(
+                            row.source, style = MaterialTheme.typography.bodyLarge,
+                            color = if (row.sourceDone) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        )
+                    }
+                    if (row.translation.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            row.translation, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
+                            color = if (row.translationDone) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        )
+                    }
+                }
+                HorizontalDivider()
+            }
+        }
+        if (!following) {
+            FilledTonalButton(
+                onClick = { scope.launch { list.animateScrollToItem(last) } },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+            ) { Text("回到最新") }
+        }
+    }
+}
+
+@Composable
+private fun Marker(text: String) {
+    Text(
+        text, style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+    )
+    HorizontalDivider()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -237,7 +288,10 @@ private fun SettingsScreen(controller: SessionController, ui: UiState, onBack: (
     var audioOutput by rememberSaveable { mutableStateOf(ui.config.audioOutput) }
     var timing by rememberSaveable { mutableStateOf(ui.config.playbackTiming) }
     var volume by rememberSaveable { mutableFloatStateOf(ui.config.volume) }
+    var autoReconnect by rememberSaveable { mutableStateOf(ui.options.autoReconnect) }
+    var bluetoothMicrophone by rememberSaveable { mutableStateOf(ui.options.bluetoothMicrophone) }
     val draft = LiveTranslateConfig(endpoint, language, audioOutput, volume, timing)
+    val draftOptions = AppOptions(autoReconnect, bluetoothMicrophone)
     val keySaved = remember(endpoint, ui.hasKey) { controller.hasKey(endpoint.trim()) }
 
     Scaffold(
@@ -296,10 +350,13 @@ private fun SettingsScreen(controller: SessionController, ui: UiState, onBack: (
                     Slider(value = volume, onValueChange = { volume = it }, modifier = Modifier.weight(1f).padding(horizontal = 8.dp))
                     Text("${(volume * 100).toInt()}%")
                 }
-                Text("建议佩戴耳机，避免扬声器播放的译音被麦克风再次收录。音频输出可能增加服务费用。", style = MaterialTheme.typography.bodySmall)
+                Text("建议佩戴耳机；未检测到耳机时会启用回声消除，但外放的译音仍可能被麦克风再次收录。音频输出可能增加服务费用。", style = MaterialTheme.typography.bodySmall)
             }
+            HorizontalDivider()
+            Toggle("断线自动重连", "连接中断或切换网络后自动建立新会话，保留已有字幕并标出断点。", autoReconnect) { autoReconnect = it }
+            Toggle("使用蓝牙耳机麦克风", "连接了蓝牙耳机时用它收音，音质通常不如手机麦克风；未连接时使用手机麦克风。", bluetoothMicrophone) { bluetoothMicrophone = it }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = { if (controller.saveSettings(draft, key)) key = "" }) { Text("保存") }
+                Button(onClick = { if (controller.saveSettings(draft, key, draftOptions)) key = "" }) { Text("保存") }
                 OutlinedButton(onClick = { controller.testConnection(draft, key) }, enabled = !ui.testing) { Text("测试连接") }
                 if (ui.testing) CircularProgressIndicator(Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
             }
@@ -313,6 +370,17 @@ private fun SettingsScreen(controller: SessionController, ui: UiState, onBack: (
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+@Composable
+private fun Toggle(title: String, description: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }, verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title)
+            Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 

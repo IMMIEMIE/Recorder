@@ -16,6 +16,25 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
+enum class AppendResult { SENT, FULL, CLOSED }
+
+/** What a session needs from the realtime connection; [LiveTranslateClient] is the only production implementation. */
+interface LiveTransport {
+    fun connect(configuration: LiveTranslateConfig, key: String)
+
+    /** Queues 16 kHz mono PCM16: FULL when the outgoing queue is at its limit, CLOSED when not ready, finishing or ended. */
+    fun append(pcm: ByteArray): AppendResult
+
+    /** Estimated raw PCM bytes still waiting to be sent, as of the last [append]. */
+    val queuedAudioBytes: Int
+
+    /** Asks the server to drain the tail; `onEnd` follows `session.finished` or a timeout. */
+    fun finish()
+
+    /** Closes immediately without a callback. */
+    fun cancel()
+}
+
 /**
  * One LiveTranslate session over the realtime WebSocket. Single use: create a new client per session.
  * All transport state lives on one serial executor; audio producers only enqueue bounded data.
@@ -27,11 +46,13 @@ class LiveTranslateClient(
     private val finishTimeoutMs: Long = 30_000,
     private val allowLocalhost: Boolean = false,
     private val httpClient: OkHttpClient = sharedHttpClient,
-) {
+) : LiveTransport {
     interface Listener {
         fun onReady()
         fun onEvent(event: JSONObject)
-        fun onEnd(error: String?)
+
+        /** [recoverable]: the connection itself failed or the server closed the session, so a new session may work. */
+        fun onEnd(error: String?, recoverable: Boolean)
     }
 
     companion object {
@@ -77,8 +98,10 @@ class LiveTranslateClient(
     private var deadline: ScheduledFuture<*>? = null
 
     @Volatile private var acceptingAudio = false
+    @Volatile override var queuedAudioBytes = 0
+        private set
 
-    fun connect(configuration: LiveTranslateConfig, key: String) {
+    override fun connect(configuration: LiveTranslateConfig, key: String) {
         if (key.isEmpty()) throw LiveTranslateException("请在 LiveTranslate 设置中保存专用 API Key")
         val url = configuration.url(allowLocalhost)
         val request = Request.Builder().url(url).header("Authorization", "Bearer $key").build()
@@ -87,24 +110,25 @@ class LiveTranslateClient(
             started = true
             this.configuration = configuration
             socket = httpClient.newWebSocket(request, SocketListener())
-            armTimeout(20_000, "LiveTranslate 连接或会话配置超时，请检查网络和服务地址")
+            armTimeout(20_000, "LiveTranslate 连接或会话配置超时，请检查网络和服务地址", recoverable = true)
         }
     }
 
-    /** Queues 16 kHz mono PCM16; returns false when not ready, finishing, or the queue is full. */
-    fun append(pcm: ByteArray): Boolean {
-        if (!acceptingAudio) return false
+    override fun append(pcm: ByteArray): AppendResult {
+        if (!acceptingAudio) return AppendResult.CLOSED
         return runSync {
             val socket = socket
-            if (!ready || finishing || closed || socket == null) return@runSync false
+            if (!ready || finishing || closed || socket == null) return@runSync AppendResult.CLOSED
             // OkHttp's queue holds base64 JSON; convert back to an estimate of raw PCM bytes.
-            if (socket.queueSize() * 3 / 4 + pcm.size > MAX_QUEUED_AUDIO_BYTES) return@runSync false
-            send(JSONObject().put("type", "input_audio_buffer.append").put("audio", Base64.getEncoder().encodeToString(pcm)))
-        } ?: false
+            val waiting = (socket.queueSize() * 3 / 4).toInt()
+            queuedAudioBytes = waiting
+            if (waiting + pcm.size > MAX_QUEUED_AUDIO_BYTES) return@runSync AppendResult.FULL
+            val sent = send(JSONObject().put("type", "input_audio_buffer.append").put("audio", Base64.getEncoder().encodeToString(pcm)))
+            if (sent) AppendResult.SENT else AppendResult.CLOSED
+        } ?: AppendResult.CLOSED
     }
 
-    /** Asks the server to drain the tail; [Listener.onEnd] follows `session.finished` or a timeout. */
-    fun finish() {
+    override fun finish() {
         post {
             if (!ready || closed || finishing) return@post
             finishing = true
@@ -114,15 +138,14 @@ class LiveTranslateClient(
         }
     }
 
-    /** Closes immediately without a callback. */
-    fun cancel() {
+    override fun cancel() {
         runSync { end(null, notify = false) }
     }
 
-    private fun armTimeout(ms: Long, message: String) {
+    private fun armTimeout(ms: Long, message: String, recoverable: Boolean = false) {
         deadline?.cancel(false)
         deadline = try {
-            queue.schedule({ end(message) }, ms, TimeUnit.MILLISECONDS)
+            queue.schedule({ end(message, recoverable = recoverable) }, ms, TimeUnit.MILLISECONDS)
         } catch (_: RejectedExecutionException) {
             null
         }
@@ -132,7 +155,7 @@ class LiveTranslateClient(
         event.put("event_id", UUID.randomUUID().toString())
         // OkHttp keeps send order, so session.finish always follows the queued audio.
         if (socket?.send(event.toString()) != true) {
-            end(connectionError())
+            disconnected()
             return false
         }
         return true
@@ -179,7 +202,9 @@ class LiveTranslateClient(
                 }
             }
             "session.finished" -> {
-                end(if (finishing) null else "LiveTranslate 会话意外结束，已保留收到的文字"); return
+                // The service may close a session by itself (e.g. a duration limit); a new one can continue.
+                if (finishing) end(null) else end("LiveTranslate 会话意外结束，已保留收到的文字", recoverable = true)
+                return
             }
             "error", "conversation.item.input_audio_transcription.failed" -> {
                 end(serviceError(event.optJSONObject("error")?.optStringOrNull("code") ?: "")); return
@@ -199,7 +224,13 @@ class LiveTranslateClient(
         else -> "LiveTranslate 连接中断或无法连接，请检查网络、服务地址及 API Key；已有文字已保留"
     }
 
-    private fun end(error: String?, notify: Boolean = true) {
+    /** Transport-level failure: worth a new session unless the server answered with a client error. */
+    private fun disconnected() {
+        val status = httpStatus
+        end(connectionError(), recoverable = status == null || status >= 500)
+    }
+
+    private fun end(error: String?, notify: Boolean = true, recoverable: Boolean = false) {
         if (closed) return
         closed = true
         ready = false
@@ -208,21 +239,21 @@ class LiveTranslateClient(
         deadline = null
         socket?.cancel()
         socket = null
-        if (notify) callbackExecutor.execute { listener.onEnd(error) }
+        if (notify) callbackExecutor.execute { listener.onEnd(error, recoverable) }
         queue.shutdown()
     }
 
     private inner class SocketListener : WebSocketListener() {
         override fun onMessage(webSocket: WebSocket, text: String) = post { handle(text) }
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) = post { handle(bytes.utf8()) }
-        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) = post { end(connectionError()) }
-        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = post { end(connectionError()) }
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) = post { disconnected() }
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = post { disconnected() }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             val status = response?.code
             response?.close()
             post {
                 httpStatus = status
-                end(connectionError())
+                disconnected()
             }
         }
     }

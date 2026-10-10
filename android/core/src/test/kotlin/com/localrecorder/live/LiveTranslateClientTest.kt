@@ -11,6 +11,7 @@ import org.junit.BeforeClass
 import org.junit.Test
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /** Runs the client against tests/mock_livetranslate_server.py (synthetic audio and credentials only). */
 class LiveTranslateClientTest {
@@ -47,6 +48,7 @@ class LiveTranslateClientTest {
         @Volatile var ready = false
         @Volatile var ended = false
         @Volatile var error: String? = null
+        @Volatile var recoverable = false
         @Volatile var bytes = 0
         @Volatile var audioBytes = 0
         @Volatile var callbackCount = 0
@@ -61,7 +63,12 @@ class LiveTranslateClientTest {
             runCatching { decoder.consume(event) }.getOrNull()?.let { audioBytes += it.size }
             if (event.optString("type") == "fixture.audio_bytes") bytes = event.getInt("count")
         }
-        override fun onEnd(error: String?) { ended = true; this.error = error; callbackCount++ }
+        override fun onEnd(error: String?, recoverable: Boolean) {
+            this.error = error
+            this.recoverable = recoverable
+            callbackCount++
+            ended = true
+        }
 
         fun connect(route: String, audio: Boolean = false) =
             client.connect(LiveTranslateConfig(endpoint = base + route, audioOutput = audio), "mock-only")
@@ -79,11 +86,11 @@ class LiveTranslateClientTest {
     fun textSessionDrainsTailAndJoinsById() {
         repeat(2) {
             val probe = Probe()
-            assertFalse("audio blocked before ready", probe.client.append(ByteArray(2)))
+            assertEquals("audio blocked before ready", AppendResult.CLOSED, probe.client.append(ByteArray(2)))
             probe.connect("/ok")
             probe.waitFor { probe.ready || probe.ended }
             assertTrue("configuration acknowledged", probe.ready)
-            repeat(30) { assertTrue("audio accepted", probe.client.append(ByteArray(640))) }
+            repeat(30) { assertEquals("audio accepted", AppendResult.SENT, probe.client.append(ByteArray(640))) }
             probe.client.finish()
             probe.waitFor { probe.ended }
             assertNull(probe.error)
@@ -131,16 +138,22 @@ class LiveTranslateClientTest {
 
     @Test
     fun failuresAreSurfacedWithoutLeakingCredentials() {
-        for (route in listOf("/unauthorized", "/redirect", "/error", "/wrong-mode", "/disconnect", "/timeout")) {
+        // Only a lost connection or a session the server closed by itself is worth a new session.
+        val routes = mapOf(
+            "/unauthorized" to false, "/redirect" to false, "/error" to false, "/wrong-mode" to false,
+            "/disconnect" to true, "/finished-early" to true, "/timeout" to false,
+        )
+        for ((route, recoverable) in routes) {
             val probe = Probe(timeoutMs = 100)
             probe.connect(route)
             probe.waitFor { probe.ready || probe.ended }
             if (probe.ready) {
-                if (route == "/disconnect") probe.client.append(ByteArray(2)) else probe.client.finish()
+                if (route == "/disconnect" || route == "/finished-early") probe.client.append(ByteArray(2)) else probe.client.finish()
             }
             probe.waitFor { probe.ended }
             assertNotNull("failure surfaced: $route", probe.error)
             assertFalse("provider payload never leaks credentials", probe.error!!.contains("mock-only"))
+            assertEquals("recoverable: $route", recoverable, probe.recoverable)
         }
         val unauthorized = Probe()
         unauthorized.connect("/unauthorized")
@@ -148,18 +161,68 @@ class LiveTranslateClientTest {
         assertTrue(unauthorized.error!!.contains("API Key 无效"))
     }
 
+    /** The session engine on real threads: one session thread, the test thread as the capture thread. */
+    private inner class Device : SessionPlatform {
+        private val thread = Executors.newSingleThreadScheduledExecutor()
+        @Volatile var snapshot = SessionSnapshot()
+        @Volatile var onChunk: ((ByteArray) -> Unit)? = null
+        val session = LiveSession(this) { snapshot = it }
+
+        override fun post(block: () -> Unit) = thread.execute(block)
+        override fun schedule(delayMs: Long, block: () -> Unit): Cancellable {
+            val future = thread.schedule(block, delayMs, TimeUnit.MILLISECONDS)
+            return Cancellable { future.cancel(false) }
+        }
+        override fun transport(listener: LiveTranslateClient.Listener): LiveTransport =
+            LiveTranslateClient(listener, thread, allowLocalhost = true)
+        override fun startCapture(onChunk: (ByteArray) -> Unit, onError: (String) -> Unit) { this.onChunk = onChunk }
+        override fun stopCapture() { onChunk = null }
+        override fun speech(): SpeechOutput = error("text only")
+        override fun sessionActive(active: Boolean) = Unit
+
+        fun waitFor(what: String, condition: (SessionSnapshot) -> Boolean) {
+            repeat(1000) {
+                if (condition(snapshot)) return
+                Thread.sleep(10)
+            }
+            error("timed out waiting for $what: $snapshot")
+        }
+    }
+
+    @Test
+    fun sessionSurvivesADroppedConnection() {
+        val device = Device()
+        val config = LiveTranslateConfig(endpoint = "$base/drop-once/${System.nanoTime()}")
+        device.post { device.session.start(config, "mock-only") }
+        device.waitFor("first connection") { it.state == SessionState.RECORDING }
+        // The fixture answers the first audio with a partial transcript and cuts the connection.
+        device.onChunk!!(ByteArray(640))
+        device.waitFor("reconnect") { snapshot -> snapshot.state == SessionState.RECORDING && snapshot.rows.any { it.marker.isNotEmpty() } }
+        device.onChunk!!(ByteArray(640))
+        device.waitFor("text on the new connection") { snapshot -> snapshot.rows.any { it.source == "Hello" } }
+        device.post { device.session.stop() }
+        device.waitFor("tail") { it.state == SessionState.IDLE }
+        assertEquals("", device.snapshot.error)
+        val rows = device.snapshot.rows
+        assertEquals(listOf("Before the break", "", "Hello world."), rows.map { it.source })
+        assertEquals(LiveSession.BREAK_MARKER, rows[1].marker)
+        assertEquals("你好，世界🌏。", rows[2].translation)
+        assertTrue(rows[2].sourceDone && rows[2].translationDone && !rows[0].sourceDone)
+    }
+
     @Test
     fun boundedQueueAndSilentCancel() {
         val cancel = Probe()
         cancel.connect("/ok")
         cancel.waitFor { cancel.ready }
-        assertFalse("bounded audio queue", cancel.client.append(ByteArray(320_001)))
+        assertEquals("bounded audio queue", AppendResult.FULL, cancel.client.append(ByteArray(320_001)))
+        assertEquals(AppendResult.SENT, cancel.client.append(ByteArray(640)))
         cancel.client.cancel()
         Thread.sleep(100)
         val count = cancel.callbackCount
         Thread.sleep(200)
         assertEquals("cancel suppresses subsequent transport callbacks", count, cancel.callbackCount)
         assertFalse(cancel.ended)
-        assertFalse("closed client rejects audio", cancel.client.append(ByteArray(2)))
+        assertEquals("closed client rejects audio", AppendResult.CLOSED, cancel.client.append(ByteArray(2)))
     }
 }

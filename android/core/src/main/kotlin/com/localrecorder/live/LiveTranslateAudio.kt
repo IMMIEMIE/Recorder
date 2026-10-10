@@ -9,7 +9,7 @@ const val MAX_PENDING_SPEECH_BYTES = LiveTranslateConfig.OUTPUT_SAMPLE_RATE * 2 
 
 /** Reassembles PCM16 samples across websocket messages; duplicate events never replay sound. */
 class LiveTranslateAudioDecoder {
-    private val seen = HashSet<String>()
+    private val seen = RecentIds()
     private val completed = HashSet<String>()
     private val tails = HashMap<String, Byte>()
 

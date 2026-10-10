@@ -15,7 +15,8 @@ class LiveTranslateEvents {
 
     private val rowMap = LinkedHashMap<String, Row>()
     private val outputMap = HashMap<String, Part>()
-    private val seenEvents = HashSet<String>()
+    private val seenEvents = RecentIds()
+    private val retired = HashSet<String>()
 
     val rows: Map<String, Row> get() = rowMap
     val order: List<String> get() = rowMap.keys.toList()
@@ -23,15 +24,29 @@ class LiveTranslateEvents {
 
     private fun ensure(id: String): Row = rowMap.getOrPut(id) { Row(id) }
 
+    /**
+     * Forgets a row and its translations once the caller has copied them out (long sessions).
+     * Late events for the retired IDs are ignored instead of recreating the row.
+     */
+    fun retire(id: String) {
+        val row = rowMap.remove(id) ?: return
+        retired.add(id)
+        for (output in row.outputs) {
+            outputMap.remove(output)
+            retired.add(output)
+        }
+    }
+
     fun apply(event: JSONObject) {
         val eventId = event.optStringOrNull("event_id")
         if (eventId != null && !seenEvents.add(eventId)) return
         val type = event.optString("type")
+        if (event.optStringOrNull("item_id") in retired) return
         if (type == "conversation.item.created") {
             val item = event.optJSONObject("item")
             val output = item?.optStringOrNull("id")
             val source = event.optStringOrNull("previous_item_id")
-            if (item?.optString("role") == "assistant" && output != null && source != null) {
+            if (item?.optString("role") == "assistant" && output != null && source != null && source !in retired) {
                 val row = ensure(source)
                 if (output !in row.outputs) row.outputs.add(output)
             }
@@ -70,6 +85,16 @@ class LiveTranslateEvents {
         }
 
     val hasUnmatchedOutput: Boolean get() = unmatchedOutputs.isNotEmpty()
+}
+
+/** Duplicates arrive close together, so remembering the most recent event IDs keeps hours-long sessions bounded. */
+internal class RecentIds(private val limit: Int = 4096) {
+    private val ids = object : LinkedHashMap<String, Unit>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>?): Boolean = size > limit
+    }
+
+    /** False when the ID was seen recently. */
+    fun add(id: String): Boolean = ids.put(id, Unit) == null
 }
 
 internal fun JSONObject.optStringOrNull(key: String): String? =

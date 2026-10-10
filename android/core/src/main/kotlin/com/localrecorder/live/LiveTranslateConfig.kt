@@ -79,9 +79,9 @@ data class LiveTranslateConfig(
         return "$scheme://$host$port$path?model=$MODEL"
     }
 
-    fun normalized(): LiveTranslateConfig {
-        val uri = URI(url())
-        val port = if (uri.port == -1 || uri.port == 443) "" else ":${uri.port}"
+    fun normalized(allowLocalhost: Boolean = false): LiveTranslateConfig {
+        val uri = URI(url(allowLocalhost))
+        val port = if (uri.port == -1 || (uri.port == 443 && uri.scheme == "wss")) "" else ":${uri.port}"
         return copy(endpoint = "${uri.scheme}://${uri.host.lowercase()}$port${uri.rawPath}")
     }
 
