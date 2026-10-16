@@ -104,10 +104,6 @@ API 识别请填写 Base URL（如 `https://api.example.com/v1`）和支持 `POS
 
 协议依据：[模型页面](https://www.qianwenai.com/models/qwen-audio-3.0-asr-flash-streaming)、[WebSocket 接入指南](https://help.aliyun.com/zh/model-studio/fun-asr-realtime-websocket-api)、[客户端事件](https://help.aliyun.com/zh/model-studio/fun-asr-client-events)、[服务端事件](https://help.aliyun.com/zh/model-studio/fun-asr-server-events)。
 
-### 安卓版
-
-`android/` 是仅保留 LiveTranslate 云端实时翻译的安卓应用（声笺安卓版，Android 8.0+）。预编译 APK 见 [Releases](../../releases) 中以 `android-v` 开头的版本；构建与使用说明见 [`android/README.md`](android/README.md)。
-
 ### Sentence translation / 逐句翻译
 
 Translation runs only after a segment is finalized, never on transient preview text. Choose **Local model** or **API service** in **Settings → Translation**.
@@ -136,6 +132,10 @@ Targets are Simplified Chinese, Traditional Chinese, English, Japanese, Korean, 
 - 服务地址、语言和开关保存在应用偏好设置；专用 API Key 按地址分别存入钥匙串，留空保存会保留已有密钥。音频持续上传至所选服务并可能产生费用；**测试连接只配置会话，不发送音频**。
 
 协议依据：[模型页面](https://www.qianwenai.com/models/qwen3.8-livetranslate-flash-realtime)、[客户端事件](https://help.aliyun.com/en/model-studio/live-translator-client-events)、[服务端事件](https://help.aliyun.com/en/model-studio/live-translator-server-events)。模拟测试验证客户端行为；实际模型权限、翻译效果与延迟仍需使用有效 API Key 验证。
+
+### 安卓版
+
+`android/` 是仅保留 LiveTranslate 云端实时翻译的安卓应用（声笺安卓版，Android 8.0+）。预编译 APK 见 [Releases](../../releases) 中以 `android-v` 开头的版本；构建与使用说明见 [`android/README.md`](android/README.md)。
 
 ## Privacy / 隐私
 
