@@ -123,7 +123,7 @@ internal sealed class SettingsForm : Form
     private static string PresetName(string role, string repo, string filename) => DesktopBackend.Shared.Models.Presets.FirstOrDefault(p => p.Role == role && p.Repo == repo && (filename.Length == 0 || p.Files[0].Name == filename))?.Name ?? "自定义";
     private void CudaActions(TableLayoutPanel p)
     {
-        var cuda = DesktopBackend.Shared.Cuda; var state = Theme.Label("", 9, Theme.Muted); state.AutoSize = true; Add(p, "GPU 加速组件", state);
+        var cuda = DesktopBackend.Shared.Cuda; var state = Theme.Label("", 9, Theme.Muted); state.AutoSize = true; state.MaximumSize = new Size(520, 0); Add(p, "GPU 加速组件", state);
         var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false }; var install = Theme.Button("下载 GPU 加速组件"); var remove = Theme.Button("移除"); row.Controls.Add(install); row.Controls.Add(remove); Add(p, "", row);
         void Refresh()
         {
