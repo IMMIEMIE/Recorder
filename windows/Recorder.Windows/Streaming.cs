@@ -21,6 +21,10 @@ public sealed class StreamingClient : IAsyncDisposable
     private Task? receiver;
     private bool finishing;
     private int disposed;
+#if FULL_BACKEND
+    private readonly MemoryStream coalesced = new();
+    private readonly HashSet<int> finalIds = new();
+#endif
     public event Action<string>? Partial;
     public event Action<TranscriptRow>? Row;
     public Task Completion => finished.Task;
@@ -45,18 +49,37 @@ public sealed class StreamingClient : IAsyncDisposable
         {
             var parameters = new JsonObject { ["format"] = "pcm", ["sample_rate"] = 16000,
                 ["max_sentence_silence"] = config.SilenceMs, ["heartbeat"] = true };
-            if (config.Language != "auto") parameters["language_hints"] = new JsonArray(config.Language);
+            if (config.Language != "auto") parameters["language_hints"] = new JsonArray(config.Language switch { "Chinese" => "zh", "Cantonese" => "zh", "English" => "en", "Japanese" => "ja", "Korean" => "ko", _ => config.Language });
             await JsonAsync(new { header = new { action = "run-task", task_id = taskId, streaming = "duplex" },
                 payload = new { task_group = "audio", task = "asr", function = "recognition", model = "qwen-audio-3.0-asr-flash-streaming", parameters, input = new { } } }, timeout.Token);
         }
         await ready.Task.WaitAsync(timeout.Token);
     }
+#if FULL_BACKEND
+    public async Task AppendAsync(byte[] pcm, CancellationToken ct)
+    {
+        if (finishing || (pcm.Length & 1) != 0) throw new InvalidOperationException("音频必须为完整 PCM16 样本，且会话仍在录制。");
+        coalesced.Write(pcm); if (coalesced.Length < 3200) return;
+        var bytes = coalesced.ToArray(); coalesced.SetLength(0);
+        for (int at = 0; at < bytes.Length; at += 3200)
+        {
+            int n = Math.Min(3200, bytes.Length - at);
+            if (n < 3200) { coalesced.Write(bytes, at, n); break; }
+            await AudioAsync(bytes.AsSpan(at, n).ToArray(), ct);
+        }
+    }
+    private Task AudioAsync(byte[] pcm, CancellationToken ct) => live
+#else
     public Task AppendAsync(byte[] pcm, CancellationToken ct) => live
+#endif
         ? JsonAsync(new { type = "input_audio_buffer.append", event_id = Guid.NewGuid().ToString(), audio = Convert.ToBase64String(pcm) }, ct)
         : SendAsync(pcm, WebSocketMessageType.Binary, ct);
     public async Task FinishAsync(CancellationToken ct)
     {
         finishing = true;
+#if FULL_BACKEND
+        if (coalesced.Length > 0) { await AudioAsync(coalesced.ToArray(), ct); coalesced.SetLength(0); }
+#endif
         if (live) await JsonAsync(new { type = "session.finish", event_id = Guid.NewGuid().ToString() }, ct);
         else await JsonAsync(new { header = new { action = "finish-task", task_id = taskId, streaming = "duplex" }, payload = new { input = new { } } }, ct);
         try { await finished.Task.WaitAsync(TimeSpan.FromSeconds(30), ct); }
@@ -126,7 +149,7 @@ public sealed class StreamingClient : IAsyncDisposable
                             {
                                 var id = (int?)sentence["sentence_id"] ?? 0;
 #if FULL_BACKEND
-                                if (id >= 0 && id < int.MaxValue) Row?.Invoke(new("asr:" + (id + 1), Math.Max(0, (double?)sentence["begin_time"] ?? 0) / 1000, text));
+                                if (sentence["sentence_id"] != null && id >= 0 && id < int.MaxValue && finalIds.Add(id)) Row?.Invoke(new("asr:" + (id + 1), Math.Max(0, (double?)sentence["begin_time"] ?? 0) / 1000, text));
 #else
                                 if (id > 0) Row?.Invoke(new("asr:" + id, Math.Max(0, (double?)sentence["begin_time"] ?? 0) / 1000, text));
 #endif
@@ -153,6 +176,9 @@ public sealed class StreamingClient : IAsyncDisposable
         // Observe failures even when the connection failed before readiness.
         _ = ready.Task.Exception; _ = finished.Task.Exception;
         socket.Dispose(); sending.Dispose(); lifetime.Dispose();
+#if FULL_BACKEND
+        coalesced.Dispose();
+#endif
     }
 }
 

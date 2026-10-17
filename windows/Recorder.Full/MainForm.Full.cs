@@ -3,6 +3,8 @@ internal sealed partial class MainForm
 {
     private void InitializeFullBackend(Button ai, FlowLayoutPanel toolbar)
     {
+        ai.Enabled = true; ai.AccessibleDescription = "总结、文本翻译和自定义问题";
+        ai.Click += (_, _) => { var text = transcript.SelectionLength > 0 ? transcript.SelectedText : TranscriptExport.Text(rows); using var form = new AIForm(text); form.ShowDialog(this); };
         clear.Click += (_, _) => DesktopBackend.Shared.ClearHistory();
         DesktopBackend.Shared.Event += FullBackendEvent;
         FormClosed += (_, _) => DesktopBackend.Shared.Event -= FullBackendEvent;

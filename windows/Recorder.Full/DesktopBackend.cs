@@ -21,8 +21,14 @@ internal sealed class DesktopBackend : IAsyncDisposable
         Models = new ModelManager(SettingsStore.Root); var runtime = Path.Combine(AppContext.BaseDirectory, "runtime");
         var asr = new NativeEngine(runtime); var translator = new NativeEngine(runtime);
         Core = new BackendCore(new ConfigStore(SettingsStore.Root), asr, translator, Models, Models,
-            (config, key) => new HttpEngine(new AppSettings { ApiBase = config.ApiBaseUrl, ApiModel = config.ApiModel, Language = config.Language, ApiSecret = SettingsStore.Protect(key) }));
+            (config, key) => new HttpEngine(new AppSettings { ApiBase = config.ApiBaseUrl, ApiModel = config.ApiModel, Language = config.Language switch { "Chinese" => "zh", "English" => "en", "Cantonese" => "yue", "Japanese" => "ja", "Korean" => "ko", _ => "auto" }, ApiSecret = SettingsStore.Protect(key) }));
         Core.SetVoiceDetectorFactory(() => new WebRtcVad(Path.Combine(runtime, "cpu/recorder-vad.dll")));
+        Core.SetApiTranslationFactory(t =>
+        {
+            var profiles = new ProfileStore(SettingsStore.Root);
+            if (t.ApiProfile.Length > 0) { var p = profiles.Get(t.ApiProfile); return new ChatClient(p, profiles.Key(p)); }
+            var s = SettingsStore.Load(); return new ChatClient(new ServiceProfile(ServiceProfile.Normalize(s.TranslationBase), s.TranslationModel), SettingsStore.Reveal(s.TranslationSecret));
+        });
         asr.Notice += message => Event?.Invoke(new JsonObject { ["type"] = "error", ["message"] = message });
         translator.Notice += message => Event?.Invoke(new JsonObject { ["type"] = "translator", ["state"] = "loading", ["detail"] = message });
         Channel = new(Core); receiver = Task.Run(ReceiveAsync);

@@ -156,6 +156,7 @@ try
         await Event(audioCore, e => (string?)e["type"] == "error" && ((string?)e["message"])!.Contains("320 KB")); Check(true, "mailbox overflow is reported after draining accepted packets");
     }
     await TranslationChecks.Run(root, Check);
+    await NetworkChecks.Run(root, Check);
     Console.WriteLine($"ALL {checks} BACKEND CHECKS PASSED"); return 0;
 }
 catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }

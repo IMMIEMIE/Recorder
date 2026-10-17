@@ -45,6 +45,8 @@ internal sealed class SettingsForm : Form
         Field(api, "ApiSecret", "转写 API Key（空白保留）", "", true); Field(api, "StreamingSecret", "千问流式专用 Key", "", true);
         Field(api, "TranslationBase", "翻译 / AI Base URL", settings.TranslationBase); Field(api, "TranslationModel", "翻译 / AI 模型", settings.TranslationModel);
         Field(api, "TranslationSecret", "翻译 / AI Key", "", true);
+        var profiles = Theme.Button("管理多个 API 服务…"); Add(api, "", profiles);
+        profiles.Click += (_, _) => { using var form = new ProfilesForm(); if (form.ShowDialog(this) == DialogResult.OK) { current.ApiProfileId = form.SelectedId; var p = new ProfileStore(SettingsStore.Root).Get(form.SelectedId); fields["TranslationBase"].Text = p.BaseUrl; fields["TranslationModel"].Text = p.Model; } };
         var translate = Page("翻译");
         Check(translate, "Translation", "对识别定稿开启翻译", settings.Translation);
         Choice(translate, "TranslationProvider", "翻译服务", ["local", "api"], settings.TranslationProvider);
