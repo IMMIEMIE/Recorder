@@ -48,6 +48,7 @@ public sealed partial class BackendCore : IAsyncDisposable
     public TranslationConfig Translation { get { lock (gate) return translation; } }
     public RuntimeConfig Runtime { get { lock (gate) return runtime; } }
     public string State { get { lock (gate) return state; } }
+    public bool TranslationReady { get { lock (gate) return translator.IsLoaded && translatorState == "ready"; } }
     public ChannelReader<JsonObject> Events => events.Reader;
 
     public BackendCore(ConfigStore store, IAsrEngine asr, ITranslatorEngine translator, IModelResolver resolver,
@@ -247,6 +248,7 @@ public sealed partial class BackendCore : IAsyncDisposable
     {
         lock (gate) { if (disposed) return; disposed = true; download?.Cancel(); lifetime.Cancel(); Wake(); }
         await pump;
+        await CancelTranslationAsync();
         vad?.Dispose();
         if (api != null) await api.DisposeAsync(); await asr.DisposeAsync(); await translator.DisposeAsync(); lifetime.Dispose();
     }

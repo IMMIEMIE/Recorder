@@ -104,7 +104,7 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
                 var row = new TranscriptRow(segment.ToString(), (long?)message["start_sample"] / 16000.0 ?? 0, (string?)message["text"] ?? "");
                 rows[segment] = row; Row?.Invoke(row); Partial?.Invoke(""); break;
             case "translation":
-                int target = (int)message["segment_id"]!, unit = (int?)message["unit_id"] ?? 0;
+                int target = (int)message["segment_id"]!, unit = checked((int)Recorder.Backend.BackendJson.Integer(message["unit_id"]));
                 if (!rows.TryGetValue(target, out var original)) break;
                 if (!translations.TryGetValue(target, out var parts)) translations[target] = parts = new();
                 parts[unit] = (string?)message["text"] ?? "";

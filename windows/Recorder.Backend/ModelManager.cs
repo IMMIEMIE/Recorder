@@ -62,7 +62,7 @@ public sealed class ModelManager : IModelResolver, IModelDownloader, IDisposable
                     else { var files = Directory.GetFiles(directory, "mmproj*.gguf"); if (files.Length != 1) throw new InvalidDataException("请选择与 Qwen 模型配套的音频编码文件。"); projector = files[0]; }
                 }
             }
-            var result = new EngineModel(engine, path, projector, runtime.Device); ValidateModel(result); return new(result, revision);
+            var result = new EngineModel(engine, path, projector.Length > 0 ? Path.GetFullPath(projector) : "", runtime.Device); ValidateModel(result); return new(result, revision);
         }
         ModelAddress.ValidateId(id);
         var repoRoot = Repository(id);

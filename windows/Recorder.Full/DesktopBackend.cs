@@ -41,6 +41,7 @@ internal sealed class DesktopBackend : IAsyncDisposable
     public async Task EnsureAsync(AppSettings settings, CancellationToken ct)
     {
         if (Core.State != "ready" || Core.Config != settings.RecognitionConfig() || Core.Runtime != settings.RuntimeConfig()) await ApplyAsync(settings, ct: ct);
+        if (settings.Translation && settings.TranslationProvider == "local" && (!Core.TranslationReady || Core.Translation.ModelId != settings.TranslatorModelId)) await ApplyAsync(settings, role: "translator", ct: ct);
         var command = Command("translation_settings"); var t = settings.TranslationConfig();
         command["enabled"] = t.Enabled; command["provider"] = t.Provider; command["api_profile"] = t.ApiProfile; command["target_language"] = t.TargetLanguage; await Channel.ControlAsync(command);
     }

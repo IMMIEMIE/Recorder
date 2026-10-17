@@ -26,10 +26,15 @@ internal static class Program
     }
     private static async Task<int> VerifyAsync(string[] args)
     {
-        var config = SettingsStore.Load() with { UseLocalFile = true, ModelPath = args[2], AsrProjector = args.Length > 3 ? args[3] : "", Device = "cuda", Translation = false };
+        var config = SettingsStore.Load() with { UseLocalFile = true, ModelPath = args[2], AsrProjector = args.Length > 3 ? args[3] : "", Device = "cuda", Translation = args.Length > 5, TranslatorPath = args.Length > 5 ? args[5] : "", TargetLanguage = "en" };
+        var translated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Translation(System.Text.Json.Nodes.JsonObject message) { if ((string?)message["type"] == "translation" && (bool?)message["done"] == true) translated.TrySetResult(); }
+        DesktopBackend.Shared.Event += Translation;
         await using var session = new RecordingSession(config); var result = new List<TranscriptRow>();
         session.Row += row => { lock (result) { int index = result.FindIndex(r => r.Id == row.Id); if (index < 0) result.Add(row); else result[index] = row; } };
         await session.StartAsync(2, 0, args[1]); await session.Completion.WaitAsync(TimeSpan.FromMinutes(3));
+        if (config.Translation) await translated.Task.WaitAsync(TimeSpan.FromMinutes(1));
+        DesktopBackend.Shared.Event -= Translation;
         await File.WriteAllTextAsync(args.Length > 4 ? args[4] : "verification-transcript.txt", TranscriptExport.Text(result));
         return result.Count > 0 ? 0 : 2;
     }
