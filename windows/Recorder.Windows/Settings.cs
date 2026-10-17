@@ -60,7 +60,7 @@ public static class SettingsStore
     }
 }
 
-public sealed record TranscriptRow(string Id, double Seconds, string Text, string Translation = "", bool Final = true);
+public sealed record TranscriptRow(string Id, double Seconds, string Text, string Translation = "", bool Final = true, string AudioId = "");
 
 public static class TranscriptExport
 {

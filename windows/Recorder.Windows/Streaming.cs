@@ -27,6 +27,9 @@ public sealed class StreamingClient : IAsyncDisposable
 #endif
     public event Action<string>? Partial;
     public event Action<TranscriptRow>? Row;
+#if FULL_BACKEND
+    public event Action<JsonNode, LiveTranscript>? LiveEvent;
+#endif
     public Task Completion => finished.Task;
     public StreamingClient(AppSettings config) { this.config = config; live = config.Mode == "live"; }
     public async Task ConnectAsync(CancellationToken ct, string? testEndpoint = null)
@@ -114,14 +117,25 @@ public sealed class StreamingClient : IAsyncDisposable
                     switch (type)
                     {
                         case "session.created":
+#if FULL_BACKEND
+                            var audioOptions = new JsonObject { ["input"] = new JsonObject { ["format"] = new JsonObject { ["type"] = "pcm", ["sample_rate"] = 16000 }, ["turn_detection"] = new JsonObject { ["type"] = "server_vad", ["threshold"] = .5, ["silence_duration_ms"] = config.SilenceMs } } };
+                            if (config.LiveAudioOutput) audioOptions["output"] = new JsonObject { ["format"] = new JsonObject { ["type"] = "pcm", ["sample_rate"] = 24000 } };
+                            await JsonAsync(new JsonObject { ["type"] = "session.update", ["event_id"] = Guid.NewGuid().ToString(), ["session"] = new JsonObject { ["output_modalities"] = config.LiveAudioOutput ? new JsonArray("text", "audio") : new JsonArray("text"), ["translation"] = new JsonObject { ["language"] = config.TargetLanguage }, ["audio"] = audioOptions } }, lifetime.Token);
+#else
                             await JsonAsync(new { type = "session.update", event_id = Guid.NewGuid().ToString(), session = new {
                                 output_modalities = new[] { "text" }, translation = new { language = config.TargetLanguage },
                                 audio = new { input = new { format = new { type = "pcm", sample_rate = 16000 },
                                     turn_detection = new { type = "server_vad", threshold = .5, silence_duration_ms = config.SilenceMs } } } } }, lifetime.Token);
+#endif
                             break;
                         case "session.updated":
                             if ((string?)json["session"]?["translation"]?["language"] != config.TargetLanguage ||
-                                json["session"]?["output_modalities"] is not JsonArray modes || modes.Count != 1 || (string?)modes[0] != "text")
+                                json["session"]?["output_modalities"] is not JsonArray modes ||
+#if FULL_BACKEND
+                                modes.Count != (config.LiveAudioOutput ? 2 : 1) || !modes.Any(m => (string?)m == "text") || config.LiveAudioOutput && !modes.Any(m => (string?)m == "audio"))
+#else
+                                modes.Count != 1 || (string?)modes[0] != "text")
+#endif
                                 throw new InvalidDataException("LiveTranslate 未确认目标语言和文字输出方式。");
                             ready.TrySetResult(); break;
                         case "session.finished": Complete(); return;
@@ -132,6 +146,9 @@ public sealed class StreamingClient : IAsyncDisposable
                             break;
                     }
                     foreach (var row in liveRows.Apply(json)) Row?.Invoke(row);
+#if FULL_BACKEND
+                    LiveEvent?.Invoke(json, liveRows);
+#endif
                 }
                 else
                 {
@@ -182,7 +199,7 @@ public sealed class StreamingClient : IAsyncDisposable
     }
 }
 
-public sealed class LiveTranscript
+public sealed partial class LiveTranscript
 {
     private sealed class Part { public string Text = ""; public bool Done; }
     private sealed class RowData { public Part Source = new(); public double Seconds; public List<string> Outputs = new(); }

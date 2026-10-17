@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
+using Recorder.Backend;
 namespace Recorder.Windows;
 
 public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
@@ -12,6 +13,10 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
     private readonly Dictionary<int, TranscriptRow> rows = new();
     private readonly Dictionary<int, SortedDictionary<int, string>> translations = new();
     private AudioInput? input;
+    private ProcessLoopbackInput? loopback;
+    private LivePlayer? player;
+    private LivePlaybackQueue? playback;
+    private bool playbackFailed;
     private StreamingClient? stream;
     private Task? fileTask, sender;
     private long audioBytes, sequence;
@@ -31,17 +36,34 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
             await backend.EnsureAsync(config, cancel.Token);
             backend.Register(id, Receive);
         }
+        else await backend.SuspendAsync(cancel.Token);
         if (config.Mode is "stream" or "live")
         {
             stream = new(config); stream.Partial += text => Partial?.Invoke(text);
             stream.Row += row =>
             {
-                if (config.Mode == "live") { Row?.Invoke(row); return; }
+                if (config.Mode == "live") { Row?.Invoke(row with { AudioId = id + ":live:" + row.Id }); return; }
                 if (!row.Final || !int.TryParse(row.Id.AsSpan(4), out int number)) return;
                 var message = DesktopBackend.Command("asr_stream_final", id);
                 message["segment_id"] = number; message["start_sample"] = (long)(row.Seconds * 16000); message["text"] = row.Text;
                 _ = backend.Channel.ControlAsync(message);
             };
+            if (config.Mode == "live")
+            {
+                LiveHistory.Cache.BeginSession();
+                if (config.LiveAudioOutput)
+                {
+                    playback = new(config.LiveTiming == "final"); player = new(); player.Failure += text => { playbackFailed = true; Notice?.Invoke(text); };
+                    try { player.Start(config.LiveVolume); } catch (Exception ex) { playbackFailed = true; Notice?.Invoke("译音播放不可用，字幕继续更新：" + ex.Message); }
+                }
+                stream.LiveEvent += (message, transcript) =>
+                {
+                    var rows = transcript.Snapshot(); LiveHistory.Cache.Consume(message, rows, id);
+                    if (playback == null || playbackFailed) return;
+                    try { foreach (var pcm in playback.Consume(message, rows)) player!.Append(pcm); }
+                    catch (Exception ex) { playbackFailed = true; Notice?.Invoke(ex.Message); }
+                };
+            }
             await stream.ConnectAsync(cancel.Token);
             sender = Task.Run(SendAsync);
         }
@@ -60,6 +82,11 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
         }
         else
         {
+            if (source == 1)
+            {
+                loopback = new(); loopback.Data += Append; loopback.Ended += ex => { if (ex != null) { complete.TrySetException(ex); _ = Task.Run(StopAsync); } };
+                await Task.Run(loopback.Start, cancel.Token); return;
+            }
             input = new(); input.Data += Append;
             input.Ended += ex => { if (ex != null) { complete.TrySetException(ex); _ = StopAsync(); } };
             input.Start(source == 1, microphone);
@@ -75,7 +102,7 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
         if (cancel.IsCancellationRequested) return;
         var start = Interlocked.Add(ref audioBytes, pcm.Length) - pcm.Length;
         bool accepted = stream == null ? backend.Channel.Audio(id, sequence++, start / 2, pcm) : outgoing.Writer.TryWrite(pcm);
-        if (!accepted) { Notice?.Invoke("音频缓冲已满，正在排空已接收的尾句。"); _ = StopAsync(); }
+        if (!accepted) { Notice?.Invoke("音频缓冲已满，正在排空已接收的尾句。"); _ = Task.Run(StopAsync); }
         float peak = 0;
         for (int i = 0; i + 1 < pcm.Length; i += 2) peak = Math.Max(peak, Math.Abs(BitConverter.ToInt16(pcm, i) / 32768f));
         Level?.Invoke(peak);
@@ -123,10 +150,16 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
         {
             inputCancel.Cancel();
             if (input != null) await input.StopAsync();
+            if (loopback != null) await loopback.StopAsync();
             if (fileTask != null) await fileTask;
             outgoing.Writer.TryComplete();
             if (sender != null) await sender;
-            if (config.Mode == "live") complete.TrySetResult();
+            if (config.Mode == "live")
+            {
+                if (playback?.HasPending == true) Notice?.Invoke("部分译音未完成关联，已保留字幕。");
+                if (player != null) await player.FinishAsync(cancel.Token);
+                complete.TrySetResult();
+            }
             else if (started) await backend.Channel.ControlAsync(DesktopBackend.Command("stop", id));
             else complete.TrySetCanceled();
         }
@@ -142,9 +175,11 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
     {
         Cancel();
         if (input != null) { try { await input.StopAsync(); } catch { } input.Dispose(); }
+        if (loopback != null) { try { await loopback.StopAsync(); } catch { } loopback.Dispose(); }
         if (fileTask != null) { try { await fileTask; } catch { } }
         if (stream != null) await stream.DisposeAsync();
         if (sender != null) { try { await sender; } catch { } }
+        player?.Dispose();
         cancel.Dispose(); inputCancel.Dispose();
     }
 }

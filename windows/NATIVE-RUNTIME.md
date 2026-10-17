@@ -29,3 +29,6 @@ CUDA 使用 `-Device cuda`，验证器的设备参数也改为 `cuda`。完整�
 CPU 与 CUDA 产物放在分开的目录，避免 DLL 搜索路径混用。每个目录包含 `recorder-native.exe`、匹配的 `recorder-whisper.dll` 和 `recorder-vad.dll`；CUDA 目录还需合法可分发的 CUDA/cuBLAS 依赖及其许可证。安装包不包含模型权重。
 
 `native/prepare_whisper.ps1` 为 x64 生成一份构建目录内的 Whisper 源文件，将已有取消回调接入 CPU 调度后端。它检查固定版本的源码边界，不修改依赖仓库；x86 继续编译原文件。取消回调必须在每次图计算时更新，防止后续请求使用已经释放的调用上下文。
+# 系统声音采集
+
+`recorder-audio.dll` 使用 [微软进程级 loopback 接口](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/)，以 `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE` 排除声笺和子进程；16kHz/mono/PCM16 直接送入有界邮箱。只在 x64 使用，x86 路径保留。创建、采样和释放在独立 MTA 线程执行，回调不保存音频文件。

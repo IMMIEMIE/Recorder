@@ -29,3 +29,9 @@ file(GLOB VAD_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../../Sources/Cwebrtcvad/webr
 add_library(recorder-vad SHARED vad.cpp ${VAD_SOURCES})
 target_include_directories(recorder-vad PRIVATE "../../Sources/Cwebrtcvad")
 target_compile_definitions(recorder-vad PRIVATE WEBRTC_WIN)
+
+add_library(recorder-audio SHARED process_audio.cpp)
+target_compile_features(recorder-audio PRIVATE cxx_std_17)
+target_compile_options(recorder-audio PRIVATE /utf-8)
+target_compile_definitions(recorder-audio PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_link_libraries(recorder-audio PRIVATE Mmdevapi Ole32)

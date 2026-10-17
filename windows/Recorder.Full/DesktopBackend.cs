@@ -53,6 +53,12 @@ internal sealed class DesktopBackend : IAsyncDisposable
     }
     public void Register(string session, Action<JsonObject> handler) => sessions[session] = handler;
     public void ClearHistory() => sessions.Clear();
+    public async Task SuspendAsync(CancellationToken ct)
+    {
+        await Channel.ControlAsync(Command("suspend"));
+        while (Core.State == "loading") await Task.Delay(25, ct);
+        if (Core.State != "idle") throw new InvalidOperationException("请等待识别停止后再进入 LiveTranslate。");
+    }
     private async Task ReceiveAsync()
     {
         await foreach (var message in Core.Events.ReadAllAsync())

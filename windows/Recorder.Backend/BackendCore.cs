@@ -90,6 +90,11 @@ public sealed partial class BackendCore : IAsyncDisposable
                     case "stop": if ((string?)message["session_id"] == session) Finish(); break;
                     case "asr_stream_final": StreamFinal(message); break;
                     case "translation_settings": SetTranslation(message); break;
+                    case "suspend":
+                        if (state is not ("idle" or "ready" or "error") || active) throw new InvalidOperationException("请先停止当前识别。");
+                        Status("loading");
+                        Queue(async () => { await CancelTranslationAsync(); await asr.UnloadAsync(); await translator.UnloadAsync(); if (api != null) { await api.DisposeAsync(); api = null; } lock (gate) { activeModel = activeTranslator = null; TranslatorStatus("idle"); Status("idle"); } });
+                        break;
                     case "shutdown": lifetime.Cancel(); download?.Cancel(); Wake(); break;
                     default: throw new InvalidDataException("未知控制指令。");
                 }

@@ -29,13 +29,14 @@ foreach ($variant in @('cpu','cuda') | Where-Object { $Device -eq 'all' -or $_ -
     $hostBuild = Join-Path $bootstrap ('host-' + $variant)
     $whisperBuild = Join-Path $bootstrap ('native-x64-' + $variant)
     Run 'Configure native host' { cmake -S (Join-Path $root 'windows/native-host') -B $hostBuild @options "-DLLAMA_SOURCE=$($bootstrap.Replace('\','/'))/llama.cpp" }
-    Run 'Build native host' { cmake --build $hostBuild --config Release --target recorder-native recorder-vad --parallel $Jobs -- /p:UseStructuredOutput=false }
+    Run 'Build native host' { cmake --build $hostBuild --config Release --target recorder-native recorder-vad recorder-audio --parallel $Jobs -- /p:UseStructuredOutput=false }
     Run 'Configure Whisper' { cmake -S (Join-Path $root 'windows/native') -B $whisperBuild @options -DRECORDER_AVX2=ON "-DWHISPER_SOURCE=$($bootstrap.Replace('\','/'))/whisper.cpp" }
     Run 'Build Whisper' { cmake --build $whisperBuild --config Release --target recorder-whisper --parallel $Jobs -- /p:UseStructuredOutput=false }
     $destination = Join-Path $bootstrap ('runtime-x64/' + $variant)
     New-Item -ItemType Directory -Force $destination | Out-Null
     Copy-Item -LiteralPath (Join-Path $hostBuild 'Release/recorder-native.exe') -Destination $destination
     Copy-Item -LiteralPath (Join-Path $hostBuild 'Release/recorder-vad.dll') -Destination $destination
+    Copy-Item -LiteralPath (Join-Path $hostBuild 'Release/recorder-audio.dll') -Destination $destination
     Copy-Item -LiteralPath (Join-Path $whisperBuild 'Release/recorder-whisper.dll') -Destination $destination
     if ($gpu) {
         foreach ($pattern in @('cublas64_*.dll','cublasLt64_*.dll','cudart64_*.dll')) {

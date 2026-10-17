@@ -157,6 +157,7 @@ try
     }
     await TranslationChecks.Run(root, Check);
     await NetworkChecks.Run(root, Check);
+    LiveAudioChecks.Run(Check);
     Console.WriteLine($"ALL {checks} BACKEND CHECKS PASSED"); return 0;
 }
 catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
