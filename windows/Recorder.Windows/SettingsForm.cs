@@ -1,4 +1,4 @@
-namespace Recorder.Windows;
+﻿namespace Recorder.Windows;
 
 internal sealed class SettingsForm : Form
 {
@@ -20,7 +20,7 @@ internal sealed class SettingsForm : Form
     public SettingsForm(AppSettings current)
     {
         settings = current;
-        Text = "声笺 · 设置"; ClientSize = new(710, 655); MinimumSize = new(650, 570); Theme.Style(this);
+        Text = "声笺 · 设置"; ClientSize = new(640, 600); MinimumSize = new(640, 570); Theme.Style(this);
         mode.Items.AddRange(["Whisper 本地识别（离线）", "OpenAI 兼容 API", "千问 WebSocket 流式识别", "LiveTranslate 实时翻译（文字）"]);
         mode.SelectedIndex = Math.Max(0, Array.IndexOf(Modes, settings.Mode));
         language.Items.AddRange(["自动检测", "中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]);
@@ -33,15 +33,15 @@ internal sealed class SettingsForm : Form
         translationKey = Field("", true); liveEndpoint = Field(settings.LiveEndpoint); liveKey = Field("", true);
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new(24), ColumnCount = 1, RowCount = 3 };
         layout.RowStyles.Add(new(SizeType.Absolute, 40)); layout.RowStyles.Add(new(SizeType.Percent, 100)); layout.RowStyles.Add(new(SizeType.Absolute, 55));
-        layout.Controls.Add(Theme.Label("识别与翻译", 17), 0, 0);
+        layout.Controls.Add(Theme.Label("设置", 16.5f), 0, 0);
         var tabs = new TabControl { Dock = DockStyle.Fill, Padding = new(16, 8) };
         layout.Controls.Add(tabs, 0, 1);
         var asr = Page(tabs, "转写", out var a);
-        Add(a, "识别方式", mode); Add(a, "原文语言", language); Add(a, "停顿定稿（毫秒）", silence);
+        Add(a, "识别方式", mode); Add(a, "原文语言", language); Add(a, "停顿定稿 (ms)", silence);
         Add(a, "API Base URL", apiBase); Add(a, "音频转写模型", apiModel); Add(a, "API Key", apiKey);
         Add(a, "千问流式 API Key", streamKey);
         Note(a, "流式模型：qwen-audio-3.0-asr-flash-streaming\n请使用千问AI平台密钥（非阿里云百炼密钥）。\nAPI / 流式模式会上传所选音频，费用由服务商收取。");
-        Page(tabs, "本地模型", out var m);
+        var m = a;
         Add(m, "GGML 模型文件", modelPath);
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
         var browse = Theme.Button("选择模型…"); var download = Theme.Button("下载 Whisper Tiny", true);
@@ -63,15 +63,33 @@ internal sealed class SettingsForm : Form
         };
         Add(m, "", downloadStatus);
         Note(m, "本地识别使用 CPU，不上传音频。\n32 位版建议 Tiny / Base；Tiny 的中文准确率低于大模型。\n也可选择 whisper.cpp 的 Tiny / Base / Small GGML 文件。\nApple MLX / Qwen 本地权重不能在此版本使用。\n首次下载需要联网，模型与程序分开保存。");
-        Page(tabs, "逐句翻译", out var t);
+        Page(tabs, "翻译", out var t);
         Add(t, "", translate); Add(t, "目标语言", target); Add(t, "API Base URL", translationBase);
         Add(t, "翻译模型", translationModel); Add(t, "API Key", translationKey);
         Note(t, "仅向翻译服务发送定稿原文。\nWindows x86 版使用 API 翻译，尚未移植 MLX 本地翻译。\nLiveTranslate 使用自己的目标语言和密钥，不调用此接口。");
         Page(tabs, "LiveTranslate", out var l);
         Add(l, "WSS 服务地址", liveEndpoint); Add(l, "专用 API Key", liveKey);
-        Note(l, "模型：qwen3.8-livetranslate-flash-realtime\n在「转写」页选择 LiveTranslate 后生效。\n目标语言沿用「逐句翻译」页的选择，繁体中文会使用 zh。\n此版本仅接收原文和译文，暂不支持译音播放。\n音频持续上传；密钥须匹配服务地址、区域和工作空间。");
-        Page(tabs, "数据与隐私", out var p);
+        Note(l, "模型：qwen3.8-livetranslate-flash-realtime\n在「转写」页选择 LiveTranslate 后生效。\n目标语言沿用「翻译」页的选择，繁体中文会使用 zh。\n此版本仅接收原文和译文，暂不支持译音播放。\n音频持续上传；密钥须匹配服务地址、区域和工作空间。");
+        var p = l;
         Note(p, "API Key 由 Windows 当前用户加密，留空保存会保留已有密钥。\n更换服务地址后必须重新填写对应密钥。\n程序不保存录音或文字历史；复制和导出由你主动触发。\n关闭软件后，未导出的文字会被清除。\n系统音频采集包含所有应用的声音，建议使用耳机。\n\n设置和模型目录：\n" + SettingsStore.Root);
+        void ShowRow(Control control, bool visible) {
+            int row = a.GetRow(control);
+            foreach (Control child in a.Controls) if (a.GetRow(child) == row) child.Visible = visible;
+            a.RowStyles[row].SizeType = visible ? SizeType.AutoSize : SizeType.Absolute;
+            a.RowStyles[row].Height = 0;
+        }
+        void UpdateProvider() {
+            bool local = mode.SelectedIndex == 0, api = mode.SelectedIndex == 1, stream = mode.SelectedIndex == 2;
+            a.SuspendLayout();
+            foreach (var field in new Control[] { apiBase, apiModel, apiKey }) ShowRow(field, api);
+            ShowRow(streamKey, stream);
+            foreach (var field in new Control[] { modelPath, actions, downloadStatus }) ShowRow(field, local);
+            foreach (Control child in a.Controls) {
+                if (child is Label label && a.GetColumnSpan(child) == 2) ShowRow(label, label.Text.StartsWith("流式模型") ? stream : local);
+            }
+            a.ResumeLayout(true);
+        }
+        mode.SelectedIndexChanged += (_, _) => UpdateProvider(); UpdateProvider();
         var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new(0, 16, 0, 0) };
         footer.Controls.Add(save); var cancel = Theme.Button("取消"); footer.Controls.Add(cancel);
         cancel.Click += (_, _) => Close(); save.Click += (_, _) => SaveSettings();
@@ -82,7 +100,7 @@ internal sealed class SettingsForm : Form
     {
         var page = new TabPage(title) { BackColor = Color.White, Padding = new(20), AutoScroll = true };
         grid = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
-        grid.ColumnStyles.Add(new(SizeType.Absolute, 155)); grid.ColumnStyles.Add(new(SizeType.Percent, 100));
+        grid.ColumnStyles.Add(new(SizeType.Absolute, 140)); grid.ColumnStyles.Add(new(SizeType.Percent, 100));
         page.Controls.Add(grid); tabs.TabPages.Add(page); return page;
     }
     private static void Add(TableLayoutPanel grid, string label, Control control)
@@ -92,8 +110,8 @@ internal sealed class SettingsForm : Form
     }
     private static void Note(TableLayoutPanel grid, string text)
     {
-        var note = Theme.Label(text, 9, Theme.Muted); note.MaximumSize = new(570, 0); note.Margin = new(0, 16, 0, 10);
-        int row = grid.RowCount++; grid.Controls.Add(note, 0, row); grid.SetColumnSpan(note, 2);
+        var note = Theme.Label(text, 9, Theme.Muted); note.MaximumSize = new(510, 0); note.Margin = new(0, 16, 0, 10);
+        int row = grid.RowCount++; grid.RowStyles.Add(new(SizeType.AutoSize)); grid.Controls.Add(note, 0, row); grid.SetColumnSpan(note, 2);
     }
     private void SaveSettings()
     {

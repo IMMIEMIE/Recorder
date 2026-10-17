@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
@@ -15,15 +15,69 @@ internal static class Program
     {
         try
         {
+            if (args.Length == 2 && args[0] == "--subtitle-ui") { TestSubtitleLayout(args[1]); return 0; }
             Check(IntPtr.Size == 4, "test process is actually x86 / 32-bit");
             var secret = SettingsStore.Protect("test-key-not-a-real-credential");
             Check(!secret.Contains("test-key") && SettingsStore.Reveal(secret) == "test-key-not-a-real-credential", "DPAPI current-user secret round trip");
+            TestSettingsLayout();
             TestResampling(); TestSegmenter(); TestLiveMerge(); TestExport();
             await TestHttpAsync(); await TestStreamingAsync(false); await TestStreamingAsync(true); await TestSessionAsync();
             if (args.Length > 1 && args[0] == "--model") await TestRealModelAsync(args[1]);
             Console.WriteLine($"ALL {checks} CHECKS PASSED"); return 0;
         }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
+    }
+    private static void TestSubtitleLayout(string output)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() => {
+            try {
+                Application.SetHighDpiMode(HighDpiMode.DpiUnaware);
+                Directory.CreateDirectory(output);
+                var type = typeof(AppSettings).Assembly.GetType("Recorder.Windows.SubtitleForm")!;
+                foreach (var (name, width, height, scale) in new[] { ("default", 760, 240, 1f), ("narrow", 420, 160, 1f), ("scaled-150", 760, 240, 1.5f), ("scaled-200", 760, 240, 2f) }) {
+                    using var form = (Form)Activator.CreateInstance(type)!;
+                    form.StartPosition = FormStartPosition.Manual; form.Location = new(-20000, -20000);
+                    form.ClientSize = new(width, height); form.Show();
+                    if (scale != 1) form.Scale(new SizeF(scale, scale));
+                    Application.DoEvents();
+                    var layout = (TableLayoutPanel)form.Controls[0];
+                    var header = (TableLayoutPanel)layout.GetControlFromPosition(0, 0)!;
+                    foreach (Control child in header.Controls) {
+                        Check(header.ClientRectangle.Contains(child.Bounds), name + ": header contains " + child.Text);
+                        Check(child.Height >= child.Font.Height + 4, name + ": header text fits " + child.Text);
+                    }
+                    using (var bitmap = new System.Drawing.Bitmap(form.Width, form.Height)) {
+                        form.DrawToBitmap(bitmap, form.ClientRectangle); bitmap.Save(Path.Combine(output, name + ".png"));
+                    }
+                    type.GetMethod("UpdateText")!.Invoke(form, new object[] { "这是一段用于检查字幕换行的文字。窗口变窄时，正文应该自然换行，标题与按钮保持完整。", "This is a subtitle layout check. Longer text should wrap within the window." });
+                    Application.DoEvents();
+                    using (var bitmap = new System.Drawing.Bitmap(form.Width, form.Height)) {
+                        form.DrawToBitmap(bitmap, form.ClientRectangle); bitmap.Save(Path.Combine(output, name + "-text.png"));
+                    }
+                    form.Close();
+                }
+            } catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
+        if (failure != null) throw new Exception("Subtitle layout failed", failure);
+    }
+    private static void TestSettingsLayout()
+    {
+        Exception? failure = null;
+        var thread = new Thread(() => {
+            try {
+                var type = typeof(AppSettings).Assembly.GetType("Recorder.Windows.SettingsForm")!;
+                using var form = (Form)Activator.CreateInstance(type, new AppSettings())!;
+                var field = type.GetField("mode", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+                var mode = (ComboBox)field.GetValue(form)!;
+                for (int i = 0; i < 4; i++) { mode.SelectedIndex = i; form.PerformLayout(); }
+                form.ClientSize = new(640, 570); form.PerformLayout();
+            } catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
+        if (failure != null) throw new Exception("Settings layout failed", failure);
+        Check(true, "settings opens and switches all four providers without layout exceptions");
     }
     private static byte[] Tone(double seconds, double amplitude = .15, int rate = 16000)
     {

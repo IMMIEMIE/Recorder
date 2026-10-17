@@ -1,4 +1,4 @@
-# 声笺 Windows x86 0.5.0
+﻿# 声笺 Windows x86 0.5.0
 
 Windows 原生桌面移植，代码保存在 `windows/`，原有 Swift/macOS 源码保持独立。
 这是首个 Windows 测试版，不代表与 macOS 的模型、准确率或功能完全一致。
@@ -9,7 +9,7 @@ Windows 原生桌面移植，代码保存在 `windows/`，原有 Swift/macOS 源
 
 运行 `dist/Shengjian-0.5.0-windows-x86-setup.exe`，安装到当前用户，无需管理员权限。也可完整解压 portable ZIP，运行其中的 `Shengjian.exe`，请保留旁边的 `recorder-whisper.dll`。
 
-1. 打开设置 → 本地模型 → 下载 Whisper Tiny，完成后保存。模型约 74 MiB，下载地址为 ggerganov/whisper.cpp；SHA256 固定校验。亦可选择 GGML 格式的 Tiny / Base / Small，32 位环境推荐 Tiny / Base。下载需要联网，本地识别不联网。
+1. 打开设置 → 转写 → Whisper 本地识别 → 下载 Whisper Tiny，完成后保存。模型约 74 MiB，下载地址为 ggerganov/whisper.cpp；SHA256 固定校验。亦可选择 GGML 格式的 Tiny / Base / Small，32 位环境推荐 Tiny / Base。下载需要联网，本地识别不联网。
 2. 选择麦克风、系统声音或音频文件，开始转写。音频文件按原速处理；停止会处理已收到的尾句，再次点击可取消等待。
 3. 打开置顶字幕、复制，或导出双语 TXT/SRT。Ctrl+Alt+空格控制开始/停止（快捷键未被其他应用占用时生效）。托盘菜单可重新显示主窗口。
 
@@ -65,3 +65,9 @@ dotnet build windows/Recorder.Tests -c Release
 ```
 
 测试覆盖真实 32 位进程、DPAPI、重采样边界、分句及尾句、静音过滤、REST multipart、翻译、拒绝重定向/明文、两种 WebSocket 握手和尾句、译文乱序合并、导出及中英文 AIFF 实际离线推理。硬件录音权限及真实云服务账号需在目标机器测试。
+
+## 界面对齐（2026-10-17）
+
+以当前 `Sources/Recorder/RecorderApp.swift` 的 MainView 为布局基准：1040 × 700 默认内容区、255 逻辑像素左侧栏、绿色强调色、顶部操作、时间戳与双语正文、底部状态与转写按钮。音源提示、设备刷新、翻译菜单与置顶入口统一收纳；设置按转写、翻译、LiveTranslate 分页，识别参数随服务切换显示。字幕改为深色浮窗，顶部可拖动、边缘可调整大小，支持字号和译文显示切换。
+
+Windows 仍采用原生 WinForms，系统标题栏、字体和下拉菜单由 Windows 绘制，并非逐像素复刻 macOS。AI 提问入口暂不可用；AI 服务设置、译音播放、字幕背景透明度及样式自动保存尚未移植。本次不改动录音和识别引擎。
