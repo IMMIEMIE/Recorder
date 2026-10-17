@@ -1,5 +1,13 @@
 [CmdletBinding()]
-param([ValidateSet('cpu','cuda','all')][string]$Device = 'all', [int]$Jobs = 4)
+param(
+    [ValidateSet('cpu','cuda','all')][string]$Device = 'all', [int]$Jobs = 4,
+    # Real SASS only for consumer generations: RTX 20/GTX 16 (75), RTX 30 (86), RTX 40 (89), RTX 50 (120).
+    # The former "75;80;86;89;120" emitted SASS *and* PTX for five architectures in two separate ggml-cuda copies.
+    [string]$CudaArchitectures = '75-real;86-real;89-real;120-real',
+    # Copy cudart/cuBLAS next to the CUDA worker for an offline package. By default the app downloads them on demand
+    # (windows/cuda-runtime.lock.json), which keeps ~790 MB of NVIDIA libraries out of the installer.
+    [switch]$BundleCudaRuntime
+)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $bootstrap = Join-Path $root '.bootstrap'
@@ -24,7 +32,11 @@ foreach ($variant in @('cpu','cuda') | Where-Object { $Device -eq 'all' -or $_ -
     if ($gpu) {
         $nvcc = (Get-Command nvcc -ErrorAction Stop).Source
         $toolkit = Split-Path (Split-Path $nvcc -Parent) -Parent
-        $options += @('-T',('cuda=' + $toolkit.Replace('\','/')), '-DRECORDER_CUDA=ON', '-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;120')
+        # The on-demand runtime pins CUDA 12.8 libraries; a different toolkit could import symbols they lack.
+        $release = (& $nvcc --version | Select-String -Pattern 'release (\d+\.\d+)').Matches[0].Groups[1].Value
+        $pinned = ((Get-Content (Join-Path $root 'windows/cuda-runtime.lock.json') -Raw | ConvertFrom-Json).packages | Where-Object name -EQ 'nvidia-cuda-runtime-cu12').version
+        if (-not $pinned.StartsWith($release + '.')) { throw "CUDA toolkit $release does not match the pinned runtime $pinned in windows/cuda-runtime.lock.json. Install CUDA $($pinned.Substring(0, 4)) or update the lock file." }
+        $options += @('-T',('cuda=' + $toolkit.Replace('\','/')), '-DRECORDER_CUDA=ON', "-DCMAKE_CUDA_ARCHITECTURES=$CudaArchitectures")
     }
     $hostBuild = Join-Path $bootstrap ('host-' + $variant)
     $whisperBuild = Join-Path $bootstrap ('native-x64-' + $variant)
@@ -40,7 +52,9 @@ foreach ($variant in @('cpu','cuda') | Where-Object { $Device -eq 'all' -or $_ -
     Copy-Item -LiteralPath (Join-Path $whisperBuild 'Release/recorder-whisper.dll') -Destination $destination
     if ($gpu) {
         foreach ($pattern in @('cublas64_*.dll','cublasLt64_*.dll','cudart64_*.dll')) {
-            Get-ChildItem -LiteralPath (Join-Path $toolkit 'bin') -Filter $pattern | Copy-Item -Destination $destination
+            # Remove copies left by earlier builds so they cannot slip into the default installer.
+            Get-ChildItem -LiteralPath $destination -Filter $pattern | Remove-Item
+            if ($BundleCudaRuntime) { Get-ChildItem -LiteralPath (Join-Path $toolkit 'bin') -Filter $pattern | Copy-Item -Destination $destination }
         }
     }
     Write-Output $destination

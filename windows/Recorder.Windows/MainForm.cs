@@ -143,7 +143,7 @@ internal sealed partial class MainForm : Form
             else if (wait) Invoke(action);
             else BeginInvoke(action);
         }
-        catch (InvalidOperationException) { }
+        catch (InvalidOperationException) { /* Includes ObjectDisposedException while the window closes. */ }
     }
     private void RefreshDevices()
     {
@@ -211,7 +211,7 @@ internal sealed partial class MainForm : Form
             if (index < 0) rows.Add(item); else rows[index] = item;
             RenderRows();
             if (session == current) { partial.Text = ""; subtitles?.UpdateText(row.Text, row.Translation); }
-        }, wait: true);
+        });
         current.Partial += text => UI(() => { if (session == current) { partial.Text = text; if (text.Length > 0 && text != "正在识别此句…") subtitles?.UpdateText(text, ""); } });
         current.Notice += text => UI(() => { if (session == current) status.Text = text; });
         current.Level += peak => UI(() => { if (session == current) meter.SetLevel(peak); });

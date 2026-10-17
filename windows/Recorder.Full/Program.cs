@@ -1,9 +1,16 @@
 namespace Recorder.Windows;
 internal static class Program
 {
+    private static int reporting;
     [STAThread]
     private static int Main(string[] args)
     {
+        // Every failure leaves a local log (exceptions and native exit codes only, never audio or text) instead of a silent exit.
+        Recorder.Backend.DiagnosticLog.Configure(SettingsStore.Root);
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => ReportUiError(e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => Recorder.Backend.DiagnosticLog.Write("fatal", e.ExceptionObject.ToString() ?? "unknown");
+        TaskScheduler.UnobservedTaskException += (_, e) => { Recorder.Backend.DiagnosticLog.Write("unobserved-task", e.Exception); e.SetObserved(); };
         ApplicationConfiguration.Initialize();
         try
         {
@@ -25,6 +32,13 @@ internal static class Program
         }
         catch (Exception ex) { if (args.Length > 0) { Directory.CreateDirectory(SettingsStore.Root); File.WriteAllText(Path.Combine(SettingsStore.Root, "verification-error.txt"), ex.ToString()); } else MessageBox.Show(ex.Message, "声笺", MessageBoxButtons.OK, MessageBoxIcon.Error); return 1; }
         finally { DesktopBackend.ShutdownAsync().AsTask().GetAwaiter().GetResult(); }
+    }
+    private static void ReportUiError(Exception error)
+    {
+        Recorder.Backend.DiagnosticLog.Write("ui", error);
+        if (Interlocked.Exchange(ref reporting, 1) != 0) return;
+        try { MessageBox.Show("界面操作出现异常，已写入日志，可以继续使用；如反复出现请附上日志反馈。\n\n" + error.Message + "\n\n日志目录：" + Recorder.Backend.DiagnosticLog.Directory, "声笺", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        finally { Volatile.Write(ref reporting, 0); }
     }
     private static async Task<int> VerifyAsync(string[] args)
     {

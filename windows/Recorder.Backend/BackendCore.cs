@@ -37,7 +37,9 @@ public sealed partial class BackendCore : IAsyncDisposable
     private readonly List<Task> downloadTasks = new();
     private CancellationTokenSource? asrSelectionCancellation, translatorSelectionCancellation;
     private bool cancelAsrSelection, cancelTranslatorSelection;
-    private string downloadRole = "asr", request = "";
+    private string downloadRole = "asr";
+    // Events carry the id of the command that caused them; work queued by a command keeps that id, unrelated async events carry none.
+    private static readonly AsyncLocal<string?> origin = new();
     private bool active, disposed;
     private string state = "idle", translatorState = "idle", session = "";
     private readonly HashSet<int> streamFinals = new();
@@ -63,14 +65,20 @@ public sealed partial class BackendCore : IAsyncDisposable
         this.store = store; this.asr = asr; this.translator = translator; this.resolver = resolver; this.downloader = downloader; this.apiFactory = apiFactory;
         config = Load("config.json", new ModelConfig()); translation = Load("translation.json", new TranslationConfig()); runtime = Load("runtime.json", new RuntimeConfig());
         pump = Task.Run(PumpAsync);
-        if (asr is NativeEngine nativeAsr) nativeAsr.Failed += message => { lock (gate) if (!disposed) { asrFailed = true; preview = null; segmenter = null; pendingAudio.Clear(); vad?.Dispose(); vad = null; if (active) Queue(() => { ClearRecognition(); return Task.CompletedTask; }); else ClearRecognition(); Status("error", message); Error(message); } };
-        if (translator is NativeEngine nativeTranslator) nativeTranslator.Failed += message => { lock (gate) if (!disposed) { DropTranslations(); TranslatorStatus("error", message); Error("翻译" + message); } };
+        // Raised on a thread-pool thread when a worker dies: never let an exception escape here, it would terminate the app.
+        if (asr is NativeEngine nativeAsr) nativeAsr.Failed += message => Isolated("asr-exit", () => { lock (gate) if (!disposed) { asrFailed = true; preview = null; segmenter = null; pendingAudio.Clear(); vad?.Dispose(); vad = null; if (active) Queue(() => { ClearRecognition(); return Task.CompletedTask; }); else ClearRecognition(); Status("error", message); Error(message); } });
+        if (translator is NativeEngine nativeTranslator) nativeTranslator.Failed += message => Isolated("translator-exit", () => { lock (gate) if (!disposed) { DropTranslations(); TranslatorStatus("error", message); Error("翻译" + message); } });
+    }
+    private static void Isolated(string area, Action action)
+    {
+        var saved = origin.Value; origin.Value = null;
+        try { action(); } catch (Exception ex) { DiagnosticLog.Write(area, ex); } finally { origin.Value = saved; }
     }
     private T Load<T>(string file, T defaults) where T : IValidated
     { try { return store.Load(file, defaults); } catch (Exception ex) { Error("配置未加载：" + ex.Message); return defaults; } }
     private void Emit(string type, JsonObject? fields = null)
     {
-        var value = fields ?? new(); value["type"] = type; value["protocol_version"] = 1; value["request_id"] = request;
+        var value = fields ?? new(); value["type"] = type; value["protocol_version"] = 1; value["request_id"] = origin.Value ?? "";
         if (!value.ContainsKey("session_id") && session.Length > 0) value["session_id"] = session;
         events.Writer.TryWrite(value);
     }
@@ -78,7 +86,8 @@ public sealed partial class BackendCore : IAsyncDisposable
     private void Status(string value, string detail = "") { state = value; if (value == "ready") active = false; Emit("status", new() { ["state"] = value, ["detail"] = detail, ["device"] = config.Provider == "local" ? (asr as NativeEngine)?.ActiveDevice ?? "" : "" }); }
     private void TranslatorStatus(string value, string detail = "") { translatorState = value; Emit("translator", new() { ["state"] = value, ["detail"] = detail, ["config"] = BackendJson.Object(translation) }); }
     private void Wake() { if (signal.CurrentCount == 0) { try { signal.Release(); } catch (SemaphoreFullException) { } } }
-    private void Queue(Func<Task> work) { jobs.Enqueue(work); Wake(); }
+    private void Queue(Func<Task> work) { var id = origin.Value; jobs.Enqueue(id == null ? work : () => WithOrigin(id, work)); Wake(); }
+    private static async Task WithOrigin(string? id, Func<Task> work) { origin.Value = id; await work(); }
     private bool IsStreaming => config.Provider == "api" && config.ApiProtocol == "qwen_realtime";
     public void Control(JsonObject message)
     {
@@ -87,8 +96,8 @@ public sealed partial class BackendCore : IAsyncDisposable
             if (disposed) return;
             try
             {
+                origin.Value = (string?)message["request_id"] ?? "";
                 if ((int?)message["protocol_version"] != 1) throw new InvalidDataException("协议版本不兼容。");
-                request = (string?)message["request_id"] ?? "";
                 switch ((string?)message["command"])
                 {
                     case "hello": Emit("config", new() { ["config"] = BackendJson.Object(config) }); TranslatorStatus(translatorState); Status(state); break;
@@ -113,6 +122,7 @@ public sealed partial class BackendCore : IAsyncDisposable
                 }
             }
             catch (Exception ex) { Error(ex.Message); }
+            finally { origin.Value = null; }
         }
     }
     private void HandleLoad(JsonObject message)
@@ -130,6 +140,7 @@ public sealed partial class BackendCore : IAsyncDisposable
                 Download(role, next.ModelId, next.Revision, nextRuntime, resolution => Queue(() => LoadAsrAsync(next with { Revision = resolution.Revision }, nextRuntime, resolution.Model, ""))); return;
             }
             var key = (string?)message["api_key"] ?? "";
+            if (TryUpdateInPlace(next, nextRuntime)) return;
             Status("loading"); Queue(() => LoadAsrAsync(next, nextRuntime, null, key));
         }
         else
@@ -140,6 +151,22 @@ public sealed partial class BackendCore : IAsyncDisposable
             if ((string?)message["command"] == "download") Download(role, next.ModelId, next.Revision, nextRuntime, resolution => Queue(() => LoadTranslatorAsync(next with { Revision = resolution.Revision }, nextRuntime, resolution.Model)));
             else { TranslatorStatus("loading"); Queue(() => LoadTranslatorAsync(next, nextRuntime)); }
         }
+    }
+    /// <summary>
+    /// Language, endpointing and preview settings are per-request hints for an already loaded local model.
+    /// Switching them must not restart the native worker or reload weights (and must not race a reload).
+    /// </summary>
+    private bool TryUpdateInPlace(ModelConfig next, RuntimeConfig nextRuntime)
+    {
+        if (state != "ready" || config.Provider != "local" || next.Provider != "local" || activeModel == null || !asr.IsLoaded) return false;
+        if (next.ModelId != config.ModelId || next.LocalModelPath != config.LocalModelPath || next.Revision.Length > 0 && next.Revision != config.Revision) return false;
+        if (nextRuntime.Device != runtime.Device || nextRuntime.AsrEngine != runtime.AsrEngine || nextRuntime.AsrProjectorPath != runtime.AsrProjectorPath ||
+            nextRuntime.AsrFilename != runtime.AsrFilename || nextRuntime.AsrProjectorFilename != runtime.AsrProjectorFilename) return false;
+        var committed = next with { Revision = config.Revision };
+        store.SaveSelection(committed, runtime);
+        config = committed; asr.SetLanguage(committed.Language); ClearRecognition();
+        Emit("config", new() { ["config"] = BackendJson.Object(config) }); Status("ready", "识别设置已更新。");
+        return true;
     }
     private void Download(string role, string modelId, string revision, RuntimeConfig options, Action<ModelResolution> complete)
     {

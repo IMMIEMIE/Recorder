@@ -29,6 +29,8 @@ internal static class ProcessJob
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AssignProcessToJobObject(SafeFileHandle job, IntPtr process);
     public static SafeFileHandle Attach(Process process)
     {
+        // Model-free protocol tests also run on Linux CI, where job objects do not exist.
+        if (!OperatingSystem.IsWindows()) return new SafeFileHandle(IntPtr.Zero, false);
         var job = CreateJobObject(IntPtr.Zero, null);
         var limits = new ExtendedLimits { BasicLimitInformation = new BasicLimits { LimitFlags = 0x2000 } };
         if (job.IsInvalid || !SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf<ExtendedLimits>()) || !AssignProcessToJobObject(job, process.Handle))

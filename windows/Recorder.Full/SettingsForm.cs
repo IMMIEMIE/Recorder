@@ -26,6 +26,7 @@ internal sealed class SettingsForm : Form
         Choice(asr, "Mode", "识别方式", ["local", "api", "stream", "live"], settings.Mode);
         Choice(asr, "Language", "原文语言", Languages.Recognition, Languages.RecognitionName(settings.Language));
         Choice(asr, "Device", "运行设备", ["auto", "cpu", "cuda"], settings.Device);
+        CudaActions(asr);
         Choice(asr, "AsrPreset", "本地模型", DesktopBackend.Shared.Models.Presets.Where(p => p.Role == "asr").Select(p => p.Name).Append("自定义").ToArray(), PresetName("asr", settings.AsrModelId, settings.AsrFilename));
         Field(asr, "AsrModelId", "模型仓库 owner/model", settings.AsrModelId);
         Field(asr, "AsrRevision", "固定 revision（可留空）", settings.AsrRevision);
@@ -73,7 +74,9 @@ internal sealed class SettingsForm : Form
             }
             var command = DesktopBackend.Command("translation_settings"); var t = next.TranslationConfig();
             command["enabled"] = t.Enabled; command["provider"] = t.Provider; command["target_language"] = t.TargetLanguage; command["api_profile"] = t.ApiProfile;
-            if (t.Enabled && t.Provider == "local") await DesktopBackend.Shared.ApplyAsync(next, role: "translator", ct: ct);
+            // Reload the translator only when its model, engine or device changed; switching languages never reloads it.
+            await DesktopBackend.Shared.WaitTranslatorIdleAsync(ct);
+            if (DesktopBackend.Shared.NeedsTranslatorLoad(next)) await DesktopBackend.Shared.ApplyAsync(next, role: "translator", ct: ct);
             await DesktopBackend.Shared.Channel.ControlAsync(command);
             SettingsStore.Save(next); DialogResult = DialogResult.OK; Close();
         });
@@ -118,6 +121,28 @@ internal sealed class SettingsForm : Form
         else fields["TranslatorPath"].Text = "";
     }
     private static string PresetName(string role, string repo, string filename) => DesktopBackend.Shared.Models.Presets.FirstOrDefault(p => p.Role == role && p.Repo == repo && (filename.Length == 0 || p.Files[0].Name == filename))?.Name ?? "自定义";
+    private void CudaActions(TableLayoutPanel p)
+    {
+        var cuda = DesktopBackend.Shared.Cuda; var state = Theme.Label("", 9, Theme.Muted); state.AutoSize = true; Add(p, "GPU 加速组件", state);
+        var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false }; var install = Theme.Button("下载 GPU 加速组件"); var remove = Theme.Button("移除"); row.Controls.Add(install); row.Controls.Add(remove); Add(p, "", row);
+        void Refresh()
+        {
+            bool bundled = cuda.Bundled, installed = cuda.Installed;
+            state.Text = bundled ? "已随安装包提供 CUDA 运行库。" : installed ? "已安装 NVIDIA CUDA 12.8 运行库和 cuBLAS。" : $"未安装。CUDA 需要约 {cuda.DownloadSize / 1048576.0:0} MiB 的 NVIDIA 运行库（cuBLAS），首次使用时单独下载；“自动”在未安装时使用 CPU。";
+            install.Visible = !installed; remove.Visible = installed && !bundled;
+        }
+        Refresh();
+        install.Click += async (_, _) => await RunAsync(async ct =>
+        {
+            var progress = new Progress<(string Detail, long Completed, long Total)>(e => status.Text = $"{e.Detail}  {FormatSize(e.Completed)} / {FormatSize(e.Total)}");
+            await cuda.InstallAsync(progress, ct); Refresh(); status.Text = "GPU 加速组件已安装，选择“自动”或“NVIDIA CUDA”后加载模型即可使用。";
+        });
+        remove.Click += (_, _) =>
+        {
+            if (DesktopBackend.Shared.Core.ActiveAsrDevice == "cuda" || DesktopBackend.Shared.Core.Runtime.TranslatorDevice == "cuda" && DesktopBackend.Shared.Core.TranslationReady) { status.Text = "模型正在使用 CUDA，请先切换到 CPU 并加载后再移除。"; return; }
+            try { cuda.Uninstall(); Refresh(); status.Text = "已移除 GPU 加速组件。"; } catch (Exception ex) { status.Text = ex.Message; }
+        };
+    }
     private void ModelActions(TableLayoutPanel p, string role)
     {
         var button = Theme.Button("下载并加载模型", true); Add(p, "", button);

@@ -20,6 +20,9 @@ public sealed partial class BackendCore
     private EngineModel? activeTranslator;
     private long nextUnit;
     private string overloadSession = "";
+    // Preferences chosen while a translator load is in flight; the load commits (or rolls back) to them.
+    private TranslationConfig? deferredPreferences;
+    private bool quietTranslatorCancel;
     private Func<TranslationConfig, ITranslatorEngine>? apiTranslationFactory;
     public void SetApiTranslationFactory(Func<TranslationConfig, ITranslatorEngine> factory) { lock (gate) apiTranslationFactory = factory; }
     private bool CanTranslate => translation.Enabled && (translation.Provider == "local" ? translator.IsLoaded : apiTranslationFactory != null);
@@ -45,14 +48,19 @@ public sealed partial class BackendCore
     private void DropTranslations()
     {
         while (translations.TryDequeue(out var job)) EndTranslation(job);
-        if (translating is { } current) { current.Cancelled = true; current.Cancel?.Cancel(); }
+        if (translating is { } current) { current.Cancelled = true; try { current.Cancel?.Cancel(); } catch (AggregateException ex) { DiagnosticLog.Write("translation-cancel", ex); } }
         context.Clear(); Wake();
     }
     private async Task CloseTranslationAsync(TranslationJob job)
     {
         try { if (job.Stream != null) await job.Stream.DisposeAsync(); }
         catch (Exception ex) { lock (gate) Error("翻译生成器释放失败，原文不受影响：" + ex.Message); }
-        finally { job.Stream = null; job.Cancel?.Dispose(); job.Cancel = null; if (job.ApiEngine != null) await job.ApiEngine.DisposeAsync(); }
+        finally
+        {
+            // Dispose under the gate: DropTranslations may cancel this source from the control thread at the same time.
+            CancellationTokenSource? cancel; lock (gate) { job.Stream = null; cancel = job.Cancel; job.Cancel = null; }
+            cancel?.Dispose(); if (job.ApiEngine != null) await job.ApiEngine.DisposeAsync();
+        }
     }
     private async Task CancelTranslationAsync()
     {
@@ -122,31 +130,57 @@ public sealed partial class BackendCore
             await translator.LoadAsync(resolved, ct);
             lock (gate) TranslatorStatus("warming");
             await translator.WarmupAsync(ct);
-            ct.ThrowIfCancellationRequested(); store.SaveSelection(next with { Enabled = true }, nextRuntime);
-            lock (gate) { runtime = nextRuntime; translation = next with { Enabled = true }; activeTranslator = resolved; TranslatorStatus("ready"); }
+            ct.ThrowIfCancellationRequested();
+            lock (gate)
+            {
+                var committed = next with { Enabled = true };
+                if (deferredPreferences is { } chosen) committed = committed with { Enabled = chosen.Enabled, Provider = chosen.Provider, TargetLanguage = chosen.TargetLanguage, ApiProfile = chosen.ApiProfile };
+                store.SaveSelection(committed, nextRuntime);
+                deferredPreferences = null; runtime = nextRuntime; translation = committed; activeTranslator = resolved; TranslatorStatus("ready");
+            }
         }
         catch (Exception ex)
         {
             await translator.UnloadAsync(); bool restored = false;
             if (previousModel != null && !lifetime.IsCancellationRequested) try { await translator.LoadAsync(previousModel, lifetime.Token); await translator.WarmupAsync(lifetime.Token); restored = true; } catch { }
-            lock (gate) { translation = previous; runtime = previousRuntime; activeTranslator = restored ? previousModel : null; TranslatorStatus("error", ex.Message); if (restored) TranslatorStatus("ready", "已恢复上一翻译模型。"); }
+            lock (gate)
+            {
+                translation = deferredPreferences ?? previous; deferredPreferences = null;
+                runtime = previousRuntime; activeTranslator = restored ? previousModel : null;
+                // Cancelled because the user turned translation off or switched to API: not an error.
+                if (quietTranslatorCancel && ex is OperationCanceledException) TranslatorStatus(restored ? "ready" : "idle", "已取消加载翻译模型。");
+                else { TranslatorStatus("error", ex.Message); if (restored) TranslatorStatus("ready", "已恢复上一翻译模型。"); }
+            }
         }
-        finally { lock (gate) { translatorSelectionCancellation?.Dispose(); translatorSelectionCancellation = null; cancelTranslatorSelection = false; } }
+        finally { lock (gate) { translatorSelectionCancellation?.Dispose(); translatorSelectionCancellation = null; cancelTranslatorSelection = false; quietTranslatorCancel = false; } }
     }
     private partial void MaybeLoadTranslator()
     {
         if (translation.Enabled && translation.Provider == "local" && !translator.IsLoaded && translatorState == "idle")
-        { TranslatorStatus("loading"); var current = translation; var options = runtime; Queue(() => LoadTranslatorAsync(current, options)); }
+        {
+            // Automatic load: the command that triggered it has already been answered, so its events carry no request id.
+            TranslatorStatus("loading"); var current = translation; var options = runtime; var saved = origin.Value; origin.Value = null;
+            try { Queue(() => LoadTranslatorAsync(current, options)); } finally { origin.Value = saved; }
+        }
     }
     private partial void SetTranslation(JsonObject message)
     {
-        if (translatorState is "loading" or "warming" or "downloading") throw new InvalidOperationException("请等待翻译模型操作结束。");
         var values = BackendJson.Object(translation);
         foreach (var key in new[] { "enabled", "target_language", "provider", "api_profile" }) if (message[key] is JsonNode value) values[key] = value.DeepClone();
         var next = BackendJson.Parse<TranslationConfig>(values);
+        bool stop = !next.Enabled || next.Provider == "api", busy = translatorState is "loading" or "warming" or "downloading";
+        if (busy && stop)
+        {
+            // Turning translation off (or to API) while the local model loads cancels that load instead of failing.
+            if (download != null && downloadRole == "translator") CancelDownload();
+            else { cancelTranslatorSelection = true; quietTranslatorCancel = true; translatorSelectionCancellation?.Cancel(); }
+            busy = translatorState is "loading" or "warming" or "downloading";
+        }
         store.Save("translation.json", next); if (translation != next) DropTranslations(); translation = next;
-        if (!next.Enabled || next.Provider == "api") Queue(async () => { await CancelTranslationAsync(); await translator.UnloadAsync(); lock (gate) { activeTranslator = null; TranslatorStatus("idle"); } });
-        else MaybeLoadTranslator();
+        // A target-language switch never touches the model being loaded: accept it now, the load commits to it.
+        deferredPreferences = busy ? next : null;
+        if (stop) Queue(async () => { await CancelTranslationAsync(); await translator.UnloadAsync(); lock (gate) { activeTranslator = null; TranslatorStatus("idle"); } });
+        else if (!busy) MaybeLoadTranslator();
         TranslatorStatus(translatorState);
     }
 }

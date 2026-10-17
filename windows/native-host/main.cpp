@@ -191,6 +191,16 @@ struct Engine {
 int wmain(int argc, wchar_t ** argv) {
     if (argc != 3 || std::wstring(argv[1]) != L"--pipe") return 2;
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    // The CUDA runtime/cuBLAS may be installed outside the app (downloaded on demand). PATH already resolved this
+    // executable's imports; AddDllDirectory lets recorder-whisper.dll, loaded with LOAD_LIBRARY_SEARCH_*, find them too.
+    if (const wchar_t * dirs = _wgetenv(L"SHENGJIAN_DLL_DIRS")) {
+        std::wstring list(dirs);
+        for (size_t start = 0; start <= list.size();) {
+            size_t end = list.find(L';', start); if (end == std::wstring::npos) end = list.size();
+            if (end > start) AddDllDirectory(list.substr(start, end - start).c_str());
+            start = end + 1;
+        }
+    }
     llama_log_set(quiet, nullptr); mtmd_helper_log_set(quiet, nullptr);
     llama_backend_init();
     std::wstring path = L"\\\\.\\pipe\\" + std::wstring(argv[2]);
