@@ -30,6 +30,12 @@ Windows 预览版已接通下表各功能入口；本地四类模型 CPU/CUDA �
 | 设置与密钥 | 配置严格校验、原子保存、Keychain | Windows DPAPI、独立x64目录、旧设置只读迁移 |
 | 展示与导出 | partial/final/translation、字幕、TXT/SRT | 完整入口、状态反馈、偏好保存 |
 
+## 有意偏差
+
+- 识别语言、停顿策略与预览间隔：Mac 每次修改都重新加载模型。Windows 在模型、版本、设备和权重文件不变时就地生效（`BackendCore.TryUpdateInPlace`），不重启 CUDA 进程。两端的识别结果和事件序列一致。
+- 翻译模型加载期间修改偏好：Windows 接受目标语言切换，并在加载提交时采用；关闭翻译会取消加载。Mac 由 actor 串行处理，没有这个窗口期。
+- CUDA 运行库：Windows 在首次使用时下载（`cuda-runtime.lock.json`）。Mac 的 MLX 与系统 Metal 没有对应需求。
+
 ## 数据约束
 
 本地加载/识别/翻译不联网；模型显式下载；API/实时服务仅在用户启用时请求。音频、原文、译文、译音不自动落盘。API 密钥不传给 C++ 推理进程。安装包不包含模型。

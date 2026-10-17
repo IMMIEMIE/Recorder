@@ -1,4 +1,21 @@
-# Windows x64 0.6.0 预览版验证
+# Windows x64 预览版验证
+
+## 0.6.1 增量（2026-10-17）
+
+本轮改动的根因与范围见 `FIX-MIGRATION-PLAN.md`。验证环境是 Linux 云容器（.NET SDK 10.0.112），**没有 Windows、GPU 或模型**：
+
+- `Recorder.PortableTests`：40 项检查，连续 5 轮通过。真实 `BackendCore`、`NativeEngine`、`NativeClient` 对接协议一致的 `Recorder.FakeNative`，覆盖：
+  - 目标语言切换风暴（每轮 30 次，期间定稿持续进入、逐 token 生成进行中），每个翻译单元恰好以 done 结束，最后的选择生效并已保存；
+  - 翻译模型加载中切换目标语言并在提交时采用；加载中关闭翻译会取消加载，不报错；
+  - 识别语言切换 10 次，原生进程 0 次重启，新的语言提示传到推理进程；更换模型仍会重载；
+  - 翻译进程崩溃后切换语言、重新加载，不会收到旧错误；ASR 进程崩溃后错误带退出码，重新加载可恢复；
+  - 未安装 GPU 组件时，“自动”静默走 CPU，显式 CUDA 给出安装提示；
+  - GPU 组件下载器：镜像 404 与内容损坏时回退下一个镜像、中断后用 Range 续传、损坏的已安装文件能被识别、卸载、离线包自带的库直接可用。
+- 原有 `Recorder.BackendTests` 在 Linux 上运行，97 项通过。跳过的部分依赖 Windows：DPAPI、硬链接、原生 VAD DLL、文件共享冲突。
+- `Recorder.Full` 发布规则：默认包不含 `cublas*/cudart*`；`-p:BundleCudaRuntime=true` 时包含；`cuda-runtime.lock.json` 随包提供；只保留 zh-Hans 资源目录，.NET 部分 111 MiB。
+- 尚需 Windows 执行：`test_windows_backend.ps1`、`Recorder.FullTests`、`test_windows_portable.ps1`、原生构建（CUDA 4 架构）、安装包实际体积、GPU 组件真实下载（约 542 MiB）及 CUDA 推理、界面上的切换回归。
+
+## 0.6.0
 
 本报告区分代码实现、当前机器实测及外部验收。尚未标记整个移植正式完成。Mac 执行按用户选择保留待办。
 

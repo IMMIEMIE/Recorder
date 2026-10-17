@@ -11,10 +11,12 @@ stb: MIT / public domain; see STB-LICENSE.txt.
 xxHash, SHA256, rotate-bits and subprocess.h: see their accompanying *-LICENSE.txt files.
 SHA-1 by Steve Reid: public domain.
 .NET 10 and ProtectedData: MIT, see DOTNET10-CORE-LICENSE.txt, DOTNET10-DESKTOP-LICENSE.txt and DOTNET10-THIRD-PARTY-NOTICES.txt.
-NVIDIA CUDA runtime and cuBLAS 12.8: NVIDIA CUDA Toolkit EULA, see CUDA-EULA.txt.
+NVIDIA CUDA runtime and cuBLAS 12.8: not included in the default package. When the user installs the GPU component,
+they are downloaded from NVIDIA's PyPI wheels (cuda-runtime.lock.json) together with NVIDIA's license (CUDA-EULA.txt in the
+runtime directory). The offline package bundles them with CUDA-EULA.txt; NVIDIA CUDA Toolkit EULA applies.
 Microsoft Visual C++ app-local redistributables: Microsoft Visual Studio license applies.
 
 The native inference executable and VAD/audio bridges use the static C/C++ runtime.
 CUDA vendor DLLs are accompanied by x64 app-local Visual C++ runtime files.
 Models are downloaded separately; their repository licenses and pinned sources are listed in models.lock.json.
-No model weights, Python runtime or CUDA Toolkit installer are included.
+No model weights, Python runtime, CUDA Toolkit installer or (by default) NVIDIA vendor libraries are included.

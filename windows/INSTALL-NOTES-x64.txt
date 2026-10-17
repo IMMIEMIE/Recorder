@@ -1,7 +1,11 @@
-声笺 Windows x64 0.6.0 预览版
+声笺 Windows x64 0.6.1 预览版
 
 系统：Windows 11 x64。程序自带 .NET 10、CPU/CUDA 推理与音频组件。
 使用时无需安装 Python、编译器或 CUDA Toolkit。CUDA 需要兼容的 NVIDIA 驱动。
+NVIDIA CUDA 运行库与 cuBLAS 不在安装包内（约 540 MiB 下载，解压后约 750 MiB）：
+  设置 → 识别 → 运行设备 → 下载 GPU 加速组件。来源为 NVIDIA 官方 PyPI 包，按 SHA256 校验，
+  保存在 %LOCALAPPDATA%\Shengjian-x64\runtime，可在同一位置移除。可用环境变量 SHENGJIAN_PYPI_MIRROR 指定镜像。
+  未安装时“自动”直接使用 CPU；离线完整包（文件名含 offline）已自带这些库。
 CPU 组件要求 AVX2/FMA/F16C/BMI2；无 NVIDIA GPU 时可选择 CPU，自动模式会提示回退。
 
 首次使用：设置 → 本地模型 → Qwen3-ASR 1.7B → 下载并加载模型。
@@ -23,6 +27,9 @@ DPAPI 密钥绑定当前 Windows 用户，复制到其他用户或重装系统�
 
 LiveTranslate 译音可边说边播放或定稿后播放。重播仅存于内存，清空历史或退出即释放。
 系统声音模式排除声笺及子进程播放。麦克风仍能拾取扬声器声音，请按实际环境选择设备。
+
+诊断日志：%LOCALAPPDATA%\Shengjian-x64\logs。只记录异常、原生进程退出码和错误输出，不含音频、原文、译文或密钥。
+反馈崩溃时请附上当天的日志文件。
 
 验证边界：见 WINDOWS-VALIDATION.md。Mac 实机回归、无开发环境机器、真实云账号及设备拔插验收
 未通过前，不将本预览版标记为全部完成或正式发布。

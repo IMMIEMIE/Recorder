@@ -19,6 +19,8 @@
 
 已移植麦克风、系统声音、音频文件、本地 Whisper、OpenAI 兼容转写、千问流式 ASR、文字版 LiveTranslate、API 逐句翻译、置顶字幕、托盘、快捷键及 TXT/SRT 导出。MLX/Qwen 本地识别及本地翻译、AI 提问、译音播放暂未移植。模型不包含在安装包中，本地模式无需 API Key。
 
+x64 0.6.1 预览版（Windows 11，CPU/NVIDIA CUDA，本地 Qwen3-ASR/Whisper 与本地翻译）的说明同样在 [windows/README.md](windows/README.md)。修复与迁移计划见 [windows/FIX-MIGRATION-PLAN.md](windows/FIX-MIGRATION-PLAN.md)。
+
 构建和验证详情见 [Windows 开发与使用说明](windows/README.md)。下方原有说明主要针对 macOS 版。
 
 ## What it does / 项目简介

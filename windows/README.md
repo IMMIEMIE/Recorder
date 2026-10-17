@@ -1,14 +1,16 @@
 # 声笺 Windows
 
-## x64 0.6.0 预览版
+## x64 0.6.1 预览版
 
-Windows 11 x64，.NET 10 自包含；支持 Qwen3-ASR-1.7B、Whisper、本地 Qwen3/Hunyuan 翻译、AI 提问及 LiveTranslate 译音。CPU 和 CUDA 运行库随包提供，模型首次使用单独下载；运行无需 Python、开发工具或 CUDA Toolkit。
+Windows 11 x64，.NET 10 自包含；支持 Qwen3-ASR-1.7B、Whisper、本地 Qwen3/Hunyuan 翻译、AI 提问及 LiveTranslate 译音。安装包含 CPU 推理组件和 CUDA 推理内核。NVIDIA CUDA 运行库和 cuBLAS（约 540 MiB 下载）不随包提供，首次使用 CUDA 时在 设置 → 识别 → 运行设备 中下载，并经过 SHA256 校验。模型同样首次使用时单独下载。运行无需 Python、开发工具或 CUDA Toolkit。
 
-安装包：`dist/Shengjian-0.6.0-windows-x64-preview-setup.exe`；便携包：`dist/Shengjian-0.6.0-windows-x64-preview-portable.zip`。完整解压后运行 `Shengjian.exe`。x64 与 x86 安装和配置目录分离，可并存。
+安装包：`dist/Shengjian-0.6.1-windows-x64-preview-setup.exe`；便携包：`dist/Shengjian-0.6.1-windows-x64-preview-portable.zip`，完整解压后运行 `Shengjian.exe`。需要离线安装时，用 `-BundleCudaRuntime` 构建 `*-preview-offline-*` 完整包。x64 与 x86 的安装目录和配置目录分离，可以并存。
 
-当前 CUDA 组件针对 RTX 50 系列，在 RTX 5060 Ti 实测；其他 GPU 请先选择 CPU。CPU 需要 AVX2/FMA/F16C/BMI2。Windows 模型使用 GGUF/GGML，不能直接加载 MLX 权重。
+CUDA 内核包含 RTX 20/30/40/50 系列（sm_75/86/89/120）的 SASS；RTX 50 已在 RTX 5060 Ti 实测，其余代际待验收。“自动”设备在没有 GPU 组件或驱动时直接使用 CPU。CPU 需要 AVX2/FMA/F16C/BMI2。Windows 模型使用 GGUF/GGML，不能直接加载 MLX 权重。
 
-验证范围和待办见 [WINDOWS-VALIDATION.md](WINDOWS-VALIDATION.md)，安装、迁移和回退见 [INSTALL-NOTES-x64.txt](INSTALL-NOTES-x64.txt)。Mac、真实云账号、无开发环境机器验收保留待办。构建入口：`scripts/build_windows_full.ps1`。
+0.6.1 修复了切换语言时的失败、卡死和崩溃风险，并新增本地诊断日志 `%LOCALAPPDATA%\Shengjian-x64\logs`。日志只记录异常和退出码，不记录音频或文字。计划与根因见 [FIX-MIGRATION-PLAN.md](FIX-MIGRATION-PLAN.md)。
+
+验证范围和待办见 [WINDOWS-VALIDATION.md](WINDOWS-VALIDATION.md)，安装、迁移和回退见 [INSTALL-NOTES-x64.txt](INSTALL-NOTES-x64.txt)。Mac、真实云账号、无开发环境机器验收保留待办。构建入口：`scripts/build_windows_full.ps1`。无模型的跨平台检查：`scripts/test_windows_portable.ps1`，Linux/macOS 上为 `scripts/test_windows_portable.sh`。
 
 以下为 x86 兼容版说明。
 # 声笺 Windows x86 0.5.0
