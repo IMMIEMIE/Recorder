@@ -9,6 +9,18 @@
 [![Architecture](https://img.shields.io/badge/architecture-Apple%20Silicon-555555)](#requirements--环境要求)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
+## Windows x86 测试版
+
+`codex/windows-x86` 分支新增原生 Windows 32 位桌面移植，支持 Windows 10 1809 及以上（也可在 64 位 Windows 运行）。安装包包含 .NET 运行环境和 Whisper CPU 引擎：
+
+- 安装版：`dist/Shengjian-0.5.0-windows-x86-setup.exe`
+- 免安装版：`dist/Shengjian-0.5.0-windows-x86-portable.zip`（完整解压后运行 `Shengjian.exe`）
+- 首次使用：设置 → 本地模型 → 下载 Whisper Tiny → 保存；再选择音源开始转写。
+
+已移植麦克风、系统声音、音频文件、本地 Whisper、OpenAI 兼容转写、千问流式 ASR、文字版 LiveTranslate、API 逐句翻译、置顶字幕、托盘、快捷键及 TXT/SRT 导出。MLX/Qwen 本地识别及本地翻译、AI 提问、译音播放暂未移植。模型不包含在安装包中，本地模式无需 API Key。
+
+构建和验证详情见 [Windows 开发与使用说明](windows/README.md)。下方原有说明主要针对 macOS 版。
+
 ## What it does / 项目简介
 
 **声笺 (Shengjian)** turns microphone, audio-file, or system-audio input into near-real-time text on your Mac. Recognition can use local MLX models, an OpenAI-compatible audio transcription API, or a streaming WebSocket ASR service (Qwen-Audio ASR Flash Streaming); the app can also show a floating subtitle window and translate completed sentences with either a local model or an API.
