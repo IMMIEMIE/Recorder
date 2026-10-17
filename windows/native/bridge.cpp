@@ -12,7 +12,7 @@ struct Engine {
 };
 static void quiet(ggml_log_level, const char *, void *) {}
 extern "C" {
-__declspec(dllexport) Engine *__cdecl recorder_create(const wchar_t *path) {
+__declspec(dllexport) Engine *__cdecl recorder_create_device(const wchar_t *path, int gpu) {
     try {
     // Open with UTF-16: Windows user/model directories often contain Chinese characters.
     FILE *file = _wfopen(path, L"rb");
@@ -24,13 +24,16 @@ __declspec(dllexport) Engine *__cdecl recorder_create(const wchar_t *path) {
     loader.close = [](void *p) { fclose((FILE *)p); };
     whisper_log_set(quiet, nullptr);
     auto params = whisper_context_default_params();
-    params.use_gpu = false;
+    params.use_gpu = gpu != 0;
     auto ctx = whisper_init_with_params(&loader, params);
     if (!ctx) return nullptr;
     auto engine = new Engine;
     engine->ctx = ctx;
     return engine;
     } catch (...) { return nullptr; }
+}
+__declspec(dllexport) Engine *__cdecl recorder_create(const wchar_t *path) {
+    return recorder_create_device(path, 0);
 }
 __declspec(dllexport) void __cdecl recorder_destroy(Engine *e) {
     if (e) { whisper_free(e->ctx); delete e; }
@@ -41,7 +44,7 @@ __declspec(dllexport) const char *__cdecl recorder_transcribe(Engine *e, const f
     if (!e || !pcm || count <= 0) return nullptr;
     try {
     auto p = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    p.n_threads = std::max(1, std::min(4, (int)std::thread::hardware_concurrency()));
+    p.n_threads = std::max(1, std::min(sizeof(void *) == 8 ? 8 : 4, (int)std::thread::hardware_concurrency()));
     p.language = language;
     p.no_context = true;
     p.print_realtime = false; p.print_progress = false;
