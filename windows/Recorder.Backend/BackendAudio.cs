@@ -13,13 +13,23 @@ public sealed partial class BackendCore
     private long expectedSequence, samples;
     private int pendingFinals;
     private bool asrFailed;
+    private string cancelledSession = "";
+    private CancellationTokenSource? recognitionCancellation;
     private Func<IVoiceDetector> voiceFactory = () => new WebRtcVad(Path.Combine(AppContext.BaseDirectory, "runtime", "cpu", "recorder-vad.dll"));
     public void SetVoiceDetectorFactory(Func<IVoiceDetector> factory) { lock (gate) { if (state == "recording") throw new InvalidOperationException("请先停止录音。"); voiceFactory = factory; } }
     partial void StartAudio()
     {
+        recognitionCancellation?.Dispose(); recognitionCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token); cancelledSession = "";
         vad?.Dispose(); vad = null; segmenter = null; pendingAudio.Clear(); expectedSequence = samples = 0; asrFailed = false; pendingFinals = 0;
         segmentSink.Clear();
         if (!IsStreaming) { vad = voiceFactory(); segmenter = new Segmenter(config, item => segmentSink.Add(item)); }
+    }
+    private void CancelSession()
+    {
+        if (state is not ("recording" or "finalizing")) return;
+        cancelledSession = session; recognitionCancellation?.Cancel(); preview = null; pendingAudio.Clear(); segmenter = null;
+        Status("finalizing", "正在取消识别，已有文字已保留…"); var current = session;
+        Queue(() => { lock (gate) if (session == current) { ClearRecognition(); Status(config.Provider == "local" && !asr.IsLoaded ? "error" : "ready", "取消完成；如模型进程已回收，下次启动将重新加载。"); } return Task.CompletedTask; });
     }
     partial void FinishAudio()
     {
@@ -84,14 +94,14 @@ public sealed partial class BackendCore
     }
     public void AudioOverflow()
     { lock (gate) { if (state == "recording") Finish(); Error("音频缓冲超过 320 KB，已停止采集并保留已完成文字。"); } }
-    private bool Obsolete(SegmentJob item) { lock (gate) return item.SessionId != session || !item.Final && finalSegments.Contains(item.SegmentId); }
+    private bool Obsolete(SegmentJob item) { lock (gate) return item.SessionId != session || item.SessionId == cancelledSession || !item.Final && finalSegments.Contains(item.SegmentId); }
     private partial async Task InferAsync(SegmentJob item)
     {
         try
         {
             if (Obsolete(item) || asrFailed) return;
             var engine = config.Provider == "api" ? api ?? throw new InvalidOperationException("API 识别尚未就绪。") : asr;
-            var result = await recognition.TranscribeAsync(engine, config, item, () => Obsolete(item), lifetime.Token);
+            var result = await recognition.TranscribeAsync(engine, config, item, () => Obsolete(item), recognitionCancellation?.Token ?? lifetime.Token);
             lock (gate)
             {
                 if (Obsolete(item)) return;
@@ -105,6 +115,7 @@ public sealed partial class BackendCore
             }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (item.SessionId == cancelledSession) { }
         catch (Exception ex)
         {
             asrFailed = true; recognition.Clear();

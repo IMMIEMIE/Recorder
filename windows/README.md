@@ -1,4 +1,17 @@
-﻿# 声笺 Windows x86 0.5.0
+# 声笺 Windows
+
+## x64 0.6.0 预览版
+
+Windows 11 x64，.NET 10 自包含；支持 Qwen3-ASR-1.7B、Whisper、本地 Qwen3/Hunyuan 翻译、AI 提问及 LiveTranslate 译音。CPU 和 CUDA 运行库随包提供，模型首次使用单独下载；运行无需 Python、开发工具或 CUDA Toolkit。
+
+安装包：`dist/Shengjian-0.6.0-windows-x64-preview-setup.exe`；便携包：`dist/Shengjian-0.6.0-windows-x64-preview-portable.zip`。完整解压后运行 `Shengjian.exe`。x64 与 x86 安装和配置目录分离，可并存。
+
+当前 CUDA 组件针对 RTX 50 系列，在 RTX 5060 Ti 实测；其他 GPU 请先选择 CPU。CPU 需要 AVX2/FMA/F16C/BMI2。Windows 模型使用 GGUF/GGML，不能直接加载 MLX 权重。
+
+验证范围和待办见 [WINDOWS-VALIDATION.md](WINDOWS-VALIDATION.md)，安装、迁移和回退见 [INSTALL-NOTES-x64.txt](INSTALL-NOTES-x64.txt)。Mac、真实云账号、无开发环境机器验收保留待办。构建入口：`scripts/build_windows_full.ps1`。
+
+以下为 x86 兼容版说明。
+# 声笺 Windows x86 0.5.0
 
 Windows 原生桌面移植，代码保存在 `windows/`，原有 Swift/macOS 源码保持独立。
 这是首个 Windows 测试版，不代表与 macOS 的模型、准确率或功能完全一致。

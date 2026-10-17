@@ -1,0 +1,20 @@
+声笺 Windows x64 includes:
+
+Recorder: Apache License 2.0, see LICENSE.
+llama.cpp/libmtmd f74e2fa6a31cc33ab4ee4ae516641cfe62df3924: MIT, see LLAMA-LICENSE.txt.
+whisper.cpp a8d002cfd879315632a579e73f0148d06959de36: MIT, see WHISPER-LICENSE.txt.
+WebRTC VAD: BSD-3-Clause; see WEBRTC-LICENSE.txt and WEBRTC-PATENTS.txt.
+NAudio 2.2.1: MIT, Copyright (c) Mark Heath; see NAUDIO-LICENSE.txt.
+nlohmann/json: MIT; see JSONHPP-LICENSE.txt.
+miniaudio: MIT No Attribution / public domain; see MINIAUDIO-LICENSE.txt.
+stb: MIT / public domain; see STB-LICENSE.txt.
+xxHash, SHA256, rotate-bits and subprocess.h: see their accompanying *-LICENSE.txt files.
+SHA-1 by Steve Reid: public domain.
+.NET 10 and ProtectedData: MIT, see DOTNET10-CORE-LICENSE.txt, DOTNET10-DESKTOP-LICENSE.txt and DOTNET10-THIRD-PARTY-NOTICES.txt.
+NVIDIA CUDA runtime and cuBLAS 12.8: NVIDIA CUDA Toolkit EULA, see CUDA-EULA.txt.
+Microsoft Visual C++ app-local redistributables: Microsoft Visual Studio license applies.
+
+The native inference executable and VAD/audio bridges use the static C/C++ runtime.
+CUDA vendor DLLs are accompanied by x64 app-local Visual C++ runtime files.
+Models are downloaded separately; their repository licenses and pinned sources are listed in models.lock.json.
+No model weights, Python runtime or CUDA Toolkit installer are included.

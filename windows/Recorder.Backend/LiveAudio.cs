@@ -62,6 +62,7 @@ public sealed class LiveReplayCache(int capacity = 128 * 1024 * 1024)
     private readonly HashSet<string> done = new(), rejected = new(), finalized = new();
     private long pendingBytes, clipBytes;
     public long Bytes { get { lock (gate) return pendingBytes + clipBytes; } }
+    public bool Contains(string id) { lock (gate) return clips.ContainsKey(id); }
     public byte[]? Get(string id) { lock (gate) return clips.TryGetValue(id, out var clip) ? clip.ToArray() : null; }
     public void BeginSession() { lock (gate) { decoder = new(); foreach (var stream in pending.Values) stream.Dispose(); pending.Clear(); done.Clear(); rejected.Clear(); finalized.Clear(); pendingBytes = 0; } }
     public void Clear() { lock (gate) { BeginSession(); clips.Clear(); order.Clear(); clipBytes = 0; } }

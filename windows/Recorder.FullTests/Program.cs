@@ -17,6 +17,10 @@ try
 {
     if (args.Length > 0 && args[0] == "--tone") { await AudioChecks.Tone(); return 0; }
     if (args.Length > 1 && args[0] == "--audio-check") return await AudioChecks.Loopback(args[1]);
+    if (args.Length > 0 && args[0] == "--soak") return await SoakChecks.Run(Directory.GetCurrentDirectory(), args.Length > 1 ? int.Parse(args[1]) : 3600);
+    if (args.Length > 0 && args[0] == "--cpu-fallback") return await CpuChecks.Run(Directory.GetCurrentDirectory());
+    if (args.Length > 0 && args[0] == "--native-crash") return await NativeCrashChecks.Run(Directory.GetCurrentDirectory());
+    if (args.Length > 0 && args[0] == "--long-input") return await LongInputChecks.Run(Directory.GetCurrentDirectory());
     Environment.SetEnvironmentVariable("SHENGJIAN_DATA_ROOT", Path.Combine(Directory.GetCurrentDirectory(), ".bootstrap/full-tests-" + Guid.NewGuid().ToString("N")));
     foreach (bool failure in new[] { false, true })
     {
@@ -58,6 +62,10 @@ try
         await using var session = new RecordingSession(config); var rows = new List<TranscriptRow>(); session.Row += rows.Add;
         await session.StartAsync(2, 0, Path.Combine(Directory.GetCurrentDirectory(), "tests/fixtures/english.aiff")); await session.Completion.WaitAsync(TimeSpan.FromSeconds(25));
         Check(rows.Count > 0 && rows.All(r => r.Text.Contains("tail preserved")) && session.AudioSeconds > 5, "HTTP ASR uses new VAD/cache pipeline and EOF drains accepted tail");
+        await using var failedTranslation = new RecordingSession(config with { Translation = true, TranslatorPath = Path.Combine(Directory.GetCurrentDirectory(), ".bootstrap/missing-translation.gguf") });
+        int retained = 0; failedTranslation.Row += _ => retained++;
+        await failedTranslation.StartAsync(2, 0, Path.Combine(Directory.GetCurrentDirectory(), "tests/fixtures/english.aiff")); await failedTranslation.Completion.WaitAsync(TimeSpan.FromSeconds(25));
+        Check(retained > 0, "missing local translator never prevents HTTP recognition from starting and finishing");
         stop.Cancel(); await server;
     }
     using (var listener = Listen(out string url))
@@ -67,7 +75,7 @@ try
             var context = await listener.GetContextAsync(); using var ws = (await context.AcceptWebSocketAsync(null)).WebSocket;
             await Send(ws, new { type = "session.created" }); var update = JsonNode.Parse(await Receive(ws))!;
             Check((int?)update["session"]?["audio"]?["output"]?["format"]?["sample_rate"] == 24000 && update["session"]?["output_modalities"]?.AsArray().Count == 2, "LiveTranslate negotiates text and 24 kHz PCM audio");
-            await Send(ws, new { type = "session.updated", session = new { output_modalities = new[] { "audio", "text" }, translation = new { language = "en" } } });
+            await Send(ws, new { type = "session.updated", session = new { output_modalities = new[] { "audio", "text" }, translation = new { language = "en" }, audio = new { output = new { format = new { type = "pcm", sample_rate = 24000 } } } } });
             Check(JsonNode.Parse(await Receive(ws))?["type"]?.ToString() == "session.finish", "LiveTranslate uses independent graceful finish protocol");
             await Send(ws, new { type = "response.audio.delta", item_id = "out", event_id = "audio-first", delta = Convert.ToBase64String(new byte[] { 1, 2, 3 }) });
             await Send(ws, new { type = "response.audio.delta", item_id = "out", event_id = "audio-second", delta = Convert.ToBase64String(new byte[] { 4 }) });

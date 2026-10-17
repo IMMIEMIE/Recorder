@@ -51,6 +51,7 @@ public sealed partial class BackendCore
     private async Task CloseTranslationAsync(TranslationJob job)
     {
         try { if (job.Stream != null) await job.Stream.DisposeAsync(); }
+        catch (Exception ex) { lock (gate) Error("翻译生成器释放失败，原文不受影响：" + ex.Message); }
         finally { job.Stream = null; job.Cancel?.Dispose(); job.Cancel = null; if (job.ApiEngine != null) await job.ApiEngine.DisposeAsync(); }
     }
     private async Task CancelTranslationAsync()
@@ -66,6 +67,7 @@ public sealed partial class BackendCore
         if (job == null) return;
         try
         {
+            if (translation.Enabled && translation.Provider == "local" && !translator.IsLoaded && !job.Cancelled) throw new IOException("本地翻译进程已退出，请重新加载翻译模型。");
             if (job.Cancelled || !CanTranslate) { await FinishTranslationAsync(job); return; }
             if (job.Stream == null)
             {
@@ -98,6 +100,7 @@ public sealed partial class BackendCore
         catch (Exception ex)
         {
             await FinishTranslationAsync(job);
+            if (!translator.IsLoaded) await translator.UnloadAsync();
             lock (gate) { DropTranslations(); Error("翻译失败：" + ex.Message + "；原文不受影响。"); TranslatorStatus(translator.IsLoaded ? "ready" : "error", ex.Message); }
         }
     }
@@ -109,14 +112,17 @@ public sealed partial class BackendCore
     private partial async Task LoadTranslatorAsync(TranslationConfig next, RuntimeConfig nextRuntime, EngineModel? resolved)
     {
         var previous = translation; var previousRuntime = runtime; var previousModel = activeTranslator;
+        nextRuntime = previousRuntime with { TranslatorDevice = nextRuntime.TranslatorDevice, TranslatorEngine = nextRuntime.TranslatorEngine, TranslatorPath = nextRuntime.TranslatorPath, TranslatorFilename = nextRuntime.TranslatorFilename };
+        CancellationToken ct;
+        lock (gate) { translatorSelectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token); if (cancelTranslatorSelection) translatorSelectionCancellation.Cancel(); ct = translatorSelectionCancellation.Token; }
         try
         {
             await CancelTranslationAsync();
             if (resolved == null) { var result = resolver.Resolve(next, nextRuntime); resolved = result.Model; next = next with { Revision = result.Revision }; }
-            await translator.LoadAsync(resolved, lifetime.Token);
+            await translator.LoadAsync(resolved, ct);
             lock (gate) TranslatorStatus("warming");
-            await translator.WarmupAsync(lifetime.Token);
-            store.SaveSelection(next with { Enabled = true }, nextRuntime);
+            await translator.WarmupAsync(ct);
+            ct.ThrowIfCancellationRequested(); store.SaveSelection(next with { Enabled = true }, nextRuntime);
             lock (gate) { runtime = nextRuntime; translation = next with { Enabled = true }; activeTranslator = resolved; TranslatorStatus("ready"); }
         }
         catch (Exception ex)
@@ -125,10 +131,11 @@ public sealed partial class BackendCore
             if (previousModel != null && !lifetime.IsCancellationRequested) try { await translator.LoadAsync(previousModel, lifetime.Token); await translator.WarmupAsync(lifetime.Token); restored = true; } catch { }
             lock (gate) { translation = previous; runtime = previousRuntime; activeTranslator = restored ? previousModel : null; TranslatorStatus("error", ex.Message); if (restored) TranslatorStatus("ready", "已恢复上一翻译模型。"); }
         }
+        finally { lock (gate) { translatorSelectionCancellation?.Dispose(); translatorSelectionCancellation = null; cancelTranslatorSelection = false; } }
     }
     private partial void MaybeLoadTranslator()
     {
-        if (translation.Enabled && translation.Provider == "local" && !translator.IsLoaded && translatorState is not ("loading" or "warming"))
+        if (translation.Enabled && translation.Provider == "local" && !translator.IsLoaded && translatorState == "idle")
         { TranslatorStatus("loading"); var current = translation; var options = runtime; Queue(() => LoadTranslatorAsync(current, options)); }
     }
     private partial void SetTranslation(JsonObject message)

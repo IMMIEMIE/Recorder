@@ -17,7 +17,7 @@ internal sealed class AIForm : Form
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill }; var configure = Theme.Button("服务设置…"); var summary = Theme.Button("总结"); var translate = Theme.Button("文本翻译"); toolbar.Controls.AddRange([profiles, configure, summary, translate]); layout.Controls.Add(toolbar);
         layout.Controls.Add(question); layout.Controls.Add(output);
         var footer = new FlowLayoutPanel { Dock = DockStyle.Fill }; var send = Theme.Button("发送", true); var cancel = Theme.Button("取消"); var copy = Theme.Button("复制"); var save = Theme.Button("保存…"); footer.Controls.AddRange([send, cancel, copy, save, status]); layout.Controls.Add(footer); Controls.Add(layout);
-        void Reload() { profiles.Items.Clear(); foreach (var p in store.Load()) profiles.Items.Add(p.BaseUrl); var selected = SettingsStore.Load().ApiProfileId; var all = store.Load(); profiles.SelectedIndex = all.Count == 0 ? -1 : Math.Max(0, all.ToList().FindIndex(p => p.Id == selected)); }
+        void Reload() { profiles.Items.Clear(); foreach (var p in store.Load()) profiles.Items.Add(p.BaseUrl); var selected = SettingsStore.Load().AiProfileId; var all = store.Load(); profiles.SelectedIndex = all.Count == 0 ? -1 : Math.Max(0, all.ToList().FindIndex(p => p.Id == selected)); }
         Reload(); configure.Click += (_, _) => { using var form = new ProfilesForm(); form.ShowDialog(this); Reload(); };
         summary.Click += (_, _) => question.Text = "总结主要内容、结论和待办事项。";
         translate.Click += (_, _) => question.Text = "将全文翻译为" + Languages.Target(SettingsStore.Load().TargetLanguage) + "。";
@@ -31,7 +31,7 @@ internal sealed class AIForm : Form
                 await foreach (var delta in client.StreamAsync(ChatClient.Question(question.Text, text), 4096, ct.Token)) output.AppendText(delta);
                 status.Text = "已完成";
             }
-            catch (OperationCanceledException) { status.Text = "已取消，保留已收到的内容。"; }
+            catch (OperationCanceledException) { status.Text = ct.IsCancellationRequested ? "已取消，保留已收到的内容。" : "服务响应超时，保留已收到的内容。"; }
             catch (Exception ex) { status.Text = ex.Message; }
             finally { pending = null; if (!IsDisposed) send.Enabled = true; }
         };
@@ -59,11 +59,11 @@ internal sealed class ProfilesForm : Form
         void Field(int row, string label, Control box) { layout.Controls.Add(Theme.Label(label, 9), 0, row); layout.Controls.Add(box, 1, row); }
         Field(1, "Base URL", url); Field(2, "模型", model); Field(3, "API Key", key);
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill }; var add = Theme.Button("保存服务"); var select = Theme.Button("选择", true); var delete = Theme.Button("删除服务"); var test = Theme.Button("连接测试"); var cancel = Theme.Button("取消测试"); buttons.Controls.AddRange([add, select, delete, test, cancel]); layout.Controls.Add(buttons, 0, 4); layout.SetColumnSpan(buttons, 2); layout.Controls.Add(status, 0, 5); layout.SetColumnSpan(status, 2); Controls.Add(layout);
-        void Reload() { profiles.Items.Clear(); profiles.Items.AddRange(store.Load().Select(p => (object)p.BaseUrl).ToArray()); }
+        void Reload() { profiles.Items.Clear(); profiles.Items.AddRange(store.Load().Select(p => (object)p.BaseUrl).ToArray()); if (store.Issues.Count > 0) status.Text = $"忽略了 {store.Issues.Count} 个损坏配置，其余服务仍可使用。"; }
         Reload(); var settings = SettingsStore.Load(); url.Text = settings.TranslationBase; model.Text = settings.TranslationModel;
         profiles.SelectedIndexChanged += (_, _) => { if (profiles.SelectedItem is string address) { var p = store.Load().Single(p => p.BaseUrl == address); url.Text = p.BaseUrl; model.Text = p.Model; key.Clear(); } };
         add.Click += (_, _) => { try { var p = new ServiceProfile(ServiceProfile.Normalize(url.Text), model.Text.Trim()); store.Save(p, key.Text.Trim()); key.Clear(); Reload(); profiles.SelectedItem = p.BaseUrl; status.Text = "服务已保存。"; } catch (Exception ex) { status.Text = ex.Message; } };
-        select.Click += (_, _) => { try { var p = store.Load().Single(p => p.BaseUrl == profiles.Text); SelectedId = p.Id; var next = SettingsStore.Load() with { ApiProfileId = p.Id, TranslationBase = p.BaseUrl, TranslationModel = p.Model }; SettingsStore.Save(next); DialogResult = DialogResult.OK; } catch (Exception ex) { status.Text = ex.Message; } };
+        select.Click += (_, _) => { try { var p = store.Load().Single(p => p.BaseUrl == profiles.Text); SelectedId = p.Id; SettingsStore.Save(SettingsStore.Load() with { AiProfileId = p.Id }); DialogResult = DialogResult.OK; } catch (Exception ex) { status.Text = ex.Message; } };
         delete.Click += (_, _) => { try { store.Delete(store.Load().Single(p => p.BaseUrl == profiles.Text)); Reload(); status.Text = "已删除服务及其密钥。"; } catch (Exception ex) { status.Text = ex.Message; } };
         test.Click += async (_, _) =>
         {

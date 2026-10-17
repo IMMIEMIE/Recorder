@@ -1,0 +1,6 @@
+{
+  "note": "Fixed synthetic fixtures from the Mac baseline. Punctuation and case are normalized; numeral words are not rewritten as digits. This small set is not a general accuracy benchmark.",
+  "chinese": "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+  "english": "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+  "mixed": "今天我们测试 Python 和 Swift，所有音频都在本地处理。谢谢，谢谢。"
+}

@@ -8,6 +8,7 @@ internal sealed class DesktopBackend : IAsyncDisposable
 {
     private static readonly Lazy<DesktopBackend> shared = new(() => new());
     public static DesktopBackend Shared => shared.Value;
+    public static ValueTask ShutdownAsync() => shared.IsValueCreated ? shared.Value.DisposeAsync() : ValueTask.CompletedTask;
     public ModelManager Models { get; }
     public BackendCore Core { get; }
     public BackendChannel Channel { get; }
@@ -37,6 +38,7 @@ internal sealed class DesktopBackend : IAsyncDisposable
     public async Task ApplyAsync(AppSettings settings, bool download = false, string role = "asr", CancellationToken ct = default)
     {
         if (settings.Mode == "live" && role == "asr") return;
+        if (role == "asr" && Core.State == "error") while (!Core.CanSelectAsr) await Task.Delay(25, ct);
         var command = Command(download ? "download" : "load"); command["role"] = role; command["runtime"] = BackendJson.Object(settings.RuntimeConfig());
         if (role == "asr") { command["config"] = BackendJson.Object(settings.RecognitionConfig()); command["api_key"] = settings.Mode == "api" ? SettingsStore.Reveal(settings.ApiSecret) : ""; }
         else command["translation"] = BackendJson.Object(settings.TranslationConfig() with { Provider = "local" });
@@ -47,9 +49,22 @@ internal sealed class DesktopBackend : IAsyncDisposable
     public async Task EnsureAsync(AppSettings settings, CancellationToken ct)
     {
         if (Core.State != "ready" || Core.Config != settings.RecognitionConfig() || Core.Runtime != settings.RuntimeConfig()) await ApplyAsync(settings, ct: ct);
-        if (settings.Translation && settings.TranslationProvider == "local" && (!Core.TranslationReady || Core.Translation.ModelId != settings.TranslatorModelId)) await ApplyAsync(settings, role: "translator", ct: ct);
+        bool waited = false;
+        while (Core.TranslatorState is "loading" or "warming" or "downloading") { waited = true; await Task.Delay(25, ct); }
+        if (settings.Translation && settings.TranslationProvider == "local" && (!Core.TranslationReady || Core.Translation.ModelId != settings.TranslatorModelId || Core.Runtime.TranslatorDevice != settings.Device))
+        {
+            try { if (waited && Core.TranslatorState == "error") throw new InvalidOperationException("翻译模型未能加载，请在设置中检查模型。"); await ApplyAsync(settings, role: "translator", ct: ct); }
+            catch (Exception ex) when (!ct.IsCancellationRequested) { Event?.Invoke(new JsonObject { ["type"] = "error", ["message"] = "翻译暂不可用，继续识别原文：" + ex.Message }); }
+        }
         var command = Command("translation_settings"); var t = settings.TranslationConfig();
         command["enabled"] = t.Enabled; command["provider"] = t.Provider; command["api_profile"] = t.ApiProfile; command["target_language"] = t.TargetLanguage; await Channel.ControlAsync(command);
+    }
+    public async Task PreferencesAsync(AppSettings settings)
+    {
+        var command = Command("translation_settings"); var t = settings.TranslationConfig();
+        command["enabled"] = t.Enabled; command["provider"] = t.Provider; command["api_profile"] = t.ApiProfile; command["target_language"] = t.TargetLanguage;
+        string id = (string)command["request_id"]!; var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); pending[id] = new("preferences", done);
+        try { await Channel.ControlAsync(command); await done.Task.WaitAsync(TimeSpan.FromSeconds(10)); SettingsStore.Save(settings); } finally { pending.TryRemove(id, out _); }
     }
     public void Register(string session, Action<JsonObject> handler) => sessions[session] = handler;
     public void ClearHistory() => sessions.Clear();
@@ -69,6 +84,7 @@ internal sealed class DesktopBackend : IAsyncDisposable
                 if (type == "config") waiter.Configured = true;
                 if (type == "error" || type == "translator" && (string?)message["state"] == "error") waiter.Completion.TrySetException(new InvalidOperationException((string?)message["message"] ?? (string?)message["detail"] ?? "模型操作失败。"));
                 else if (type == (waiter.Role == "asr" ? "status" : "translator") && (string?)message["state"] == "ready" && (waiter.Role != "asr" || waiter.Configured)) waiter.Completion.TrySetResult();
+                if (waiter.Role == "preferences" && type == "translator" && (string?)message["state"] != "error") waiter.Completion.TrySetResult();
             }
             if ((string?)message["session_id"] is string session && sessions.TryGetValue(session, out var handler)) handler(message);
             Event?.Invoke(message);

@@ -15,27 +15,33 @@ public sealed record ServiceProfile(string BaseUrl, string Model)
         value = value.Trim().TrimEnd('/'); if (value.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)) value = value[..^17];
         return ServiceAddress.Endpoint(value, "").AbsoluteUri.TrimEnd('/');
     }
-    public void Validate() { if (Normalize(BaseUrl) != BaseUrl || string.IsNullOrWhiteSpace(Model) || Model.Any(char.IsControl)) throw new InvalidDataException("服务地址或模型名称无效。"); }
+    public void Validate() { if (string.IsNullOrWhiteSpace(BaseUrl) || string.IsNullOrWhiteSpace(Model) || Normalize(BaseUrl) != BaseUrl || Model.Any(char.IsControl)) throw new InvalidDataException("服务地址或模型名称无效。"); }
 }
 public sealed class ProfileStore(string root)
 {
+    public IReadOnlyList<string> Issues { get; private set; } = [];
     private string DirectoryPath => Path.Combine(root, "profiles");
     private string PathFor(string id, string extension) { if (id.Length != 64 || id.Any(c => !Uri.IsHexDigit(c))) throw new InvalidDataException("服务标识无效。"); return Path.Combine(DirectoryPath, id + extension); }
     public IReadOnlyList<ServiceProfile> Load()
     {
-        if (!Directory.Exists(DirectoryPath)) return [];
+        if (!Directory.Exists(DirectoryPath)) { Issues = []; return []; }
         var profiles = new List<ServiceProfile>();
+        var issues = new List<string>();
         foreach (string path in Directory.EnumerateFiles(DirectoryPath, "*.json"))
-        { var p = JsonSerializer.Deserialize<ServiceProfile>(File.ReadAllText(path), BackendJson.Options) ?? throw new InvalidDataException("服务配置为空。"); p.Validate(); if (Path.GetFileNameWithoutExtension(path) != p.Id) throw new InvalidDataException("服务标识与地址不匹配。"); profiles.Add(p); }
+        { try { var p = JsonSerializer.Deserialize<ServiceProfile>(File.ReadAllText(path), BackendJson.Options) ?? throw new InvalidDataException("服务配置为空。"); p.Validate(); if (Path.GetFileNameWithoutExtension(path) != p.Id) throw new InvalidDataException("服务标识与地址不匹配。"); profiles.Add(p); } catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException) { issues.Add(Path.GetFileName(path)); } }
+        Issues = issues;
         return profiles.OrderBy(p => p.BaseUrl).ToArray();
     }
-    public ServiceProfile Get(string id) => Load().SingleOrDefault(p => p.Id == id || p.BaseUrl == id) ?? throw new InvalidDataException("所选 API 服务不存在，请重新选择。");
+    public ServiceProfile Get(string id)
+    { var normalized = Uri.TryCreate(id, UriKind.Absolute, out _) ? ServiceProfile.Normalize(id) : id; return Load().SingleOrDefault(p => p.Id == id || p.BaseUrl == normalized) ?? throw new InvalidDataException("所选 API 服务不存在，请重新选择。"); }
     public string Key(ServiceProfile p) { string path = PathFor(p.Id, ".dpapi"); return File.Exists(path) ? SecretStore.Reveal(File.ReadAllText(path)) : ""; }
     public void Save(ServiceProfile p, string key)
     {
         p.Validate(); Directory.CreateDirectory(DirectoryPath);
-        if (key.Length > 0) Atomic(PathFor(p.Id, ".dpapi"), SecretStore.Protect(key));
-        Atomic(PathFor(p.Id, ".json"), JsonSerializer.Serialize(p, BackendJson.Options));
+        string secretPath = PathFor(p.Id, ".dpapi"); string? previous = File.Exists(secretPath) ? File.ReadAllText(secretPath) : null;
+        bool changed = false;
+        try { if (key.Length > 0) { Atomic(secretPath, SecretStore.Protect(key)); changed = true; } Atomic(PathFor(p.Id, ".json"), JsonSerializer.Serialize(p, BackendJson.Options)); }
+        catch { if (changed) { if (previous == null) File.Delete(secretPath); else Atomic(secretPath, previous); } throw; }
     }
     public void Delete(ServiceProfile p) { File.Delete(PathFor(p.Id, ".json")); File.Delete(PathFor(p.Id, ".dpapi")); }
     private static void Atomic(string path, string text) { var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp"; try { File.WriteAllText(temp, text); File.Move(temp, path, true); } finally { if (File.Exists(temp)) File.Delete(temp); } }
@@ -55,6 +61,7 @@ public sealed class ChatClient : ITranslatorEngine
         if (Encoding.UTF8.GetByteCount(string.Concat(messages.Select(m => m.Content))) > 300000) throw new InvalidDataException("文本过长，请缩短至约 300 KB 以内。");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct); timeout.CancelAfter(TimeSpan.FromMinutes(5));
         using var request = new HttpRequestMessage(HttpMethod.Post, ServiceAddress.Endpoint(profile.BaseUrl, "/chat/completions"));
+        if (key.Contains('\r') || key.Contains('\n')) throw new InvalidDataException("API Key 包含换行，请重新填写。");
         if (key.Length > 0) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
         else if (request.RequestUri?.IsLoopback != true) throw new InvalidOperationException("请先保存此服务的 API Key。");
         request.Headers.Accept.Add(new("text/event-stream"));

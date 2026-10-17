@@ -10,7 +10,11 @@ using System.Text.RegularExpressions;
 namespace Recorder.Backend;
 
 public sealed record ModelFile(string Name, long Size, string Sha256);
-public sealed record ModelSpec(string Id, string Name, string Role, string Engine, string Repo, string Revision, ModelFile[] Files);
+public sealed record ModelSpec(string Id, string Name, string Role, string Engine, string Repo, string Revision, ModelFile[] Files)
+{
+    public string Runtime { get; init; } = "";
+    public string Format { get; init; } = "";
+}
 public sealed class ModelManager : IModelResolver, IModelDownloader, IDisposable
 {
     private readonly string cache, endpoint;
@@ -31,12 +35,18 @@ public sealed class ModelManager : IModelResolver, IModelDownloader, IDisposable
         http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = true, MaxAutomaticRedirections = 8 }) { Timeout = Timeout.InfiniteTimeSpan };
     }
     public string ExpectedPath(ModelSpec model) => Path.Combine(Snapshot(model.Repo, model.Revision), model.Files[0].Name);
+    private ModelSpec? Preset(string role, string id, RuntimeConfig runtime)
+    {
+        string filename = role == "asr" ? runtime.AsrFilename : runtime.TranslatorFilename;
+        return Presets.FirstOrDefault(p => p.Role == role && p.Repo == id && (filename.Length == 0 || p.Files[0].Name == filename));
+    }
+    private static string ManifestName(string filename) => "recorder-manifest-" + Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(filename))) + ".json";
     public ModelResolution Resolve(ModelConfig config, RuntimeConfig runtime) => Resolve("asr", config.ModelId, config.Revision, config.LocalModelPath, runtime);
     public ModelResolution Resolve(TranslationConfig config, RuntimeConfig runtime) => Resolve("translator", config.ModelId, config.Revision, runtime.TranslatorPath, runtime);
     private ModelResolution Resolve(string role, string id, string revision, string local, RuntimeConfig runtime)
     {
-        var preset = Presets.FirstOrDefault(p => p.Repo == id && p.Role == role);
-        string engine = preset?.Engine ?? (role == "asr" ? runtime.AsrEngine : runtime.TranslatorEngine);
+        var preset = Preset(role, id, runtime);
+        string engine = local.Length > 0 ? (role == "asr" ? runtime.AsrEngine : runtime.TranslatorEngine) : preset?.Engine ?? (role == "asr" ? runtime.AsrEngine : runtime.TranslatorEngine);
         if (local.Length > 0)
         {
             string path = Path.GetFullPath(local);
@@ -62,7 +72,7 @@ public sealed class ModelManager : IModelResolver, IModelDownloader, IDisposable
                     else { var files = Directory.GetFiles(directory, "mmproj*.gguf"); if (files.Length != 1) throw new InvalidDataException("请选择与 Qwen 模型配套的音频编码文件。"); projector = files[0]; }
                 }
             }
-            var result = new EngineModel(engine, path, projector.Length > 0 ? Path.GetFullPath(projector) : "", runtime.Device); ValidateModel(result); return new(result, revision);
+            var result = new EngineModel(engine, path, projector.Length > 0 ? Path.GetFullPath(projector) : "", role == "asr" ? runtime.Device : runtime.TranslatorDevice); ValidateModel(result); return new(result, revision);
         }
         ModelAddress.ValidateId(id);
         var repoRoot = Repository(id);
@@ -80,12 +90,15 @@ public sealed class ModelManager : IModelResolver, IModelDownloader, IDisposable
         {
             try
             {
-                var manifest = Path.Combine(directory, "recorder-manifest.json");
+                string filename = preset?.Files[0].Name ?? (role == "asr" ? runtime.AsrFilename : runtime.TranslatorFilename);
+                var manifest = Path.Combine(directory, ManifestName(filename));
+                if (!File.Exists(manifest)) manifest = Path.Combine(directory, "recorder-manifest.json");
                 ModelSpec spec = File.Exists(manifest) ? JsonSerializer.Deserialize<ModelSpec>(File.ReadAllText(manifest), BackendJson.Options)! : preset ?? throw new InvalidDataException("缓存缺少模型清单。");
                 ValidateSpec(spec);
+                if (filename.Length > 0 && spec.Files[0].Name != filename) throw new InvalidDataException("缓存文件与所选权重不匹配，请下载所选文件。");
                 if (spec.Repo != id || spec.Role != role || spec.Revision != Path.GetFileName(directory)) throw new InvalidDataException("缓存清单与模型版本不匹配。");
                 foreach (var file in spec.Files) VerifyFile(SafeFile(directory, file.Name), file);
-                var model = new EngineModel(spec.Engine, SafeFile(directory, spec.Files[0].Name), spec.Engine == "qwen" ? SafeFile(directory, spec.Files[1].Name) : "", runtime.Device);
+                var model = new EngineModel(spec.Engine, SafeFile(directory, spec.Files[0].Name), spec.Engine == "qwen" ? SafeFile(directory, spec.Files[1].Name) : "", role == "asr" ? runtime.Device : runtime.TranslatorDevice);
                 ValidateModel(model); return new(model, spec.Revision);
             }
             catch when (revision.Length == 0) { }
@@ -97,7 +110,7 @@ public sealed class ModelManager : IModelResolver, IModelDownloader, IDisposable
         await downloadGate.WaitAsync(ct);
         try
         {
-            var preset = Presets.FirstOrDefault(p => p.Role == role && p.Repo == modelId);
+            var preset = Preset(role, modelId, runtime);
             ModelSpec spec;
             if (preset != null && (revision.Length == 0 || revision == preset.Revision)) spec = preset;
             else spec = await RemoteSpecAsync(role, modelId, revision, runtime, ct);
@@ -121,9 +134,9 @@ public sealed class ModelManager : IModelResolver, IModelDownloader, IDisposable
                 try { var blob = Path.Combine(blobs, file.Sha256); if (!CreateHardLink(temp, blob, IntPtr.Zero)) File.Copy(blob, temp); File.Move(temp, target, true); }
                 finally { if (File.Exists(temp)) File.Delete(temp); }
             }
-            var manifest = Path.Combine(snapshot, "recorder-manifest.json");
+            var manifest = Path.Combine(snapshot, ManifestName(spec.Files[0].Name));
             File.WriteAllText(manifest + ".tmp", JsonSerializer.Serialize(spec, BackendJson.Options)); File.Move(manifest + ".tmp", manifest, true);
-            var model = new EngineModel(spec.Engine, SafeFile(snapshot, spec.Files[0].Name), spec.Engine == "qwen" ? SafeFile(snapshot, spec.Files[1].Name) : "", runtime.Device);
+            var model = new EngineModel(spec.Engine, SafeFile(snapshot, spec.Files[0].Name), spec.Engine == "qwen" ? SafeFile(snapshot, spec.Files[1].Name) : "", role == "asr" ? runtime.Device : runtime.TranslatorDevice);
             ValidateModel(model); ct.ThrowIfCancellationRequested();
             if (revision.Length == 0)
             {
@@ -161,7 +174,7 @@ public sealed class ModelManager : IModelResolver, IModelDownloader, IDisposable
             var entry = metadata["siblings"]!.AsArray().FirstOrDefault(n => (string?)n!["rfilename"] == name) ?? throw new InvalidDataException("模型仓库缺少文件：" + name);
             return new ModelFile(name, (long)entry["size"]!, (string?)entry["lfs"]?["sha256"] ?? throw new InvalidDataException("模型文件缺少 SHA256 信息。"));
         }).ToArray();
-        return new(id, id, role, engine, id, sha, files);
+        return new(id, id, role, engine, id, sha, files) { Runtime = engine == "whisper" ? "whisper.cpp" : engine == "qwen" ? "llama.cpp/libmtmd" : "llama.cpp", Format = engine == "whisper" ? "GGML" : "GGUF" };
     }
     private async Task DownloadFileAsync(ModelSpec spec, ModelFile file, string blob, long complete, long total, IProgress<(string Detail, long Completed, long Total)> progress, CancellationToken ct)
     {

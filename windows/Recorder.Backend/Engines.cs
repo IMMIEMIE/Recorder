@@ -29,9 +29,12 @@ public sealed class NativeEngine(string runtimeRoot) : IAsrEngine, ITranslatorEn
     private NativeClient? client;
     private string language = "auto";
     private EngineModel? model;
-    public bool IsLoaded => client != null;
+    public bool IsLoaded => client?.IsAlive == true;
     public string ActiveDevice { get; private set; } = "";
+    public long PrivateBytes => client?.PrivateBytes ?? 0;
     public event Action<string>? Notice;
+    public event Action<string>? Failed;
+    public int? ProcessId => client?.ProcessId;
     public async Task LoadAsync(EngineModel next, string language, CancellationToken ct) { this.language = language; await LoadAsync(next, ct); }
     public async Task LoadAsync(EngineModel next, CancellationToken ct)
     {
@@ -43,6 +46,7 @@ public sealed class NativeEngine(string runtimeRoot) : IAsrEngine, ITranslatorEn
             try
             {
                 candidate = await NativeClient.StartAsync(Path.Combine(runtimeRoot, device, "recorder-native.exe"), ct);
+                var current = candidate; current.UnexpectedExit += () => { if (ReferenceEquals(client, current)) Failed?.Invoke("本地推理进程异常退出，请重新加载模型；已有文字已保留。"); };
                 await candidate.CallAsync("load", new JsonObject { ["path"] = next.Path, ["projector"] = next.Projector, ["engine"] = next.Engine, ["device"] = device }, ct: ct);
                 client = candidate; model = next; ActiveDevice = device; return;
             }
@@ -53,6 +57,16 @@ public sealed class NativeEngine(string runtimeRoot) : IAsrEngine, ITranslatorEn
         throw new InvalidOperationException("没有可用的本地推理设备。");
     }
     public async Task WarmupAsync(CancellationToken ct)
+    {
+        var selected = model;
+        try { await WarmupCurrentAsync(ct); }
+        catch (Exception ex) when (selected?.Device == "auto" && ActiveDevice == "cuda" && !ct.IsCancellationRequested)
+        {
+            await UnloadAsync(); Notice?.Invoke("CUDA 预热或内存分配失败，已释放资源并尝试 CPU：" + ex.Message);
+            await LoadAsync(selected with { Device = "cpu" }, ct); await WarmupCurrentAsync(ct);
+        }
+    }
+    private async Task WarmupCurrentAsync(CancellationToken ct)
     {
         if (model == null || client == null) throw new InvalidOperationException("模型尚未加载。");
         if (model.Engine is "qwen" or "whisper") await TranscribeAsync(new byte[16000], ct);
@@ -86,7 +100,7 @@ public sealed class NativeEngine(string runtimeRoot) : IAsrEngine, ITranslatorEn
                 if (done) break;
             }
         }
-        finally { try { await current.CallAsync("end"); } catch when (ct.IsCancellationRequested || client != current) { } }
+        finally { try { await current.CallAsync("end"); } catch when (ct.IsCancellationRequested || client != current || !current.IsAlive) { } }
     }
     public async Task UnloadAsync() { var current = client; client = null; model = null; ActiveDevice = ""; if (current != null) await current.DisposeAsync(); }
     public async ValueTask DisposeAsync() => await UnloadAsync();

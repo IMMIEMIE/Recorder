@@ -7,14 +7,16 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         try
         {
+            if (!Environment.Is64BitProcess || System.Runtime.InteropServices.RuntimeInformation.OSArchitecture != System.Runtime.InteropServices.Architecture.X64 || !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) throw new PlatformNotSupportedException("完整版需要 Windows 11 x64；旧版 Windows 请使用 x86 兼容版。");
+            if (args.Length > 0) { var error = Path.Combine(SettingsStore.Root, "verification-error.txt"); if (File.Exists(error)) File.Delete(error); }
             if (args.Length > 0 && args[0] == "--verify-file") return Task.Run(() => VerifyAsync(args)).GetAwaiter().GetResult();
             if (args.Length > 0 && args[0] == "--smoke")
             {
                 Directory.CreateDirectory(args[1]);
                 using var main = new MainForm(SettingsStore.Load()); main.Show(); Application.DoEvents();
-                using var mainImage = new Bitmap(main.Width, main.Height); main.DrawToBitmap(mainImage, main.ClientRectangle); mainImage.Save(Path.Combine(args[1], "main.png"));
+                using var mainImage = new Bitmap(main.Width, main.Height); main.DrawToBitmap(mainImage, new Rectangle(Point.Empty, main.Size)); mainImage.Save(Path.Combine(args[1], "main.png"));
                 using var settings = new SettingsForm(SettingsStore.Load()); settings.Show(); Application.DoEvents();
-                using var second = new Bitmap(settings.Width, settings.Height); settings.DrawToBitmap(second, settings.ClientRectangle); second.Save(Path.Combine(args[1], "settings.png"));
+                using var second = new Bitmap(settings.Width, settings.Height); settings.DrawToBitmap(second, new Rectangle(Point.Empty, settings.Size)); second.Save(Path.Combine(args[1], "settings.png"));
                 settings.Close(); main.Close(); return 0;
             }
             using var mutex = new Mutex(true, "Local\\Shengjian.Windows.x64", out bool first);
@@ -22,11 +24,15 @@ internal static class Program
             Application.Run(new MainForm(SettingsStore.Load())); return 0;
         }
         catch (Exception ex) { if (args.Length > 0) { Directory.CreateDirectory(SettingsStore.Root); File.WriteAllText(Path.Combine(SettingsStore.Root, "verification-error.txt"), ex.ToString()); } else MessageBox.Show(ex.Message, "声笺", MessageBoxButtons.OK, MessageBoxIcon.Error); return 1; }
-        finally { DesktopBackend.Shared.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+        finally { DesktopBackend.ShutdownAsync().AsTask().GetAwaiter().GetResult(); }
     }
     private static async Task<int> VerifyAsync(string[] args)
     {
-        var config = SettingsStore.Load() with { UseLocalFile = true, ModelPath = args[2], AsrProjector = args.Length > 3 ? args[3] : "", Device = "cuda", Translation = args.Length > 5, TranslatorPath = args.Length > 5 ? args[5] : "", TargetLanguage = "en" };
+        if (args.Length < 5) throw new ArgumentException("Usage: --verify-file audio model projector output [translator] [--device cpu|cuda|auto] [--engine qwen|whisper] [--translator-engine qwen3|hunyuan]");
+        string device = "auto", engine = "qwen", translatorEngine = "qwen3", translatorPath = ""; int index = 5;
+        if (index < args.Length && !args[index].StartsWith("--")) translatorPath = args[index++];
+        while (index < args.Length) { string option = args[index++]; if (index == args.Length) throw new ArgumentException("Missing option value."); string value = args[index++]; switch (option) { case "--device": device = value; break; case "--engine": engine = value; break; case "--translator-engine": translatorEngine = value; break; default: throw new ArgumentException("Unknown verification option."); } }
+        var config = SettingsStore.Load() with { UseLocalFile = true, ModelPath = args[2], AsrProjector = args[3], AsrEngine = engine, Device = device, Translation = translatorPath.Length > 0, TranslatorPath = translatorPath, TranslatorEngine = translatorEngine, TargetLanguage = "en" };
         var translated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         void Translation(System.Text.Json.Nodes.JsonObject message) { if ((string?)message["type"] == "translation" && (bool?)message["done"] == true) translated.TrySetResult(); }
         DesktopBackend.Shared.Event += Translation;

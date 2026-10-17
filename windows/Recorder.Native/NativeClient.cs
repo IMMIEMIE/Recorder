@@ -16,9 +16,16 @@ public sealed class NativeClient : IAsyncDisposable
     private readonly CancellationTokenSource lifetime = new();
     private long sequence;
     private int disposed;
-    private NativeClient(NamedPipeServerStream pipe, Process process, SafeFileHandle job) { this.pipe = pipe; this.process = process; this.job = job; }
+    private NativeClient(NamedPipeServerStream pipe, Process process, SafeFileHandle job)
+    {
+        this.pipe = pipe; this.process = process; this.job = job;
+        process.Exited += (_, _) => { if (Volatile.Read(ref disposed) == 0 && !lifetime.IsCancellationRequested) UnexpectedExit?.Invoke(); };
+        process.EnableRaisingEvents = true;
+    }
     public int ProcessId => process.Id;
     public long PrivateBytes { get { process.Refresh(); return process.PrivateMemorySize64; } }
+    public bool IsAlive { get { try { return !process.HasExited && pipe.IsConnected; } catch (InvalidOperationException) { return false; } } }
+    public event Action? UnexpectedExit;
     public static async Task<NativeClient> StartAsync(string executable, CancellationToken ct = default)
     {
         if (!File.Exists(executable)) throw new FileNotFoundException("原生推理组件缺失，请重新安装 x64 完整版。", executable);

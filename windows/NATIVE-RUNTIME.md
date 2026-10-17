@@ -26,6 +26,8 @@ CUDA 使用 `-Device cuda`，验证器的设备参数也改为 `cuda`。完整�
 
 ## 发布要求
 
+0.6.0预览包使用已完成真实验证的 RTX 50 系列 CUDA 组件（llama sm_120a、Whisper sm_120），本机 RTX 5060 Ti 通过；其他代际 GPU 的多架构构建尚未完成验收。CPU 组件可独立使用，不依赖 NVIDIA 驱动。
+
 CPU 与 CUDA 产物放在分开的目录，避免 DLL 搜索路径混用。每个目录包含 `recorder-native.exe`、匹配的 `recorder-whisper.dll` 和 `recorder-vad.dll`；CUDA 目录还需合法可分发的 CUDA/cuBLAS 依赖及其许可证。安装包不包含模型权重。
 
 `native/prepare_whisper.ps1` 为 x64 生成一份构建目录内的 Whisper 源文件，将已有取消回调接入 CPU 调度后端。它检查固定版本的源码边界，不修改依赖仓库；x86 继续编译原文件。取消回调必须在每次图计算时更新，防止后续请求使用已经释放的调用上下文。

@@ -55,8 +55,22 @@ internal static class TranslationChecks
         await Wait(e => (string?)e["type"] == "translator" && (string?)e["state"] == "idle");
         check(!translator.IsLoaded, "disabling translation releases generator and model");
         check(core.State == "recording", "cancelling blocked translation never changes ASR recording state");
+        core.SetApiTranslationFactory(_ => new FailingTranslator());
+        var api = Command("translation_settings"); api["enabled"] = true; api["provider"] = "api"; core.Control(api);
+        await Wait(e => (string?)e["type"] == "translator" && (string?)e["state"] == "idle");
+        Final(10, "pressure"); await Wait(e => (string?)e["type"] == "error" && ((string?)e["message"] ?? "").Contains("翻译失败"));
+        check(core.State == "recording", "translation transport failure preserves active ASR session");
         core.Control(Command("stop", "pressure")); await Wait(e => (string?)e["type"] == "status" && (string?)e["state"] == "ready");
     }
+}
+internal sealed class FailingTranslator : ITranslatorEngine
+{
+    public bool IsLoaded => true;
+    public Task LoadAsync(EngineModel model, CancellationToken ct) => Task.CompletedTask;
+    public Task WarmupAsync(CancellationToken ct) => Task.CompletedTask;
+    public async IAsyncEnumerable<string> StreamAsync(IReadOnlyList<ChatMessage> messages, int maxTokens, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct) { yield return await Task.FromException<string>(new IOException("synthetic connection failure")); }
+    public Task UnloadAsync() => Task.CompletedTask;
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
 internal sealed class ControlledTranslator : ITranslatorEngine
 {

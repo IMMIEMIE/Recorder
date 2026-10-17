@@ -1,6 +1,6 @@
 # Windows x64 后端移植记录
 
-基线：Mac/Windows 提交 `4d69912`。开始时已有 Windows 界面修改，差异与新增字幕源码已备份至 `.bootstrap/port-baseline`；不得覆盖或提交这些既有改动。
+基线：Mac/Windows 提交 `4d69912`。开始时已有 Windows 界面修改，差异与新增字幕源码已备份至 `.bootstrap/port-baseline`；原内容未回退。为使独立检出可构建，既有界面内容按备份单独形成基线提交，随后仅提交新增后端接线和字幕偏好，便于分别审查。
 
 ## 固定决策
 
@@ -17,7 +17,7 @@ Windows 11 x64；WinForms/.NET 10；C++ 原生推理；CPU 与 NVIDIA CUDA；命
 | 5 本地翻译 | Windows 通过 | 94项检查；真实 Qwen ASR + Qwen4B CUDA 同时识别和翻译 |
 | 6 网络与 AI | 模拟服务通过，真实账号待验 | 112项后端 + 9项桌面协议检查；AI、服务配置、HTTP 与 WS 接通 |
 | 7 译音 | Windows 模拟与音频实测通过 | 124项后端、12项桌面；自身播放排除与外部音频采集实际通过；真实云译音待验 |
-| 8 发布 | 待开始 | 无开发环境安装、一小时会话、x86 回归 |
+| 8 发布 | 预览版打包，外部验收待办 | 后端150项、桌面13项、x86 28项通过；49分钟293次定稿和翻译，无错误；独立机器、真实账号、Mac待验 |
 
 所有未通过的验收保留为未完成。模型与构建产物不进入 Git。不得使用云端替代本地模型验收。
 
@@ -42,7 +42,7 @@ Windows 后端测试累计 60 项通过：真实 WebRTC VAD 静音检测；19个
 
 ## 阶段 4 证据
 
-80项检查通过，新增固定 revision、SHA256、GGUF 架构、音频编码文件、HF blob/snapshot/ref、Range 续传、取消恢复、损坏修复、忽略 Range 的服务器、离线缓存及路径校验测试。四个真实模型的格式头通过校验。独立 `Recorder.Full` 项目自包含 .NET 10，接入现有 WinForms 窗口、设置页、后端音频邮箱和文件 EOF 排空。真实中文 AIFF 经采样转换、WebRTC VAD、Qwen CUDA 识别后返回完整文字（`.bootstrap/full-transcript.txt`）；主窗口和设置页冒烟启动通过。原有界面改动保持在工作区，未混入阶段提交。Mac 实机测试根据用户选择保留待办。
+80项检查通过，新增固定 revision、SHA256、GGUF 架构、音频编码文件、HF blob/snapshot/ref、Range 续传、取消恢复、损坏修复、忽略 Range 的服务器、离线缓存及路径校验测试。四个真实模型的格式头通过校验。独立 `Recorder.Full` 项目自包含 .NET 10，接入现有 WinForms 窗口、设置页、后端音频邮箱和文件 EOF 排空。真实中文 AIFF 经采样转换、WebRTC VAD、Qwen CUDA 识别后返回完整文字（`.bootstrap/full-transcript.txt`）；主窗口和设置页冒烟启动通过。原有界面改动随后单独保存为基线提交，内容及备份保留。Mac 实机测试根据用户选择保留待办。
 
 ## 阶段 5 证据
 

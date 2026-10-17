@@ -16,7 +16,7 @@ public sealed class BackendChannel : IAsyncDisposable
     public BackendChannel(BackendCore core) { this.core = core; reader = Task.Run(ReadAsync); }
     public bool Audio(string session, long sequence, long start, byte[] pcm)
     {
-        if (Volatile.Read(ref disposed) != 0) return false;
+        if (Volatile.Read(ref disposed) != 0 || Volatile.Read(ref overflowing) != 0) return false;
         var size = Interlocked.Add(ref buffered, pcm.Length); int count = Interlocked.Increment(ref audioPackets);
         if (size > 320000 || count > 128)
         {

@@ -74,13 +74,21 @@ static class ModelManagerChecks
         var hostile = spec with { Files = [new("../escape.gguf", hub.Data.Length, hub.Hash)] };
         var badCatalog = Path.Combine(root, "hostile-models.json"); File.WriteAllText(badCatalog, new JsonObject { ["schema_version"] = 1, ["models"] = JsonSerializer.SerializeToNode(new[] { hostile }, BackendJson.Options) }.ToJsonString());
         reject(() => { using var _ = new ModelManager(root, badCatalog, hub.Endpoint); }, "model manifest traversal rejected");
+        var variant = spec with { Id = "variant", Name = "variant", Files = [new("other.gguf", hub.Data.Length, hub.Hash)] };
+        var variants = Path.Combine(root, "variants.json"); File.WriteAllText(variants, new JsonObject { ["schema_version"] = 1, ["models"] = JsonSerializer.SerializeToNode(new[] { spec, variant }, BackendJson.Options) }.ToJsonString());
+        using (var manager = new ModelManager(Path.Combine(root, "variants"), variants, hub.Endpoint))
+        {
+            await manager.DownloadAsync("translator", spec.Repo, "", options, progress, default);
+            var other = options with { TranslatorFilename = "other.gguf" }; await manager.DownloadAsync("translator", spec.Repo, "", other, progress, default);
+            check(Path.GetFileName(manager.Resolve(new TranslationConfig { ModelId = spec.Repo }, options).Model.Path) == "model.gguf" && Path.GetFileName(manager.Resolve(new TranslationConfig { ModelId = spec.Repo }, other).Model.Path) == "other.gguf", "multiple weights in one repository revision retain independent validated manifests");
+        }
         using (var manager = new ModelManager(Path.Combine(root, "real-format"), Path.Combine(workspace, "windows/models.lock.json")))
         {
             foreach (var model in manager.Presets)
             {
                 var directory = Path.Combine(workspace, ".bootstrap/verification-models", model.Id);
                 if (!Directory.Exists(directory)) continue;
-                var runtime = new RuntimeConfig { AsrEngine = model.Engine is "qwen" or "whisper" ? model.Engine : "qwen", TranslatorPath = Path.Combine(directory, model.Files[0].Name), AsrProjectorPath = model.Files.Length > 1 ? Path.Combine(directory, model.Files[1].Name) : "" };
+                var runtime = new RuntimeConfig { AsrEngine = model.Engine is "qwen" or "whisper" ? model.Engine : "qwen", TranslatorEngine = model.Role == "translator" ? model.Engine : "qwen3", TranslatorPath = Path.Combine(directory, model.Files[0].Name), AsrProjectorPath = model.Files.Length > 1 ? Path.Combine(directory, model.Files[1].Name) : "" };
                 var result = model.Role == "asr" ? manager.Resolve(new ModelConfig { ModelId = model.Repo, LocalModelPath = Path.Combine(directory, model.Files[0].Name) }, runtime) : manager.Resolve(new TranslationConfig { ModelId = model.Repo }, runtime);
                 check(result.Model.Engine == model.Engine, "real model format validated: " + model.Id);
             }

@@ -64,12 +64,13 @@ public static class ServiceHttp
     }
     public static async Task<JsonDocument> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        using var response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(90));
+        using var response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"服务返回 HTTP {(int)response.StatusCode}，请检查地址、模型、密钥及额度。");
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        await using var stream = await response.Content.ReadAsStreamAsync(deadline.Token);
         using var memory = new MemoryStream();
         var buffer = new byte[8192]; int n;
-        while ((n = await stream.ReadAsync(buffer, ct)) > 0)
+        while ((n = await stream.ReadAsync(buffer, deadline.Token)) > 0)
         {
             if (memory.Length + n > 2_000_000) throw new InvalidDataException("服务返回内容过长。");
             memory.Write(buffer, 0, n);
@@ -79,6 +80,7 @@ public static class ServiceHttp
     public static void Authorize(HttpRequestMessage request, string encrypted)
     {
         var key = SettingsStore.Reveal(encrypted);
+        if (key.Contains('\r') || key.Contains('\n')) throw new InvalidOperationException("API Key 包含换行，请重新填写。");
         // An empty key is useful for explicitly configured localhost inference services.
         if (!string.IsNullOrWhiteSpace(key)) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
         else if (request.RequestUri?.IsLoopback != true) throw new InvalidOperationException("请先在设置中填写并保存 API Key。");

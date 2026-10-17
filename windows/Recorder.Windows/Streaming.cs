@@ -24,6 +24,7 @@ public sealed class StreamingClient : IAsyncDisposable
 #if FULL_BACKEND
     private readonly MemoryStream coalesced = new();
     private readonly HashSet<int> finalIds = new();
+    private bool configured;
 #endif
     public event Action<string>? Partial;
     public event Action<TranscriptRow>? Row;
@@ -34,6 +35,9 @@ public sealed class StreamingClient : IAsyncDisposable
     public StreamingClient(AppSettings config) { this.config = config; live = config.Mode == "live"; }
     public async Task ConnectAsync(CancellationToken ct, string? testEndpoint = null)
     {
+#if FULL_BACKEND
+        if (live && (!new[] { "zh", "en", "ja", "ko", "fr", "de", "es", "ru" }.Contains(config.TargetLanguage) || !float.IsFinite(config.LiveVolume) || config.LiveVolume is < 0 or > 1)) throw new InvalidDataException("LiveTranslate 目标语言或音量无效。");
+#endif
         var endpoint = testEndpoint ?? (live ? config.LiveEndpoint : AsrEndpoint);
         if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) ||
             !(uri.Scheme == "wss" || uri.Scheme == "ws" && uri.IsLoopback && testEndpoint != null) ||
@@ -41,6 +45,7 @@ public sealed class StreamingClient : IAsyncDisposable
             throw new InvalidOperationException("请填写有效的 WSS 实时服务地址，不要附带参数。");
         if (live) uri = new Uri(uri + "?model=qwen3.8-livetranslate-flash-realtime");
         var key = SettingsStore.Reveal(live ? config.LiveSecret : config.StreamingSecret);
+        if (key.Contains('\r') || key.Contains('\n')) throw new InvalidOperationException("API Key 包含换行，请重新填写。");
         if (string.IsNullOrWhiteSpace(key)) throw new InvalidOperationException("请先在设置中填写此服务专用的 API Key。");
         socket.Options.SetRequestHeader("Authorization", "Bearer " + key);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
@@ -118,6 +123,7 @@ public sealed class StreamingClient : IAsyncDisposable
                     {
                         case "session.created":
 #if FULL_BACKEND
+                            if (configured) break; configured = true;
                             var audioOptions = new JsonObject { ["input"] = new JsonObject { ["format"] = new JsonObject { ["type"] = "pcm", ["sample_rate"] = 16000 }, ["turn_detection"] = new JsonObject { ["type"] = "server_vad", ["threshold"] = .5, ["silence_duration_ms"] = config.SilenceMs } } };
                             if (config.LiveAudioOutput) audioOptions["output"] = new JsonObject { ["format"] = new JsonObject { ["type"] = "pcm", ["sample_rate"] = 24000 } };
                             await JsonAsync(new JsonObject { ["type"] = "session.update", ["event_id"] = Guid.NewGuid().ToString(), ["session"] = new JsonObject { ["output_modalities"] = config.LiveAudioOutput ? new JsonArray("text", "audio") : new JsonArray("text"), ["translation"] = new JsonObject { ["language"] = config.TargetLanguage }, ["audio"] = audioOptions } }, lifetime.Token);
@@ -129,6 +135,9 @@ public sealed class StreamingClient : IAsyncDisposable
 #endif
                             break;
                         case "session.updated":
+#if FULL_BACKEND
+                            if (!configured) throw new InvalidDataException("LiveTranslate 会话配置顺序异常。");
+#endif
                             if ((string?)json["session"]?["translation"]?["language"] != config.TargetLanguage ||
                                 json["session"]?["output_modalities"] is not JsonArray modes ||
 #if FULL_BACKEND
@@ -137,6 +146,9 @@ public sealed class StreamingClient : IAsyncDisposable
                                 modes.Count != 1 || (string?)modes[0] != "text")
 #endif
                                 throw new InvalidDataException("LiveTranslate 未确认目标语言和文字输出方式。");
+#if FULL_BACKEND
+                            if (config.LiveAudioOutput && ((string?)json["session"]?["audio"]?["output"]?["format"]?["type"] != "pcm" || (int?)json["session"]?["audio"]?["output"]?["format"]?["sample_rate"] != 24000)) throw new InvalidDataException("LiveTranslate 未确认 24 kHz PCM 译音格式。");
+#endif
                             ready.TrySetResult(); break;
                         case "session.finished": Complete(); return;
                         case "error": case "conversation.item.input_audio_transcription.failed":
@@ -162,11 +174,14 @@ public sealed class StreamingClient : IAsyncDisposable
                             var sentence = json["payload"]?["output"]?["sentence"];
                             if (sentence == null || (bool?)sentence["heartbeat"] == true) break;
                             var text = (string?)sentence["text"] ?? "";
+#if FULL_BACKEND
+                            if (Encoding.UTF8.GetByteCount(text) > 200000) throw new InvalidDataException("流式识别句子过长。");
+#endif
                             if ((bool?)sentence["sentence_end"] == true)
                             {
                                 var id = (int?)sentence["sentence_id"] ?? 0;
 #if FULL_BACKEND
-                                if (sentence["sentence_id"] != null && id >= 0 && id < int.MaxValue && finalIds.Add(id)) Row?.Invoke(new("asr:" + (id + 1), Math.Max(0, (double?)sentence["begin_time"] ?? 0) / 1000, text));
+                                if (text.Trim().Length > 0 && sentence["sentence_id"] != null && id >= 0 && id < int.MaxValue && finalIds.Add(id)) Row?.Invoke(new("asr:" + (id + 1), Math.Max(0, (double?)sentence["begin_time"] ?? 0) / 1000, text));
 #else
                                 if (id > 0) Row?.Invoke(new("asr:" + id, Math.Max(0, (double?)sentence["begin_time"] ?? 0) / 1000, text));
 #endif
@@ -206,6 +221,9 @@ public sealed partial class LiveTranscript
     private readonly Dictionary<string, RowData> rows = new();
     private readonly Dictionary<string, Part> outputs = new();
     private readonly HashSet<string> events = new();
+#if FULL_BACKEND
+    private readonly Dictionary<string, TranscriptRow> emitted = new();
+#endif
     public IEnumerable<TranscriptRow> Apply(JsonNode e)
     {
         var eventId = (string?)e["event_id"];
@@ -231,9 +249,16 @@ public sealed partial class LiveTranscript
             case "response.text.done": case "response.audio_transcript.done":
                 outputs[id] = new() { Text = (string?)e["text"] ?? (string?)e["transcript"] ?? "", Done = true }; break;
         }
-        return rows.Where(r => r.Value.Source.Text.Length > 0 || r.Value.Outputs.Any(o => outputs.ContainsKey(o)))
+        var updated = rows.Where(r => r.Value.Source.Text.Length > 0 || r.Value.Outputs.Any(o => outputs.ContainsKey(o)))
             .Select(r => new TranscriptRow(r.Key, r.Value.Seconds, r.Value.Source.Text,
                 string.Join(" ", r.Value.Outputs.Where(outputs.ContainsKey).Select(o => outputs[o].Text)),
                 r.Value.Source.Done && r.Value.Outputs.Count > 0 && r.Value.Outputs.All(o => outputs.TryGetValue(o, out var p) && p.Done))).ToArray();
+#if FULL_BACKEND
+        var changed = updated.Where(r => !emitted.TryGetValue(r.Id, out var previous) || previous != r).ToArray();
+        foreach (var row in changed) emitted[row.Id] = row;
+        return changed;
+#else
+        return updated;
+#endif
     }
 }

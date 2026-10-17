@@ -19,6 +19,7 @@ public sealed class LivePlayer : IDisposable
     private WasapiOut? player;
     private BufferedWaveProvider? buffer;
     private bool failed;
+    private int generation;
     public event Action<string>? Failure;
     public void Start(float volume)
     {
@@ -27,7 +28,8 @@ public sealed class LivePlayer : IDisposable
             Stop(); failed = false;
             buffer = new BufferedWaveProvider(new WaveFormat(24000, 16, 1)) { BufferDuration = TimeSpan.FromSeconds(30), DiscardOnBufferOverflow = false, ReadFully = true };
             player = new WasapiOut(AudioClientShareMode.Shared, true, 100); player.Init(buffer); player.Volume = Math.Clamp(volume, 0, 1);
-            player.PlaybackStopped += (_, e) => { if (e.Exception != null) Fail("译音输出设备不可用，字幕继续更新。"); }; player.Play();
+            var current = player;
+            player.PlaybackStopped += (_, e) => { if (e.Exception != null && ReferenceEquals(current, player)) Fail("译音输出设备不可用，字幕继续更新。"); }; player.Play();
         }
     }
     public void Append(byte[] pcm)
@@ -39,7 +41,7 @@ public sealed class LivePlayer : IDisposable
             try { buffer.AddSamples(pcm, 0, pcm.Length); } catch { Fail("译音缓冲失败，字幕继续更新。"); }
         }
     }
-    private void Fail(string message) { failed = true; Failure?.Invoke(message); /* Disposal stays on the owning thread. */ }
+    private void Fail(string message) { failed = true; int token = Volatile.Read(ref generation); Failure?.Invoke(message); _ = Task.Run(() => { lock (gate) if (generation == token) Stop(); }); }
     public async Task FinishAsync(CancellationToken ct)
     {
         var started = System.Diagnostics.Stopwatch.StartNew();
@@ -51,11 +53,14 @@ public sealed class LivePlayer : IDisposable
         }
         await Task.Delay(150, ct); Stop();
     }
-    public void Stop() { lock (gate) { var current = player; player = null; buffer = null; current?.Stop(); current?.Dispose(); } }
+    public void Stop() { lock (gate) { generation++; var current = player; player = null; buffer = null; current?.Stop(); current?.Dispose(); } }
     public void Dispose() => Stop();
 }
 public sealed class ProcessLoopbackInput : IDisposable
 {
+    // Activation callbacks may outlive a timed-out start. Keep the code module
+    // loaded for the app lifetime; capture handles/threads are still released.
+    private static readonly Lazy<IntPtr> module = new(() => NativeLibrary.Load(Path.Combine(AppContext.BaseDirectory, "runtime/cpu/recorder-audio.dll")));
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void Audio(IntPtr bytes, int count, int error, IntPtr user);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate IntPtr StartCapture(uint process, Audio callback, IntPtr user, out int error);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void StopCapture(IntPtr capture);
@@ -69,7 +74,7 @@ public sealed class ProcessLoopbackInput : IDisposable
     public event Action<Exception?>? Ended;
     public ProcessLoopbackInput()
     {
-        library = NativeLibrary.Load(Path.Combine(AppContext.BaseDirectory, "runtime/cpu/recorder-audio.dll"));
+        library = module.Value;
         start = Marshal.GetDelegateForFunctionPointer<StartCapture>(NativeLibrary.GetExport(library, "recorder_audio_start"));
         stop = Marshal.GetDelegateForFunctionPointer<StopCapture>(NativeLibrary.GetExport(library, "recorder_audio_stop"));
         callback = (bytes, count, error, user) =>
@@ -89,5 +94,5 @@ public sealed class ProcessLoopbackInput : IDisposable
         if (capture == IntPtr.Zero) throw new InvalidOperationException("无法启动排除自身播放的系统声音采集：" + Marshal.GetExceptionForHR(error)?.Message);
     }
     public async Task StopAsync() { var current = Interlocked.Exchange(ref capture, IntPtr.Zero); if (current != IntPtr.Zero) await Task.Run(() => stop(current)); }
-    public void Dispose() { if (disposed) return; StopAsync().GetAwaiter().GetResult(); disposed = true; NativeLibrary.Free(library); GC.KeepAlive(callback); }
+    public void Dispose() { if (disposed) return; StopAsync().GetAwaiter().GetResult(); disposed = true; GC.KeepAlive(callback); }
 }

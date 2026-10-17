@@ -63,6 +63,15 @@ try
     Check(cachedAsr.Calls == 4, "new speech reuses complete chunks and refreshes only tail");
     cache.Forget(cachedJob); Check(cache.Count == 0, "finalized cache entry released");
     await ModelManagerChecks.Run(root, workspace, Check, Reject);
+    var sharedTranslation = JsonNode.Parse(File.ReadAllText(Path.Combine(workspace, "tests/shared/translation-cases.json")))!;
+    foreach (var item in sharedTranslation["language_cases"]!.AsArray()) Check(TranslationText.AlreadyInTarget((string)item!["text"]!, (string)item["target"]!) == (bool)item["skip"]!, "shared translation script: " + item["target"]);
+    foreach (var item in sharedTranslation["same_cases"]!.AsArray()) Check(TranslationText.Same((string)item!["left"]!, (string)item["right"]!) == (bool)item["same"]!, "shared translation comparison");
+    var sharedPlanner = new TranslationPlanner();
+    foreach (var item in sharedTranslation["planner_cases"]!.AsArray())
+    {
+        var unit = (bool?)item!["flush"] == true ? sharedPlanner.Flush((string)item["session"]!) : sharedPlanner.Add((string)item["session"]!, (int)item["segment"]!, (string)item["text"]!, (bool)item["forced"]!);
+        Check(unit?.Source == (string?)item["expected"] && unit?.AnchorSegment == (int?)item["anchor"], "shared translation planner");
+    }
 
     var store = new ConfigStore(Path.Combine(root, "core")); var asr = new FakeAsr(); var translator = new FakeTranslator(); var downloader = new FakeDownloader();
     await using (var core = new BackendCore(store, asr, translator, new FakeResolver(), downloader))
@@ -78,6 +87,11 @@ try
         Check(core.State == "loading", "control remains responsive during blocked model load");
         hold.SetResult(); await Event(core, e => (string?)e["type"] == "status" && (string?)e["state"] == "ready");
         Check(store.Load("config.json", new ModelConfig()).ModelId == "test/good", "model selection committed after warmup");
+        asr.Entered = new(TaskCreationOptions.RunContinuationsAsynchronously); asr.Hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously).Task;
+        var cancelledLoad = Command("load"); cancelledLoad["config"] = BackendJson.Object(new ModelConfig { ModelId = "test/cancelled" }); core.Control(cancelledLoad);
+        await asr.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); core.Control(Command("cancel_operation"));
+        await Event(core, e => (string?)e["type"] == "error");
+        Check(core.Config.ModelId == "test/good" && asr.IsLoaded && core.State == "ready", "cancelling model load restores previous model and committed selection");
         var bad = Command("load"); bad["config"] = BackendJson.Object(new ModelConfig { ModelId = "test/bad" }); core.Control(bad);
         await Event(core, e => (string?)e["type"] == "error");
         Check(core.Config.ModelId == "test/good" && asr.Model == "test/good" && core.State == "ready", "failed switch reloads previous model and retains config");
@@ -136,6 +150,11 @@ try
         await Event(audioCore, e => (string?)e["type"] == "final" && (string?)e["session_id"] == "obsolete");
         await Event(audioCore, e => (string?)e["type"] == "status" && (string?)e["state"] == "ready");
         Check(!observed.Any(e => (string?)e["type"] == "partial" && (string?)e["session_id"] == "obsolete"), "in-flight preview cannot overwrite finalized segment");
+        audioAsr.InferenceEntered = new(TaskCreationOptions.RunContinuationsAsynchronously); audioAsr.InferenceHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously).Task;
+        audioCore.Control(Command("start", "cancelled")); audioCore.Audio("cancelled", 0, 0, continuous);
+        await audioAsr.InferenceEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)); audioCore.Control(Command("cancel_session", "cancelled"));
+        await Event(audioCore, e => (string?)e["type"] == "status" && (string?)e["state"] == "ready");
+        Check(audioAsr.IsLoaded && !observed.Any(e => (string?)e["type"] is "partial" or "final" && (string?)e["session_id"] == "cancelled"), "session cancellation aborts in-flight inference without stale results or unloading usable model");
         audioAsr.Calls = 0; audioAsr.InferenceEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var pressureGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); audioAsr.InferenceHold = pressureGate.Task;
         audioCore.Control(Command("start", "pressure"));
@@ -152,6 +171,7 @@ try
         Check(detector.Entered.Wait(TimeSpan.FromSeconds(5)), "slow audio processing fixture entered");
         channel.Audio("overflow", 1, 320, new byte[150000]); channel.Audio("overflow", 2, 75320, new byte[150000]);
         Check(!channel.Audio("overflow", 3, 150320, new byte[32000]), "capture mailbox refuses over 320 KB without blocking producer");
+        Check(!channel.Audio("overflow", 4, 150320, []), "overflow latch refuses later packets until the next start barrier");
         detector.Release.Set(); await channel.ControlAsync(Command("stop", "overflow"));
         await Event(audioCore, e => (string?)e["type"] == "error" && ((string?)e["message"])!.Contains("320 KB")); Check(true, "mailbox overflow is reported after draining accepted packets");
     }
@@ -174,7 +194,7 @@ sealed class FakeAsr : IAsrEngine
     public TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public async Task LoadAsync(EngineModel model, string language, CancellationToken ct)
     {
-        IsLoaded = false; Entered.TrySetResult(); if (Hold != null) { await Hold.WaitAsync(ct); Hold = null; }
+        IsLoaded = false; Entered.TrySetResult(); if (Hold != null) { var hold = Hold; Hold = null; await hold.WaitAsync(ct); }
         if (model.Path.EndsWith("bad")) throw new InvalidOperationException("模拟模型损坏。"); Model = model.Path; IsLoaded = true;
     }
     public Task WarmupAsync(CancellationToken ct) => Model.EndsWith("warm-failure") ? Task.FromException(new Exception("模拟预热失败。")) : Task.CompletedTask;

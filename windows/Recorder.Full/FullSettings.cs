@@ -22,17 +22,23 @@ public sealed partial record AppSettings
     public string TranslatorEngine { get; set; } = "qwen3";
     public string TranslatorFilename { get; set; } = "";
     public string ApiProfileId { get; set; } = "";
+    public string AiProfileId { get; set; } = "";
     public bool LiveAudioOutput { get; set; }
     public float LiveVolume { get; set; } = .8f;
     public string LiveTiming { get; set; } = "streaming";
     public int SubtitleFontSize { get; set; } = 20;
     public bool SubtitleTranslation { get; set; } = true;
     public double SubtitleOpacity { get; set; } = 1;
+    public int InputSource { get; set; }
+    public string MicrophoneName { get; set; } = "";
+    public int MainWidth { get; set; } = 1040;
+    public int MainHeight { get; set; } = 700;
+    public bool MainTopMost { get; set; }
     public ModelConfig RecognitionConfig() => new() { ModelId = AsrModelId, Revision = AsrRevision, LocalModelPath = UseLocalFile ? ModelPath : "", Language = Languages.RecognitionName(Language),
         Provider = Mode == "local" ? "local" : "api", ApiProtocol = Mode == "stream" ? "qwen_realtime" : "openai", ApiBaseUrl = ApiBase, ApiModel = ApiModel,
         EndpointMode = EndpointMode, EndpointSilenceMs = SilenceMs, PreviewIntervalMs = PreviewMs, MaxSegmentSeconds = MaxSegmentSeconds };
     public TranslationConfig TranslationConfig() => new() { ModelId = TranslatorModelId, Revision = TranslatorRevision, Enabled = Translation, Provider = TranslationProvider, TargetLanguage = Languages.Target(TargetLanguage), ApiProfile = ApiProfileId };
-    public RuntimeConfig RuntimeConfig() => new() { Device = Device, AsrEngine = AsrEngine, AsrProjectorPath = AsrProjector, AsrFilename = AsrFilename, AsrProjectorFilename = AsrProjectorFilename,
+    public RuntimeConfig RuntimeConfig() => new() { Device = Device, TranslatorDevice = Device, AsrEngine = AsrEngine, AsrProjectorPath = AsrProjector, AsrFilename = AsrFilename, AsrProjectorFilename = AsrProjectorFilename,
         TranslatorEngine = TranslatorEngine, TranslatorPath = TranslatorPath, TranslatorFilename = TranslatorFilename };
 }
 internal static class FullSettingsStore
@@ -45,7 +51,9 @@ internal static class FullSettingsStore
         var store = new ConfigStore(Root);
         if (Environment.GetEnvironmentVariable("SHENGJIAN_DATA_ROOT") == null) store.MigrateLegacy(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Shengjian"));
         var ui = Path.Combine(Root, "settings.json"); var legacy = Path.Combine(Root, "legacy-ui.json");
-        var settings = File.Exists(ui) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(ui)) ?? new() : File.Exists(legacy) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(legacy)) ?? new() : new();
+        AppSettings settings = new();
+        try { settings = File.Exists(ui) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(ui)) ?? new() : File.Exists(legacy) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(legacy)) ?? new() : new(); }
+        catch (Exception ex) { StartupError = "界面设置未加载：" + ex.Message; }
         try
         {
             var config = store.Load("config.json", settings.RecognitionConfig()); var translation = store.Load("translation.json", settings.TranslationConfig()); var runtime = store.Load("runtime.json", settings.RuntimeConfig());
@@ -57,11 +65,19 @@ internal static class FullSettingsStore
             settings.AsrFilename = runtime.AsrFilename; settings.AsrProjectorFilename = runtime.AsrProjectorFilename; settings.TranslatorFilename = runtime.TranslatorFilename;
             settings.TranslatorPath = runtime.TranslatorPath; settings.TranslatorEngine = runtime.TranslatorEngine;
             settings.Translation = translation.Enabled; settings.TranslationProvider = translation.Provider; settings.TargetLanguage = TargetCode(translation.TargetLanguage);
+            if (settings.Mode == "live" && settings.TargetLanguage == "zh-TW") settings.TargetLanguage = "zh";
             settings.TranslatorModelId = translation.ModelId; settings.TranslatorRevision = translation.Revision; settings.ApiProfileId = translation.ApiProfile;
+            string profileMigration = Path.Combine(Root, "profiles/.legacy-migrated");
+            if (translation.Provider == "api" && settings.TranslationSecret.Length > 0 && !File.Exists(profileMigration))
+            {
+                var profiles = new ProfileStore(Root); var legacyProfile = new ServiceProfile(ServiceProfile.Normalize(settings.TranslationBase), settings.TranslationModel);
+                if (!profiles.Load().Any(p => p.Id == legacyProfile.Id)) profiles.Save(legacyProfile, SettingsStore.Reveal(settings.TranslationSecret));
+                File.WriteAllText(profileMigration, "1");
+            }
             if (settings.UseLocalFile) settings.ModelPath = config.LocalModelPath;
             else
             {
-                using var manager = new ModelManager(Root); var preset = manager.Presets.FirstOrDefault(p => p.Repo == config.ModelId && p.Role == "asr");
+                using var manager = new ModelManager(Root); var preset = manager.Presets.FirstOrDefault(p => p.Repo == config.ModelId && p.Role == "asr" && (runtime.AsrFilename.Length == 0 || p.Files[0].Name == runtime.AsrFilename));
                 if (preset != null) { settings.AsrEngine = preset.Engine; settings.ModelPath = manager.ExpectedPath(preset with { Revision = config.Revision.Length > 0 ? config.Revision : preset.Revision }); }
                 else if (config.Revision.Length > 0 && runtime.AsrFilename.Length > 0) settings.ModelPath = Path.Combine(Root, "models/models--" + config.ModelId.Replace("/", "--"), "snapshots", config.Revision, runtime.AsrFilename);
             }

@@ -12,6 +12,7 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
     private readonly Channel<byte[]> outgoing = Channel.CreateBounded<byte[]>(100);
     private readonly Dictionary<int, TranscriptRow> rows = new();
     private readonly Dictionary<int, SortedDictionary<int, string>> translations = new();
+    private readonly Dictionary<(int Segment, int Unit), int> translationRevisions = new();
     private AudioInput? input;
     private ProcessLoopbackInput? loopback;
     private LivePlayer? player;
@@ -22,6 +23,7 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
     private long audioBytes, sequence;
     private int stopping;
     private bool started;
+    private volatile bool acceptResults = true;
     public double AudioSeconds => Interlocked.Read(ref audioBytes) / 32000.0;
     public Task Completion => complete.Task;
     public event Action<TranscriptRow>? Row;
@@ -42,6 +44,7 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
             stream = new(config); stream.Partial += text => Partial?.Invoke(text);
             stream.Row += row =>
             {
+                if (!acceptResults) return;
                 if (config.Mode == "live") { Row?.Invoke(row with { AudioId = id + ":live:" + row.Id }); return; }
                 if (!row.Final || !int.TryParse(row.Id.AsSpan(4), out int number)) return;
                 var message = DesktopBackend.Command("asr_stream_final", id);
@@ -85,7 +88,7 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
             if (source == 1)
             {
                 loopback = new(); loopback.Data += Append; loopback.Ended += ex => { if (ex != null) { complete.TrySetException(ex); _ = Task.Run(StopAsync); } };
-                await Task.Run(loopback.Start, cancel.Token); return;
+                await Task.Run(loopback.Start, cancel.Token); cancel.Token.ThrowIfCancellationRequested(); return;
             }
             input = new(); input.Data += Append;
             input.Ended += ex => { if (ex != null) { complete.TrySetException(ex); _ = StopAsync(); } };
@@ -125,20 +128,25 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
         string type = (string)message["type"]!;
         switch (type)
         {
-            case "partial": Partial?.Invoke((string?)message["text"] ?? ""); break;
+            case "partial": if (acceptResults) Partial?.Invoke((string?)message["text"] ?? ""); break;
             case "final":
+                if (!acceptResults) break;
                 int segment = (int)message["segment_id"]!;
                 var row = new TranscriptRow(segment.ToString(), (long?)message["start_sample"] / 16000.0 ?? 0, (string?)message["text"] ?? "");
                 rows[segment] = row; Row?.Invoke(row); Partial?.Invoke(""); break;
             case "translation":
                 int target = (int)message["segment_id"]!, unit = checked((int)Recorder.Backend.BackendJson.Integer(message["unit_id"]));
                 if (!rows.TryGetValue(target, out var original)) break;
+                int revision = checked((int)Recorder.Backend.BackendJson.Integer(message["revision"]));
+                if (translationRevisions.TryGetValue((target, unit), out int previous) && revision <= previous) break;
+                translationRevisions[(target, unit)] = revision;
                 if (!translations.TryGetValue(target, out var parts)) translations[target] = parts = new();
                 parts[unit] = (string?)message["text"] ?? "";
                 rows[target] = original with { Translation = string.Join(" ", parts.Values.Where(p => p.Length > 0)) }; Row?.Invoke(rows[target]); break;
             case "error": Notice?.Invoke((string?)message["message"] ?? "后端错误。"); break;
             case "status":
                 var state = (string?)message["state"];
+                if (started && state == "finalizing" && Volatile.Read(ref stopping) == 0) _ = Task.Run(StopAsync);
                 if (started && state == "ready") complete.TrySetResult();
                 if (state == "error") complete.TrySetException(new InvalidOperationException((string?)message["detail"] ?? "识别服务失败，已有文字已保留。"));
                 break;
@@ -167,8 +175,10 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
     }
     public void Cancel()
     {
+        acceptResults = false;
         cancel.Cancel(); inputCancel.Cancel(); outgoing.Writer.TryComplete();
-        if (started && config.Mode != "live") _ = backend.Channel.ControlAsync(DesktopBackend.Command("stop", id));
+        if (started && config.Mode != "live") _ = backend.Channel.ControlAsync(DesktopBackend.Command("cancel_session", id));
+        else if (!started) _ = backend.Channel.ControlAsync(DesktopBackend.Command("cancel_operation"));
         complete.TrySetCanceled();
     }
     public async ValueTask DisposeAsync()

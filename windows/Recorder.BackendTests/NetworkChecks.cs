@@ -12,6 +12,15 @@ internal static class NetworkChecks
         check(a.BaseUrl == "https://example.com/v1" && profiles.Load().Count == 2 && profiles.Key(a) == "test-secret-a" && profiles.Key(b) == "test-secret-b", "service profiles normalize endpoints and isolate DPAPI credentials");
         check(!string.Join("", Directory.GetFiles(Path.Combine(root, "profiles-test/profiles"), "*.json").Select(File.ReadAllText)).Contains("test-secret"), "plain service configuration never stores API keys");
         profiles.Delete(a); check(profiles.Load().Count == 1 && profiles.Key(a) == "", "deleting profile deletes its credential only");
+        File.WriteAllText(Path.Combine(root, "profiles-test/profiles/broken.json"), "bad-json");
+        check(profiles.Load().Count == 1 && profiles.Issues.Count == 1, "corrupt service profile does not hide valid services");
+        File.WriteAllText(Path.Combine(root, "profiles-test/profiles/missing.json"), "{\"model\":\"test\"}");
+        check(profiles.Load().Count == 1 && profiles.Issues.Count == 2, "service profiles with missing required fields are isolated");
+        using (var locked = new FileStream(Path.Combine(root, "profiles-test/profiles/" + b.Id + ".json"), FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            bool rejected = false; try { profiles.Save(b with { Model = "changed" }, "replacement-secret"); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { rejected = true; }
+            check(rejected && profiles.Key(b) == "test-secret-b", "failed service metadata commit rolls credential back atomically");
+        }
         var socket = new TcpListener(IPAddress.Loopback, 0); socket.Start(); int port = ((IPEndPoint)socket.LocalEndpoint).Port; socket.Stop();
         using var listener = new HttpListener(); string address = $"http://127.0.0.1:{port}"; listener.Prefixes.Add(address + "/"); listener.Start();
         async Task Scenario(string route, string data, bool error, bool cancel = false, int status = 200)
