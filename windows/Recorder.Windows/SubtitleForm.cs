@@ -36,7 +36,19 @@ internal sealed class SubtitleForm : Form
             var oldSource = source.Font; var oldTarget = target.Font; source.Font = Theme.Body(size * .75f); target.Font = Theme.Body(size * .75f); oldSource.Dispose(); oldTarget.Dispose();
         });
         style.Items.Add(sizes);
+#if FULL_BACKEND
+        var saved = SettingsStore.Load();
+        source.Font = Theme.Body(saved.SubtitleFontSize * .75f); target.Font = Theme.Body(saved.SubtitleFontSize * .75f); Opacity = Math.Clamp(saved.SubtitleOpacity, .3, 1);
+        foreach (ToolStripItem item in sizes.DropDownItems) item.Click += (_, _) => { if (int.TryParse(item.Text, out int size)) SettingsStore.Save(SettingsStore.Load() with { SubtitleFontSize = size }); };
+#endif
         var translated = new ToolStripMenuItem("显示译文") { Checked = true, CheckOnClick = true };
+#if FULL_BACKEND
+        translated.Checked = showTranslation = saved.SubtitleTranslation;
+        translated.CheckedChanged += (_, _) => SettingsStore.Save(SettingsStore.Load() with { SubtitleTranslation = translated.Checked });
+        var opacity = new ToolStripMenuItem("不透明度");
+        foreach (int percent in new[] { 50, 70, 85, 100 }) opacity.DropDownItems.Add(percent + "%", null, (_, _) => { Opacity = percent / 100.0; SettingsStore.Save(SettingsStore.Load() with { SubtitleOpacity = Opacity }); });
+        style.Items.Add(opacity);
+#endif
         translated.CheckedChanged += (_, _) => { showTranslation = translated.Checked; target.Visible = showTranslation && target.Text.Length > 0; }; style.Items.Add(translated);
         settings.Click += (_, _) => style.Show(settings, new Point(0, settings.Height));
         void FitText() {

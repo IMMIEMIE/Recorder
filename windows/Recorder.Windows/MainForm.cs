@@ -3,7 +3,7 @@ using NAudio.Wave;
 
 namespace Recorder.Windows;
 
-internal sealed class MainForm : Form
+internal sealed partial class MainForm : Form
 {
     private AppSettings settings;
     private RecordingSession? session;
@@ -71,8 +71,12 @@ internal sealed class MainForm : Form
         main.RowStyles.Add(new(SizeType.AutoSize)); main.RowStyles.Add(new(SizeType.Absolute, 112));
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Padding = new(12, 14, 18, 0), Margin = new(0) };
         var ai = Theme.Button("AI 提问"); ai.Enabled = false;
+#if FULL_BACKEND
+        ai.AccessibleDescription = "AI 服务将在设置中配置";
+#else
         ai.AccessibleDescription = "Windows 版尚未接入 AI 提问服务";
         tips.SetToolTip(ai, "Windows 版尚未接入 AI 提问服务"); tips.SetToolTip(clear, "清空会话");
+#endif
         tips.SetToolTip(pin, "窗口置顶"); tips.SetToolTip(subtitleButton, "打开 / 关闭字幕模式");
         foreach (var button in new[] { clear, copy, export, ai, translation, pin, subtitleButton }) toolbar.Controls.Add(button);
         main.Controls.Add(toolbar, 0, 0);
@@ -108,7 +112,11 @@ internal sealed class MainForm : Form
         clear.Click += (_, _) => { rows.Clear(); transcriptSeconds = 0; RenderRows(); partial.Text = ""; subtitles?.UpdateText("", ""); };
         copy.Click += (_, _) => { if (rows.Count > 0) { try { Clipboard.SetText(TranscriptExport.Text(rows)); status.Text = "已复制全部原文和译文。"; } catch { status.Text = "剪贴板暂不可用，请重试。"; } } };
         export.Click += (_, _) => Export(); subtitleButton.Click += (_, _) => ToggleSubtitles();
+#if FULL_BACKEND
+        tray = new NotifyIcon { Icon = Icon, Text = "声笺 · Windows x64", Visible = true };
+#else
         tray = new NotifyIcon { Icon = Icon, Text = "声笺 · Windows x86", Visible = true };
+#endif
         var menu = new ContextMenuStrip();
         menu.Items.Add("显示主窗口", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
         menu.Items.Add("开始 / 停止转写", null, async (_, _) => { if (session == null) await StartSessionAsync(); else await StopSessionAsync(); });
@@ -122,6 +130,9 @@ internal sealed class MainForm : Form
         FormClosed += (_, _) => { clock.Dispose(); tips.Dispose(); tray.Dispose(); subtitles?.Dispose(); UnregisterHotKey(Handle, 1); };
         Shown += (_, _) => { var registered = RegisterHotKey(Handle, 1, 0x4003, (uint)Keys.Space); UpdateHint(); if (!registered) status.Text = "快捷键已被占用，请使用开始按钮。"; };
         UpdateHint();
+#if FULL_BACKEND
+        InitializeFullBackend(ai, toolbar);
+#endif
     }
     private void UI(Action action, bool wait = false)
     {
@@ -150,9 +161,16 @@ internal sealed class MainForm : Form
         translation.Text = settings.Translation || settings.Mode == "live" ? "译为 " + settings.TargetLanguage + " ▾" : "翻译 ▾";
         status.Text = settings.Mode == "local" && !File.Exists(settings.ModelPath) ? "请在设置中下载或选择模型" : "准备就绪";
         if (source.SelectedIndex == 2 && selectedFile == null) status.Text = "请选择需要转写的音频文件";
+#if FULL_BACKEND
+        UpdateFullHint();
+#endif
     }
     private void ShowTranslationMenu()
     {
+#if FULL_BACKEND
+        ShowFullTranslationMenu();
+        return;
+#else
         var menu = new ContextMenuStrip();
         var enabled = new ToolStripMenuItem("实时翻译") { Checked = settings.Translation, Enabled = session == null && settings.Mode != "live" };
         enabled.Click += (_, _) => { settings = settings with { Translation = !settings.Translation }; SettingsStore.Save(settings); UpdateHint(); };
@@ -164,6 +182,7 @@ internal sealed class MainForm : Form
         }
         menu.Items.Add(new ToolStripSeparator()); menu.Items.Add("翻译设置…", null, (_, _) => configure.PerformClick());
         menu.Closed += (_, _) => menu.Dispose(); menu.Show(translation, new Point(0, translation.Height));
+#endif
     }
     private void UpdateEmpty()
     {
@@ -184,11 +203,14 @@ internal sealed class MainForm : Form
         var sessionOffset = transcriptSeconds;
         current.Row += row => UI(() =>
         {
+#if !FULL_BACKEND
             if (session != current) return;
+#endif
             var id = prefix + row.Id; int index = rows.FindIndex(r => r.Id == id);
             var item = row with { Id = id, Seconds = sessionOffset + row.Seconds };
             if (index < 0) rows.Add(item); else rows[index] = item;
-            partial.Text = ""; RenderRows(); subtitles?.UpdateText(row.Text, row.Translation);
+            RenderRows();
+            if (session == current) { partial.Text = ""; subtitles?.UpdateText(row.Text, row.Translation); }
         }, wait: true);
         current.Partial += text => UI(() => { if (session == current) { partial.Text = text; if (text.Length > 0 && text != "正在识别此句…") subtitles?.UpdateText(text, ""); } });
         current.Notice += text => UI(() => { if (session == current) status.Text = text; });
