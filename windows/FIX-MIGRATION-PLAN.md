@@ -79,7 +79,7 @@
 
 - llama.cpp 与 whisper.cpp 各自静态链接一份 ggml，CUDA 内核因此重复。计划改为 `BUILD_SHARED_LIBS=ON` + `GGML_BACKEND_DL=ON`，由 whisper 使用 llama 的 ggml（`WHISPER_USE_SYSTEM_GGML`）。这样只有一份 `ggml-cuda.dll`，CUDA 内核体积再减半；`ggml-cuda.dll` 还可以并入按需下载的 GPU 组件。
 - 同时启用 `GGML_CPU_ALL_VARIANTS`，运行时按 CPU 选择 `ggml-cpu-*.dll`，去掉“CPU 必须支持 AVX2”的硬性要求。
-- 前提：两个固定提交的 ggml 版本兼容；whisper 取消补丁需要改为基于新版本，或改用上游已有的 abort 回调。需要在 Windows + CUDA 构建机上验证。
+- 可行性检查（2026-10-17，Linux CPU）：llama.cpp `f74e2fa` 的 ggml 可以按 `BUILD_SHARED_LIBS` + `GGML_BACKEND_DL` + `GGML_CPU_ALL_VARIANTS` 构建（生成 `ggml-cpu-haswell/icelake/...` 等变体）。但固定的 whisper.cpp `a8d002c` 不能链接这份 ggml：`whisper.cpp` 用到的 `GGML_KQ_MASK_PAD` 在新版 ggml 中已删除。因此阶段 4 需要先把 whisper.cpp 升级到与该 ggml 同步的提交，重新适配 `prepare_whisper.ps1` 的取消补丁，并重新做 Whisper 的数值与取消验证，最后在 Windows + CUDA 构建机上验收。
 
 ## 如何验证本轮改动
 
