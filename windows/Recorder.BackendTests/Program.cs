@@ -2,13 +2,14 @@ using System.Text.Json.Nodes;
 using Recorder.Backend;
 
 int checks = 0;
+var observed = new List<JsonObject>();
 void Check(bool value, string detail) { if (!value) throw new Exception("FAIL: " + detail); checks++; Console.WriteLine("PASS: " + detail); }
 void Reject(Action action, string detail) { try { action(); } catch { Check(true, detail); return; } throw new Exception("FAIL: " + detail); }
 JsonObject Command(string name, string session = "test") => new() { ["protocol_version"] = 1, ["command"] = name, ["request_id"] = Guid.NewGuid().ToString("N"), ["session_id"] = session };
 async Task<JsonObject> Event(BackendCore core, Func<JsonObject, bool> test)
 {
     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-    while (await core.Events.WaitToReadAsync(timeout.Token)) while (core.Events.TryRead(out var item)) if (test(item)) return item;
+    while (await core.Events.WaitToReadAsync(timeout.Token)) while (core.Events.TryRead(out var item)) { observed.Add(item); if (test(item)) return item; }
     throw new Exception("Missing backend event");
 }
 var workspace = args.Length > 0 ? Path.GetFullPath(args[0]) : Directory.GetCurrentDirectory();
@@ -36,6 +37,31 @@ try
     Check(SecretStore.Reveal((string)migratedSecrets["ApiSecret"]!) == "synthetic-test-secret", "legacy DPAPI secret remains decryptable");
     Check(File.ReadAllText(Path.Combine(legacy, "settings.json")) == original, "legacy settings never modified");
     migrated.MigrateLegacy(legacy); Check(migrated.Load("config.json", new ModelConfig()) == migratedConfig, "migration is idempotent");
+
+    var shared = JsonNode.Parse(File.ReadAllText(Path.Combine(workspace, "tests/shared/backend-cases.json")))!;
+    foreach (var item in shared["sentence_cases"]!.AsArray()) Check(SentenceText.Complete((string)item!["text"]!) == (bool)item["complete"]!, "shared sentence: " + item["text"]);
+    foreach (var item in shared["segment_cases"]!.AsArray())
+    {
+        var jobs = new List<SegmentJob>(); var segmentation = new Recorder.Backend.Segmenter(BackendJson.Parse<ModelConfig>(item!["config"]!.AsObject()), jobs.Add);
+        foreach (var action in item["actions"]!.AsArray())
+        {
+            if (action!["frames"] is JsonNode frames) for (int i = 0; i < (int)frames; ++i) segmentation.Feed(new byte[640], (bool)action["voiced"]!);
+            if (action["feedback"] is JsonNode feedback) segmentation.AcceptPreview(jobs.Last(j => !j.Final), (string)feedback!);
+            if ((bool?)action["flush"] == true) segmentation.Flush();
+        }
+        var finals = jobs.Where(j => j.Final).ToArray(); var expected = item["finals"]!.AsArray();
+        Check(finals.Length == expected.Count && finals.Select((j, i) => j.StartSample == (long)expected[i]![0]! && j.EndSample == (long)expected[i]![1]! && !j.ForcedCut).All(v => v), "shared segment: " + item["name"]);
+    }
+    using (var vad = new WebRtcVad(Path.Combine(workspace, ".bootstrap/runtime-x64/cpu/recorder-vad.dll"))) Check(!vad.IsSpeech(new byte[640]), "real WebRTC VAD rejects silence");
+    var cache = new RecognitionCache(); var cachedAsr = new FakeAsr { Output = "hello" }; var cacheConfig = new ModelConfig { MaxSegmentSeconds = 5 };
+    var cachedJob = new SegmentJob("cache", 1, 1, 0, 12 * 16000, false, new byte[12 * 32000], 12 * 16000);
+    var cacheResult = await cache.TranscribeAsync(cachedAsr, cacheConfig, cachedJob, () => false, default);
+    Check(cachedAsr.Calls == 3 && cacheResult.Text == "hello hello hello", "bounded inputs preserve actual repeated words");
+    await cache.TranscribeAsync(cachedAsr, cacheConfig, cachedJob with { Pcm = new byte[13 * 32000], Final = true }, () => false, default);
+    Check(cachedAsr.Calls == 3, "silence-only final reuses preview result");
+    await cache.TranscribeAsync(cachedAsr, cacheConfig, cachedJob with { Pcm = new byte[13 * 32000], LastVoicedSample = 13 * 16000 }, () => false, default);
+    Check(cachedAsr.Calls == 4, "new speech reuses complete chunks and refreshes only tail");
+    cache.Forget(cachedJob); Check(cache.Count == 0, "finalized cache entry released");
 
     var store = new ConfigStore(Path.Combine(root, "core")); var asr = new FakeAsr(); var translator = new FakeTranslator(); var downloader = new FakeDownloader();
     await using (var core = new BackendCore(store, asr, translator, new FakeResolver(), downloader))
@@ -82,6 +108,52 @@ try
         Check(core.State == "ready", "invalid command preserves ready state");
     }
     Check(!asr.IsLoaded && !translator.IsLoaded, "shutdown releases engine resources");
+
+    var audioAsr = new FakeAsr();
+    await using (var audioCore = new BackendCore(new ConfigStore(Path.Combine(root, "audio")), audioAsr, new FakeTranslator(), new FakeResolver()))
+    {
+        audioCore.SetVoiceDetectorFactory(() => new MarkedVad());
+        var load = Command("load"); load["config"] = BackendJson.Object(new ModelConfig { ModelId = "test/audio", EndpointMode = "fixed" }); audioCore.Control(load);
+        await Event(audioCore, e => (string?)e["type"] == "status" && (string?)e["state"] == "ready");
+        await using var channel = new BackendChannel(audioCore);
+        await channel.ControlAsync(Command("start", "audio-tail"));
+        var voice = Enumerable.Range(0, 3 * 320).SelectMany(_ => new byte[] { 1, 0 }).ToArray();
+        Check(channel.Audio("audio-tail", 0, 0, voice), "capture mailbox accepts valid audio");
+        await channel.ControlAsync(Command("stop", "audio-tail"));
+        var final = await Event(audioCore, e => (string?)e["type"] == "final");
+        Check((long)final["end_sample"]! == 960 && audioAsr.Calls == 1, "stop barrier drains accepted tail before finalization");
+        await Event(audioCore, e => (string?)e["type"] == "status" && (string?)e["state"] == "ready");
+        audioCore.Control(Command("start", "gap")); audioCore.Audio("gap", 0, 0, voice); audioCore.Audio("gap", 2, 960, new byte[640]);
+        await Event(audioCore, e => (string?)e["type"] == "error"); await Event(audioCore, e => (string?)e["type"] == "final");
+        await Event(audioCore, e => (string?)e["type"] == "status" && (string?)e["state"] == "ready"); Check(true, "sequence gap stops and finalizes valid received audio");
+        audioAsr.InferenceEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var inferenceGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); audioAsr.InferenceHold = inferenceGate.Task;
+        audioCore.Control(Command("start", "obsolete"));
+        var continuous = Enumerable.Range(0, 60 * 320).SelectMany(_ => new byte[] { 1, 0 }).ToArray(); audioCore.Audio("obsolete", 0, 0, continuous);
+        await audioAsr.InferenceEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        audioCore.Audio("obsolete", 1, 19200, new byte[50 * 640]); audioCore.Control(Command("stop", "obsolete")); inferenceGate.SetResult();
+        await Event(audioCore, e => (string?)e["type"] == "final" && (string?)e["session_id"] == "obsolete");
+        await Event(audioCore, e => (string?)e["type"] == "status" && (string?)e["state"] == "ready");
+        Check(!observed.Any(e => (string?)e["type"] == "partial" && (string?)e["session_id"] == "obsolete"), "in-flight preview cannot overwrite finalized segment");
+        audioAsr.Calls = 0; audioAsr.InferenceEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pressureGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); audioAsr.InferenceHold = pressureGate.Task;
+        audioCore.Control(Command("start", "pressure"));
+        var pressure = new byte[7 * 53 * 640];
+        for (int i = 0; i < 7; ++i) voice.CopyTo(pressure, i * 53 * 640);
+        audioCore.Audio("pressure", 0, 0, pressure);
+        await Event(audioCore, e => (string?)e["type"] == "error" && ((string?)e["message"])!.Contains("6 句"));
+        await audioAsr.InferenceEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)); pressureGate.SetResult();
+        for (int i = 0; i < 7; ++i) await Event(audioCore, e => (string?)e["type"] == "final" && (string?)e["session_id"] == "pressure");
+        await Event(audioCore, e => (string?)e["type"] == "status" && (string?)e["state"] == "ready");
+        Check(audioAsr.Calls == 7 && observed.Count(e => (string?)e["type"] == "final" && (string?)e["session_id"] == "pressure") == 7, "backpressure stops capture and drains all accepted finals exactly once");
+        var detector = new BlockingVad(); audioCore.SetVoiceDetectorFactory(() => detector);
+        await channel.ControlAsync(Command("start", "overflow")); channel.Audio("overflow", 0, 0, new byte[640]);
+        Check(detector.Entered.Wait(TimeSpan.FromSeconds(5)), "slow audio processing fixture entered");
+        channel.Audio("overflow", 1, 320, new byte[150000]); channel.Audio("overflow", 2, 75320, new byte[150000]);
+        Check(!channel.Audio("overflow", 3, 150320, new byte[32000]), "capture mailbox refuses over 320 KB without blocking producer");
+        detector.Release.Set(); await channel.ControlAsync(Command("stop", "overflow"));
+        await Event(audioCore, e => (string?)e["type"] == "error" && ((string?)e["message"])!.Contains("320 KB")); Check(true, "mailbox overflow is reported after draining accepted packets");
+    }
     Console.WriteLine($"ALL {checks} BACKEND CHECKS PASSED"); return 0;
 }
 catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
@@ -90,6 +162,10 @@ sealed class FakeAsr : IAsrEngine
 {
     public bool IsLoaded { get; private set; }
     public string Model = "";
+    public string Output = "测试。";
+    public int Calls;
+    public Task? InferenceHold;
+    public TaskCompletionSource InferenceEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task? Hold;
     public TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public async Task LoadAsync(EngineModel model, string language, CancellationToken ct)
@@ -98,7 +174,7 @@ sealed class FakeAsr : IAsrEngine
         if (model.Path.EndsWith("bad")) throw new InvalidOperationException("模拟模型损坏。"); Model = model.Path; IsLoaded = true;
     }
     public Task WarmupAsync(CancellationToken ct) => Model.EndsWith("warm-failure") ? Task.FromException(new Exception("模拟预热失败。")) : Task.CompletedTask;
-    public Task<string> TranscribeAsync(ReadOnlyMemory<byte> pcm, CancellationToken ct) => Task.FromResult("测试。");
+    public async Task<string> TranscribeAsync(ReadOnlyMemory<byte> pcm, CancellationToken ct) { Interlocked.Increment(ref Calls); InferenceEntered.TrySetResult(); if (InferenceHold is Task hold) { InferenceHold = null; await hold.WaitAsync(ct); } return Output; }
     public Task UnloadAsync() { IsLoaded = false; return Task.CompletedTask; }
     public ValueTask DisposeAsync() { IsLoaded = false; return ValueTask.CompletedTask; }
 }
@@ -121,4 +197,15 @@ sealed class FakeDownloader : IModelDownloader
     public TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource<ModelResolution> Result = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task<ModelResolution> DownloadAsync(string role, string modelId, string revision, IProgress<(string Detail, long Completed, long Total)> progress, CancellationToken ct) { Entered.SetResult(); return Result.Task; }
+}
+sealed class MarkedVad : IVoiceDetector
+{
+    public bool IsSpeech(ReadOnlySpan<byte> pcm) => pcm[0] == 1;
+    public void Dispose() { }
+}
+sealed class BlockingVad : IVoiceDetector
+{
+    public readonly ManualResetEventSlim Entered = new(), Release = new();
+    public bool IsSpeech(ReadOnlySpan<byte> pcm) { Entered.Set(); Release.Wait(TimeSpan.FromSeconds(10)); return false; }
+    public void Dispose() { Entered.Dispose(); Release.Dispose(); }
 }

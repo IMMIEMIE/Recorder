@@ -197,7 +197,7 @@ public sealed partial class BackendCore : IAsyncDisposable
         if (state != "recording") return;
         Status("finalizing", "正在处理最后一段语音…"); FinishAudio(); preview = null;
         var id = session;
-        Queue(() => { lock (gate) if (session == id) { FlushTranslation(id); Status("ready"); } return Task.CompletedTask; });
+        Queue(() => { lock (gate) if (session == id) { FlushTranslation(id); Status(asrFailed ? "error" : "ready"); } return Task.CompletedTask; });
     }
     private void StreamFinal(JsonObject message)
     {
@@ -246,6 +246,7 @@ public sealed partial class BackendCore : IAsyncDisposable
     {
         lock (gate) { if (disposed) return; disposed = true; download?.Cancel(); lifetime.Cancel(); Wake(); }
         await pump;
+        vad?.Dispose();
         if (api != null) await api.DisposeAsync(); await asr.DisposeAsync(); await translator.DisposeAsync(); lifetime.Dispose();
     }
 }

@@ -5,7 +5,6 @@ public sealed partial class BackendCore
 {
     private partial bool HasTranslation => false;
     private partial Task TranslationStepAsync() => Task.CompletedTask;
-    private partial Task InferAsync(SegmentJob item) => Task.CompletedTask;
     private partial async Task LoadTranslatorAsync(TranslationConfig next, RuntimeConfig nextRuntime, EngineModel? resolved)
     {
         try
