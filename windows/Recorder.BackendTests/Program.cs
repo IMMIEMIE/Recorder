@@ -62,6 +62,7 @@ try
     await cache.TranscribeAsync(cachedAsr, cacheConfig, cachedJob with { Pcm = new byte[13 * 32000], LastVoicedSample = 13 * 16000 }, () => false, default);
     Check(cachedAsr.Calls == 4, "new speech reuses complete chunks and refreshes only tail");
     cache.Forget(cachedJob); Check(cache.Count == 0, "finalized cache entry released");
+    await ModelManagerChecks.Run(root, workspace, Check, Reject);
 
     var store = new ConfigStore(Path.Combine(root, "core")); var asr = new FakeAsr(); var translator = new FakeTranslator(); var downloader = new FakeDownloader();
     await using (var core = new BackendCore(store, asr, translator, new FakeResolver(), downloader))
@@ -196,7 +197,7 @@ sealed class FakeDownloader : IModelDownloader
 {
     public TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource<ModelResolution> Result = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    public Task<ModelResolution> DownloadAsync(string role, string modelId, string revision, IProgress<(string Detail, long Completed, long Total)> progress, CancellationToken ct) { Entered.SetResult(); return Result.Task; }
+    public Task<ModelResolution> DownloadAsync(string role, string modelId, string revision, RuntimeConfig runtime, IProgress<(string Detail, long Completed, long Total)> progress, CancellationToken ct) { Entered.SetResult(); return Result.Task; }
 }
 sealed class MarkedVad : IVoiceDetector
 {

@@ -72,6 +72,9 @@ public sealed record RuntimeConfig : IValidated
     public string AsrProjectorPath { get; init; } = "";
     public string TranslatorEngine { get; init; } = "qwen3";
     public string TranslatorPath { get; init; } = "";
+    public string AsrFilename { get; init; } = "";
+    public string AsrProjectorFilename { get; init; } = "";
+    public string TranslatorFilename { get; init; } = "";
     public void Validate()
     {
         if (Device is not ("auto" or "cpu" or "cuda") || AsrEngine is not ("qwen" or "whisper") || TranslatorEngine is not ("qwen2" or "qwen3" or "hunyuan" or "llama" or "mistral")) throw new InvalidDataException("不支持的运行设备或模型架构。");

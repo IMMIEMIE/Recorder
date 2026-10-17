@@ -4,12 +4,16 @@ using System.Text.Json;
 
 namespace Recorder.Windows;
 
-public sealed record AppSettings
+public sealed partial record AppSettings
 {
     public string Mode { get; set; } = "local";
     public string Language { get; set; } = "auto";
     public int SilenceMs { get; set; } = 1000;
+#if FULL_BACKEND
+    public string ModelPath { get; set; } = FullSettingsStore.DefaultModelPath;
+#else
     public string ModelPath { get; set; } = Path.Combine(SettingsStore.Root, "models", "ggml-tiny.bin");
+#endif
     public string ApiBase { get; set; } = "https://api.openai.com/v1";
     public string ApiModel { get; set; } = "whisper-1";
     public string ApiSecret { get; set; } = "";
@@ -25,6 +29,11 @@ public sealed record AppSettings
 
 public static class SettingsStore
 {
+#if FULL_BACKEND
+    public static string Root => FullSettingsStore.Root;
+    public static AppSettings Load() => FullSettingsStore.Load();
+    public static void Save(AppSettings settings) => FullSettingsStore.Save(settings);
+#else
     public static string Root => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Shengjian");
     public static AppSettings Load()
     {
@@ -40,6 +49,7 @@ public static class SettingsStore
         File.WriteAllText(path + ".tmp", JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
         File.Move(path + ".tmp", path, true);
     }
+#endif
     public static string Protect(string value) => string.IsNullOrEmpty(value) ? "" : Convert.ToBase64String(
         ProtectedData.Protect(Encoding.UTF8.GetBytes(value), null, DataProtectionScope.CurrentUser));
     public static string Reveal(string value)

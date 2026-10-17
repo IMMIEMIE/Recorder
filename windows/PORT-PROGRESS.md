@@ -13,7 +13,7 @@ Windows 11 x64；WinForms/.NET 10；C++ 原生推理；CPU 与 NVIDIA CUDA；命
 | 1 基线与原生可行性 | 已通过 | 四类真实模型 CPU/CUDA、取消/恢复、三轮加载/释放；见 native-verification.json |
 | 2 核心与配置 | 已通过 | 28项配置/迁移/状态/回滚检查，原生客户端由阶段1覆盖 |
 | 3 音频/断句/预览 | Windows验收通过，Mac待验 | 60项Windows检查；共享样例与Swift入口已提供 |
-| 4 识别与模型管理 | 进行中 | 下载/取消/恢复/校验、离线识别、模型切换 |
+| 4 识别与模型管理 | Windows 核心通过，桌面接通 | 80项检查、真实中文文件经桌面会话转录；UI 冒烟图已检查；全套故障和切换长测留最终验收 |
 | 5 本地翻译 | 待开始 | 优先级、同语言跳过、跨会话归属 |
 | 6 网络与 AI | 待开始 | HTTP/SSE/WS 模拟服务及真实账号验证 |
 | 7 译音 | 待开始 | 配对/播放/重播/排除自身音频 |
@@ -39,3 +39,7 @@ Windows 11 x64；WinForms/.NET 10；C++ 原生推理；CPU 与 NVIDIA CUDA；命
 ## 阶段 3 证据
 
 Windows 后端测试累计 60 项通过：真实 WebRTC VAD 静音检测；19个共享句末/分段样例；识别块与预览缓存；重复词保留；停止排空；序号断裂尾句；过期预览；积压停止且所有已接收定稿只处理一次；320KB捕获缓冲保护。共享样例为 `tests/shared/backend-cases.json`，Mac 测试入口为 `scripts/test_backend_shared.sh`。本机没有 Swift/Mac 环境，尚未标记双端同步通过；Mac 执行列入最终验收待办。继续实现独立的 Windows 模型管理。
+
+## 阶段 4 证据
+
+80项检查通过，新增固定 revision、SHA256、GGUF 架构、音频编码文件、HF blob/snapshot/ref、Range 续传、取消恢复、损坏修复、忽略 Range 的服务器、离线缓存及路径校验测试。四个真实模型的格式头通过校验。独立 `Recorder.Full` 项目自包含 .NET 10，接入现有 WinForms 窗口、设置页、后端音频邮箱和文件 EOF 排空。真实中文 AIFF 经采样转换、WebRTC VAD、Qwen CUDA 识别后返回完整文字（`.bootstrap/full-transcript.txt`）；主窗口和设置页冒烟启动通过。原有界面改动保持在工作区，未混入阶段提交。Mac 实机测试根据用户选择保留待办。

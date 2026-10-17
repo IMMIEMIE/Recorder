@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><PlatformTarget>x64</PlatformTarget><RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <RuntimeFrameworkVersion>10.0.13</RuntimeFrameworkVersion><SelfContained>true</SelfContained><PublishSingleFile>false</PublishSingleFile>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile><DefineConstants>$(DefineConstants);FULL_BACKEND</DefineConstants>
+    <AssemblyName>Shengjian</AssemblyName><RootNamespace>Recorder.Windows</RootNamespace><Version>0.6.0</Version><Product>声笺 Windows x64</Product>
+    <ApplicationIcon>../Recorder.Windows/AppIcon.ico</ApplicationIcon><ApplicationManifest>../Recorder.Windows/app.manifest</ApplicationManifest>
+    <NoWarn>$(NoWarn);WFO1000</NoWarn>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Recorder.Backend/Recorder.Backend.csproj" /><PackageReference Include="NAudio" Version="2.2.1" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Recorder.Windows/MainForm.cs;../Recorder.Windows/Theme.cs;../Recorder.Windows/SubtitleForm.cs;../Recorder.Windows/Settings.cs;../Recorder.Windows/Audio.cs;../Recorder.Windows/PcmAiffReader.cs;../Recorder.Windows/Engines.cs;../Recorder.Windows/Streaming.cs" Link="Shared/%(Filename)%(Extension)" />
+    <Content Include="../../.bootstrap/runtime-x64/**/*" Link="runtime/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

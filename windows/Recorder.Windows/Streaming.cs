@@ -125,7 +125,11 @@ public sealed class StreamingClient : IAsyncDisposable
                             if ((bool?)sentence["sentence_end"] == true)
                             {
                                 var id = (int?)sentence["sentence_id"] ?? 0;
+#if FULL_BACKEND
+                                if (id >= 0 && id < int.MaxValue) Row?.Invoke(new("asr:" + (id + 1), Math.Max(0, (double?)sentence["begin_time"] ?? 0) / 1000, text));
+#else
                                 if (id > 0) Row?.Invoke(new("asr:" + id, Math.Max(0, (double?)sentence["begin_time"] ?? 0) / 1000, text));
+#endif
                             }
                             else Partial?.Invoke(text);
                             break;

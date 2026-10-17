@@ -12,7 +12,7 @@ public interface IModelResolver
 }
 public interface IModelDownloader
 {
-    Task<ModelResolution> DownloadAsync(string role, string modelId, string revision, IProgress<(string Detail, long Completed, long Total)> progress, CancellationToken ct);
+    Task<ModelResolution> DownloadAsync(string role, string modelId, string revision, RuntimeConfig runtime, IProgress<(string Detail, long Completed, long Total)> progress, CancellationToken ct);
 }
 public sealed record SegmentJob(string SessionId, int SegmentId, int Revision, long StartSample, long EndSample,
     bool Final, byte[] Pcm, long? LastVoicedSample = null, bool ForcedCut = false);
@@ -62,6 +62,7 @@ public sealed partial class BackendCore : IAsyncDisposable
     private void Emit(string type, JsonObject? fields = null)
     {
         var value = fields ?? new(); value["type"] = type; value["protocol_version"] = 1; value["request_id"] = request;
+        if (!value.ContainsKey("session_id") && session.Length > 0) value["session_id"] = session;
         events.Writer.TryWrite(value);
     }
     private void Error(string message) => Emit("error", new() { ["message"] = message });
@@ -107,7 +108,7 @@ public sealed partial class BackendCore : IAsyncDisposable
             if ((string?)message["command"] == "download")
             {
                 if (next.Provider != "local" || next.LocalModelPath.Length > 0) throw new InvalidOperationException("API 或本地目录无需下载，请使用加载。");
-                Download(role, next.ModelId, next.Revision, resolution => Queue(() => LoadAsrAsync(next with { Revision = resolution.Revision }, nextRuntime, resolution.Model, ""))); return;
+                Download(role, next.ModelId, next.Revision, nextRuntime, resolution => Queue(() => LoadAsrAsync(next with { Revision = resolution.Revision }, nextRuntime, resolution.Model, ""))); return;
             }
             var key = (string?)message["api_key"] ?? "";
             Status("loading"); Queue(() => LoadAsrAsync(next, nextRuntime, null, key));
@@ -117,11 +118,11 @@ public sealed partial class BackendCore : IAsyncDisposable
             if (translatorState is "loading" or "warming" or "downloading") throw new InvalidOperationException("请等待翻译模型操作结束。");
             var next = message["translation"] is JsonObject c ? BackendJson.Parse<TranslationConfig>(c) : translation;
             if (next.Provider != "local") throw new InvalidOperationException("请先选择本地翻译。");
-            if ((string?)message["command"] == "download") Download(role, next.ModelId, next.Revision, resolution => Queue(() => LoadTranslatorAsync(next with { Revision = resolution.Revision }, nextRuntime, resolution.Model)));
+            if ((string?)message["command"] == "download") Download(role, next.ModelId, next.Revision, nextRuntime, resolution => Queue(() => LoadTranslatorAsync(next with { Revision = resolution.Revision }, nextRuntime, resolution.Model)));
             else { TranslatorStatus("loading"); Queue(() => LoadTranslatorAsync(next, nextRuntime)); }
         }
     }
-    private void Download(string role, string modelId, string revision, Action<ModelResolution> complete)
+    private void Download(string role, string modelId, string revision, RuntimeConfig options, Action<ModelResolution> complete)
     {
         if (download != null) throw new InvalidOperationException("请等待当前下载结束。");
         if (downloader == null) throw new InvalidOperationException("模型下载组件尚未接入。");
@@ -132,7 +133,7 @@ public sealed partial class BackendCore : IAsyncDisposable
             try
             {
                 var progress = new Progress<(string Detail, long Completed, long Total)>(p => { lock (gate) if (download == token && !token.IsCancellationRequested) Emit("progress", new() { ["role"] = role, ["detail"] = p.Detail, ["completed"] = p.Completed, ["total"] = p.Total }); });
-                var result = await downloader.DownloadAsync(role, modelId, revision, progress, token.Token);
+                var result = await downloader.DownloadAsync(role, modelId, revision, options, progress, token.Token);
                 lock (gate) { if (download != token || token.IsCancellationRequested) return; download = null; complete(result); }
             }
             catch (Exception ex)
