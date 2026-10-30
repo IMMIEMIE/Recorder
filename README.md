@@ -90,8 +90,8 @@ open "dist/声笺.app"
 4. Stop to process the final phrase; then copy or export the transcript.
    停止后会处理尾句；随后可复制或导出文本。
 
-The default shortcut is `Control + Option + Space`. Open subtitle mode from the toolbar or menu bar.
-默认快捷键为 `Control + Option + Space`；可从工具栏或菜单栏打开字幕模式。
+The default shortcut is `Control + Option + Space`. Open subtitle mode from the toolbar or menu bar. Subtitles show only the latest lines (YouTube-style bars or shadowed text); drag them or use the arrow keys (Shift: faster, Option: finer) while they are focused, and right-click for size, lines, background and translation. In the main window, new text no longer pulls you down while you read earlier lines; use “回到底部” (⌘↓) to jump back and follow again.
+默认快捷键为 `Control + Option + Space`；可从工具栏或菜单栏打开字幕模式。字幕只显示最新几行文字（每行半透明底色，或仅文字带阴影）；可拖动，或在字幕获得焦点时用方向键移动（⇧ 加速、⌥ 微调），右键可调整字号、行数、背景与译文。主窗口中向上翻看历史时，新文字不会再强制滚到底部；点「回到底部」（⌘↓）即可返回并继续自动跟随。
 
 ## Models and translation / 模型与翻译
 

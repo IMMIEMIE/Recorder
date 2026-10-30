@@ -75,6 +75,10 @@
 4. Mac 端：零起点流式句子 ID 的兼容修正（`PARITY.md` 已登记），在 Mac 上执行共享样例。
 5. 真实云账号：HTTP 转写、千问流式、LiveTranslate 译音。
 
+下一阶段要做的界面对齐（Mac 已于 2026-10-30 完成）：
+- 字幕改为 YouTube 式：只显示最新几行文字，每行一条半透明底色，或仅文字带阴影；窗口大小随文字变化，以底部中点为锚点。字幕获得焦点时可用方向键移动（Shift 加速、Option 微调）；字号、行数、背景、底色不透明度和译文开关放在右键菜单里。Windows 端计划用 `UpdateLayeredWindow` 实现逐像素透明。
+- 主窗口：只在已经停在底部时才跟随新文字。向上翻看历史时保持位置，并显示「回到底部 / 有新内容」按钮（⌘↓）。Windows 端还需在重绘时保留滚动位置和选区。
+
 ## 阶段 4：共享 ggml 动态后端（设计）
 
 - llama.cpp 与 whisper.cpp 各自静态链接一份 ggml，CUDA 内核因此重复。计划改为 `BUILD_SHARED_LIBS=ON` + `GGML_BACKEND_DL=ON`，由 whisper 使用 llama 的 ggml（`WHISPER_USE_SYSTEM_GGML`）。这样只有一份 `ggml-cuda.dll`，CUDA 内核体积再减半；`ggml-cuda.dll` 还可以并入按需下载的 GPU 组件。
