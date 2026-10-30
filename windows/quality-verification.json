@@ -1,0 +1,105 @@
+{
+  "note": "Fixed synthetic fixtures from the Mac baseline. Punctuation and case are normalized; numeral words are not rewritten as digits. This small set is not a general accuracy benchmark.",
+  "results": [
+    {
+      "model": "qwen-asr",
+      "device": "cpu",
+      "fixture": "chinese",
+      "cer": 0.0,
+      "real_time_factor": 1.1489421500507455,
+      "protocol_marker_leak": false
+    },
+    {
+      "model": "qwen-asr",
+      "device": "cpu",
+      "fixture": "english",
+      "cer": 0.0,
+      "real_time_factor": 1.2465304548959137,
+      "wer": 0.0,
+      "protocol_marker_leak": false
+    },
+    {
+      "model": "qwen-asr",
+      "device": "cpu",
+      "fixture": "mixed",
+      "cer": 0.0,
+      "real_time_factor": 0.6750383544519576,
+      "protocol_marker_leak": false
+    },
+    {
+      "model": "whisper-turbo",
+      "device": "cpu",
+      "fixture": "chinese",
+      "cer": 0.15625,
+      "real_time_factor": 2.1488640799437895,
+      "protocol_marker_leak": false
+    },
+    {
+      "model": "whisper-turbo",
+      "device": "cpu",
+      "fixture": "english",
+      "cer": 0.25333333333333335,
+      "real_time_factor": 3.1917887432536625,
+      "wer": 0.3125,
+      "protocol_marker_leak": false
+    },
+    {
+      "model": "whisper-turbo",
+      "device": "cpu",
+      "fixture": "mixed",
+      "cer": 0.0,
+      "real_time_factor": 2.571509744871868,
+      "protocol_marker_leak": false
+    },
+    {
+      "model": "qwen-asr",
+      "device": "cuda",
+      "fixture": "chinese",
+      "cer": 0.0,
+      "real_time_factor": 0.05758451089077992,
+      "protocol_marker_leak": false
+    },
+    {
+      "model": "qwen-asr",
+      "device": "cuda",
+      "fixture": "english",
+      "cer": 0.0,
+      "real_time_factor": 0.058982266769468,
+      "wer": 0.0,
+      "protocol_marker_leak": false
+    },
+    {
+      "model": "qwen-asr",
+      "device": "cuda",
+      "fixture": "mixed",
+      "cer": 0.0,
+      "real_time_factor": 0.03818398772657538,
+      "protocol_marker_leak": false
+    },
+    {
+      "model": "whisper-turbo",
+      "device": "cuda",
+      "fixture": "chinese",
+      "cer": 0.15625,
+      "real_time_factor": 0.06345538293387462,
+      "protocol_marker_leak": false
+    },
+    {
+      "model": "whisper-turbo",
+      "device": "cuda",
+      "fixture": "english",
+      "cer": 0.25333333333333335,
+      "real_time_factor": 0.08288357748650733,
+      "wer": 0.3125,
+      "protocol_marker_leak": false
+    },
+    {
+      "model": "whisper-turbo",
+      "device": "cuda",
+      "fixture": "mixed",
+      "cer": 0.0,
+      "real_time_factor": 0.06894331117298332,
+      "protocol_marker_leak": false
+    }
+  ]
+}

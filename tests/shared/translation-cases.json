@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "language_cases": [
+    { "text": "这是中文。", "target": "简体中文", "skip": true },
+    { "text": "这是中文。", "target": "繁體中文", "skip": false },
+    { "text": "Hello world", "target": "English", "skip": false },
+    { "text": "日本語です", "target": "日本語", "skip": true },
+    { "text": "안녕하세요", "target": "한국어", "skip": true },
+    { "text": "Привет мир", "target": "Русский", "skip": true },
+    { "text": "1234…", "target": "Deutsch", "skip": true }
+  ],
+  "same_cases": [
+    { "left": "Hello, WORLD!", "right": "hello world", "same": true },
+    { "left": "你好你好", "right": "你好", "same": false }
+  ],
+  "planner_cases": [
+    { "session": "one", "segment": 1, "text": "这是测试。", "forced": true, "expected": null },
+    { "session": "one", "segment": 2, "text": "继续。", "forced": false, "expected": "这是测试继续。", "anchor": 2 },
+    { "session": "one", "segment": 3, "text": "First. Second.", "forced": true, "expected": "First.", "anchor": 3 },
+    { "session": "one", "flush": true, "expected": "Second", "anchor": 3 },
+    { "session": "one", "flush": true, "expected": null },
+    { "session": "two", "segment": 1, "text": "New session.", "forced": false, "expected": "New session.", "anchor": 1 }
+  ]
+}

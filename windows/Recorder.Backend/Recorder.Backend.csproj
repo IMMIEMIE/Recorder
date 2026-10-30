@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0-windows</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><RestorePackagesWithLockFile>true</RestorePackagesWithLockFile></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Recorder.Native/Recorder.Native.csproj" /><PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" /></ItemGroup>
+  <ItemGroup><Content Include="../models.lock.json" Link="models.lock.json" CopyToOutputDirectory="PreserveNewest" /><Content Include="../cuda-runtime.lock.json" Link="cuda-runtime.lock.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+</Project>

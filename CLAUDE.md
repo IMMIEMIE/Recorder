@@ -76,3 +76,14 @@ Version bumps: the version string is hardcoded in `scripts/build.sh` (Info.plist
 - Dependencies are pinned (`Package.resolved`, mlx-swift exact version matching the compiled kernels), and nothing is installed at runtime.
 
 Release notes and verification history are in `docs/RELEASE-*.md` and `docs/VALIDATION.md`.
+
+## Windows port (`windows/`)
+
+A separate C#/.NET port; the Swift sources are untouched by it. `Recorder.Full` (x64, .NET 10 WinForms; reuses the views in `Recorder.Windows/` under `FULL_BACKEND`) → `Recorder.Backend` (C# port of the backend semantics above, same message protocol) → `Recorder.Native` (named-pipe RPC v1 client) → `native-host/main.cpp` (`recorder-native.exe`: llama.cpp/mtmd for Qwen3-ASR GGUF and translators; loads `native/bridge.cpp` = `recorder-whisper.dll`). CPU and CUDA builds live in separate `runtime/cpu|cuda` directories. `Recorder.Windows` alone is the older x86 build. Plan, root causes and status: `windows/FIX-MIGRATION-PLAN.md`; behaviour parity: `windows/PARITY.md`.
+
+- Events carry the `request_id` of the command that caused them (`AsyncLocal` origin in `BackendCore`; queued work keeps it). Match replies with `BackendRequests`, never by "latest event".
+- Recognition language/endpoint/preview changes apply in place (`TryUpdateInPlace`, `IAsrEngine.SetLanguage`); only model/revision/device/weight-file changes reload the native worker.
+- NVIDIA cudart/cuBLAS are not in the default package: `CudaRuntime` downloads the wheels pinned in `windows/cuda-runtime.lock.json` (SHA256 per wheel and per DLL) and passes the directory to the CUDA worker (`PATH` + `SHENGJIAN_DLL_DIRS` → `AddDllDirectory`). Keep the lock in step with the CUDA toolkit `build_windows_native.ps1` enforces.
+- `DiagnosticLog` writes exceptions and native exit codes/stderr to `<data root>/logs`; never log audio, transcripts, translations or keys.
+
+Model-free tests that run on Linux too (needs a .NET 10 SDK): `./scripts/test_windows_portable.sh` (switch stress against `Recorder.FakeNative` + CUDA runtime installer). Windows-only: `scripts/test_windows_backend.ps1`, `windows/Recorder.FullTests`, `scripts/verify_windows_native.ps1`. Packaging: `scripts/build_windows_full.ps1` (size report + budget; `-BundleCudaRuntime` for the offline package).

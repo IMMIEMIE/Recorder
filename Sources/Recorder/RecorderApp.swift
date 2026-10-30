@@ -40,10 +40,26 @@ struct MenuContent: View {
     }
 }
 
+/// Top and bottom of the transcript content in the scroll view's coordinate space (top < 0 once scrolled).
+private struct TranscriptBounds: Equatable {
+    var top: CGFloat = 0
+    var bottom: CGFloat = 0
+}
+private struct TranscriptBoundsKey: PreferenceKey {
+    static let defaultValue = TranscriptBounds()
+    static func reduce(value: inout TranscriptBounds, nextValue: () -> TranscriptBounds) { value = nextValue() }
+}
+
 struct MainView: View {
     @ObservedObject var model: AppModel
     @State private var floating = false
     @State private var showAI = false
+    /// Auto-scroll only while the reader is at the bottom; scrolling up keeps their place until they jump back.
+    @State private var followLatest = true
+    @State private var newBelow = false
+    @State private var jumping = false
+    @State private var viewportHeight: CGFloat = 0
+    @State private var contentBounds = TranscriptBounds()
     @StateObject private var ai = AIWorkspace()
     private let accent = Color(red: 0.14, green: 0.43, blue: 0.38)
     var body: some View {
@@ -168,9 +184,31 @@ struct MainView: View {
                             }
                             Color.clear.frame(height: 1).id("end")
                         }.padding(30)
-                    }.onChange(of: model.partial) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
-                     .onChange(of: model.finalText.count) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
-                     .onChange(of: model.translationTick) { _, _ in proxy.scrollTo("end", anchor: .bottom) }
+                        .background(GeometryReader { geo in
+                            let frame = geo.frame(in: .named("transcript"))
+                            Color.clear.preference(key: TranscriptBoundsKey.self, value: TranscriptBounds(top: frame.minY, bottom: frame.maxY))
+                        })
+                    }
+                    .coordinateSpace(name: "transcript")
+                    .background(GeometryReader { geo in
+                        Color.clear.onAppear { viewportHeight = geo.size.height }
+                            .onChange(of: geo.size.height) { _, height in viewportHeight = height; if atBottom { followLatest = true; newBelow = false } }
+                    })
+                    .onPreferenceChange(TranscriptBoundsKey.self) { trackScroll($0) }
+                    .onChange(of: model.partial) { _, _ in keepLatest(proxy) }
+                    .onChange(of: model.finalText.count) { _, _ in keepLatest(proxy) }
+                    .onChange(of: model.translationTick) { _, _ in keepLatest(proxy) }
+                    .overlay(alignment: .bottomTrailing) {
+                        if !followLatest {
+                            Button { jumpToLatest(proxy) } label: {
+                                Label(newBelow ? "有新内容" : "回到底部", systemImage: "arrow.down")
+                            }
+                            .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).tint(accent)
+                            .keyboardShortcut(.downArrow, modifiers: .command)
+                            .help("回到最新文字，并恢复自动跟随（⌘↓）")
+                            .padding(.trailing, 28).padding(.bottom, 16)
+                        }
+                    }
                 }
                 VStack(spacing: 14) {
                     if !model.error.isEmpty {
@@ -215,6 +253,26 @@ struct MainView: View {
             }.background(Color(nsColor: .textBackgroundColor))
         }.tint(accent).sheet(isPresented: $showAI) { AIWorkspaceView(ai: ai) }
             .onChange(of: model.liveEnabled) { _, enabled in if enabled { ai.cancel(); showAI = false } }
+    }
+
+    private var atBottom: Bool { contentBounds.bottom - viewportHeight <= 48 }
+    /// Content growing at the bottom leaves `top` unchanged; only a real scroll moves it.
+    /// So new text never turns following off, while scrolling up does.
+    private func trackScroll(_ bounds: TranscriptBounds) {
+        let scrolled = abs(bounds.top - contentBounds.top) > 0.5
+        contentBounds = bounds
+        if atBottom { followLatest = true; newBelow = false; jumping = false }
+        else if scrolled && !jumping { followLatest = false }
+    }
+    private func keepLatest(_ proxy: ScrollViewProxy) {
+        if followLatest { proxy.scrollTo("end", anchor: .bottom) }
+        else if !model.finalText.isEmpty || !model.partial.isEmpty { newBelow = true }
+    }
+    private func jumpToLatest(_ proxy: ScrollViewProxy) {
+        followLatest = true; newBelow = false; jumping = true
+        withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("end", anchor: .bottom) }
+        // The animation's intermediate positions must not read as the reader scrolling away again.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { jumping = false }
     }
 }
 

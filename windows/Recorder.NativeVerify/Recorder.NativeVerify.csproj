@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><RestorePackagesWithLockFile>true</RestorePackagesWithLockFile></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Recorder.Native/Recorder.Native.csproj" /></ItemGroup>
+  <ItemGroup><PackageReference Include="NAudio" Version="2.2.1" /><Compile Include="../Recorder.Windows/PcmAiffReader.cs" Link="PcmAiffReader.cs" /></ItemGroup>
+</Project>
