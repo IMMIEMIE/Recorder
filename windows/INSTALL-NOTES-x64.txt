@@ -1,0 +1,35 @@
+声笺 Windows x64 0.6.1 预览版
+
+系统：Windows 11 x64。程序自带 .NET 10、CPU/CUDA 推理与音频组件。
+使用时无需安装 Python、编译器或 CUDA Toolkit。CUDA 需要兼容的 NVIDIA 驱动。
+NVIDIA CUDA 运行库与 cuBLAS 不在安装包内（约 540 MiB 下载，解压后约 750 MiB）：
+  设置 → 识别 → 运行设备 → 下载 GPU 加速组件。来源为 NVIDIA 官方 PyPI 包，按 SHA256 校验，
+  保存在 %LOCALAPPDATA%\Shengjian-x64\runtime，可在同一位置移除。可用环境变量 SHENGJIAN_PYPI_MIRROR 指定镜像。
+  未安装时“自动”直接使用 CPU；离线完整包（文件名含 offline）已自带这些库。
+CPU 组件要求 AVX2/FMA/F16C/BMI2；无 NVIDIA GPU 时可选择 CPU，自动模式会提示回退。
+
+首次使用：设置 → 本地模型 → Qwen3-ASR 1.7B → 下载并加载模型。
+也可选择已有 GGUF 及配套音频编码文件，或者 Whisper GGML 文件。
+模型另行下载，不含在安装包内。Qwen ASR 两个文件合计约4.7GB；默认翻译另需约2.5GB。
+选用本地模型时，加载、识别及翻译不访问网络；音频/原文/译文不会自动保存。
+在线识别、翻译、AI 和 LiveTranslate 按配置发送音频或文字到所选服务。
+
+与 x86 并存：
+  x64 安装目录：%LOCALAPPDATA%\Programs\Shengjian-x64
+  x64 数据目录：%LOCALAPPDATA%\Shengjian-x64
+  x86 安装及数据目录保持不变，快捷方式和卸载项独立。
+  x64 首次启动只读迁移旧服务、DPAPI 密钥与 Whisper 路径；旧目录保持可用。
+
+升级：停止会话，退出程序后安装新版到同一 x64 目录。
+回退：先备份 x64 数据目录，卸载新版，再安装旧 x64 包；也可继续使用 x86。
+卸载只删除程序文件，保留模型、配置和 DPAPI 密钥；彻底清理须手动删除对应数据目录。
+DPAPI 密钥绑定当前 Windows 用户，复制到其他用户或重装系统后需重新填写。
+
+LiveTranslate 译音可边说边播放或定稿后播放。重播仅存于内存，清空历史或退出即释放。
+系统声音模式排除声笺及子进程播放。麦克风仍能拾取扬声器声音，请按实际环境选择设备。
+
+诊断日志：%LOCALAPPDATA%\Shengjian-x64\logs。只记录异常、原生进程退出码和错误输出，不含音频、原文、译文或密钥。
+反馈崩溃时请附上当天的日志文件。
+
+验证边界：见 WINDOWS-VALIDATION.md。Mac 实机回归、无开发环境机器、真实云账号及设备拔插验收
+未通过前，不将本预览版标记为全部完成或正式发布。

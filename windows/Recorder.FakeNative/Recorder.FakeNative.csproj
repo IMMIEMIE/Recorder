@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Protocol-faithful stand-in for recorder-native.exe (RPC v1) used by the model-free switch tests on Windows and Linux. -->
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><RestorePackagesWithLockFile>true</RestorePackagesWithLockFile><AssemblyName>recorder-fake-native</AssemblyName></PropertyGroup>
+</Project>

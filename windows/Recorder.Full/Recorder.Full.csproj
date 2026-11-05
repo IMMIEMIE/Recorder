@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><PlatformTarget>x64</PlatformTarget><RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <RuntimeFrameworkVersion>10.0.13</RuntimeFrameworkVersion><SelfContained>true</SelfContained><PublishSingleFile>false</PublishSingleFile>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile><DefineConstants>$(DefineConstants);FULL_BACKEND</DefineConstants>
+    <AssemblyName>Shengjian</AssemblyName><RootNamespace>Recorder.Windows</RootNamespace><Version>0.6.1</Version><Product>声笺 Windows x64</Product>
+    <ApplicationIcon>../Recorder.Windows/AppIcon.ico</ApplicationIcon><ApplicationManifest>../Recorder.Windows/app.manifest</ApplicationManifest>
+    <NoWarn>$(NoWarn);WFO1000</NoWarn>
+    <!-- Ship only Chinese/English framework resources instead of all 13 WinForms/runtime satellite languages. -->
+    <SatelliteResourceLanguages>zh-Hans;en</SatelliteResourceLanguages>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(BundleCudaRuntime)' != 'true'">
+    <!-- NVIDIA cudart/cuBLAS are downloaded on demand (cuda-runtime.lock.json); never let stale copies enter the package. -->
+    <CudaVendorLibraries>../../.bootstrap/runtime-x64/**/cublas*.dll;../../.bootstrap/runtime-x64/**/cudart*.dll;../../.bootstrap/runtime-x64/**/nvblas*.dll</CudaVendorLibraries>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Recorder.Backend/Recorder.Backend.csproj" /><PackageReference Include="NAudio" Version="2.2.1" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Recorder.Windows/MainForm.cs;../Recorder.Windows/Theme.cs;../Recorder.Windows/SubtitleForm.cs;../Recorder.Windows/Settings.cs;../Recorder.Windows/Audio.cs;../Recorder.Windows/PcmAiffReader.cs;../Recorder.Windows/Engines.cs;../Recorder.Windows/Streaming.cs" Link="Shared/%(Filename)%(Extension)" />
+    <Content Include="../../.bootstrap/runtime-x64/**/*" Exclude="$(CudaVendorLibraries)" Link="runtime/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

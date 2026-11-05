@@ -1,0 +1,22 @@
+声笺 Windows x86 0.5.0 · 测试版
+
+适用 Windows 10 1809 及以上，32 位 x86 程序，也可在 64 位 Windows 上运行。
+已包含 .NET 运行环境和 Whisper CPU 引擎，无需安装 Python、.NET 或 Visual C++ 运行库。
+
+第一次使用：
+1. 打开「设置 → 本地模型」，点击「下载 Whisper Tiny」，等待下载与校验完成后保存。
+2. 选择麦克风、系统声音或音频文件，点击「开始转写」。
+3. 停止后等待尾句处理，可复制或导出 TXT / SRT，亦可打开悬浮字幕。
+4. 也可在设置中配置 OpenAI 兼容 API、千问流式 ASR 或 LiveTranslate。
+
+本地模型不包含在安装包中。Tiny 模型约 74 MB；速度与准确率取决于 CPU、音频及模型。
+本地模式不上传音频。API 和流式模式会上传所选音频，并可能产生服务费用。
+API Key 使用 Windows 当前用户加密，文字和录音不会自动保存。
+系统声音会包含所有应用的播放声音，建议使用耳机。
+
+这是从 macOS 项目移植的首个 Windows 测试版本。MLX/Qwen 本地识别及本地翻译、
+AI 提问、LiveTranslate 译音播放尚未移植。此版本以 Whisper 本地识别和 API 翻译替代。
+请使用小模型，32 位进程的内存空间有限。超过 25 秒的连续讲话会分段识别。
+
+卸载保留设置及单独下载的模型，位于 %LOCALAPPDATA%\Shengjian。
+源码：https://github.com/IMMIEMIE/Recorder（本地分支 codex/windows-x86）

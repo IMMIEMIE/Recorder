@@ -17,3 +17,7 @@ KIMI.rtf
 *.key
 *.pem
 secrets/
+
+# Windows build outputs
+**/bin/
+**/obj/

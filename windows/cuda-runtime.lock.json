@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "cuda-12.8-cublas-12.8.4.1",
+  "description": "NVIDIA CUDA 12.8 runtime and cuBLAS, downloaded on demand from NVIDIA's official PyPI wheels; matches the CUDA 12.8 toolkit used by build_windows_native.ps1.",
+  "mirrors": [
+    "https://files.pythonhosted.org",
+    "https://pypi.tuna.tsinghua.edu.cn",
+    "https://mirrors.aliyun.com/pypi"
+  ],
+  "packages": [
+    {
+      "name": "nvidia-cuda-runtime-cu12",
+      "version": "12.8.90",
+      "path": "packages/30/a5/a515b7600ad361ea14bfa13fb4d6687abf500adc270f19e89849c0590492/nvidia_cuda_runtime_cu12-12.8.90-py3-none-win_amd64.whl",
+      "size": 944318,
+      "sha256": "c0c6027f01505bfed6c3b21ec546f69c687689aad5f1a377554bc6ca4aa993a8",
+      "files": [
+        { "entry": "nvidia/cuda_runtime/bin/cudart64_12.dll", "name": "cudart64_12.dll", "size": 573952, "sha256": "c2c9a9c22a9bcba90e261825968836787b331038047a26770cffb7a583c28344" },
+        { "entry": "nvidia_cuda_runtime_cu12-12.8.90.dist-info/License.txt", "name": "CUDA-EULA.txt", "size": 59262, "sha256": "ad6f5853fba0ca0d159d0f58d49ae49830c2f8c93f7a92648b9ce90adb4c6ccd" }
+      ]
+    },
+    {
+      "name": "nvidia-cublas-cu12",
+      "version": "12.8.4.1",
+      "path": "packages/70/61/7d7b3c70186fb651d0fbd35b01dbfc8e755f69fd58f817f3d0f642df20c3/nvidia_cublas_cu12-12.8.4.1-py3-none-win_amd64.whl",
+      "size": 567544208,
+      "sha256": "47e9b82132fa8d2b4944e708049229601448aaad7e6f296f630f2d1a32de35af",
+      "files": [
+        { "entry": "nvidia/cublas/bin/cublas64_12.dll", "name": "cublas64_12.dll", "size": 113716224, "sha256": "9513540e4ec4c51ee9e7304138c2cc255c29a8c181f9e80c38efa25738becd99" },
+        { "entry": "nvidia/cublas/bin/cublasLt64_12.dll", "name": "cublasLt64_12.dll", "size": 674667520, "sha256": "b199d1ff892a81b7fd3d57ba1781549609b41500b36008fef326038393ad46c7" }
+      ]
+    }
+  ]
+}

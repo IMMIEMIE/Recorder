@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "id": "qwen-asr",
+      "name": "Qwen3-ASR 1.7B",
+      "role": "asr",
+      "engine": "qwen",
+      "repo": "ggml-org/Qwen3-ASR-1.7B-GGUF",
+      "revision": "36a678687ba7d07a74ca70ccb0e36902e005fb80",
+      "files": [
+        {
+          "name": "Qwen3-ASR-1.7B-bf16.gguf",
+          "size": 4069674944,
+          "sha256": "1af18763dfafde2bbf071ef8a0952f7bee66f140c3565e5ccc5afb07dc1f9227"
+        },
+        {
+          "name": "mmproj-Qwen3-ASR-1.7B-bf16.gguf",
+          "size": 641773984,
+          "sha256": "8882e9ddab3186f9aa71b1417c847177913e1466655ac944cf86e9b846735d62"
+        }
+      ],
+      "runtime": "llama.cpp/libmtmd",
+      "format": "GGUF"
+    },
+    {
+      "id": "whisper-turbo",
+      "name": "Whisper Large v3 Turbo",
+      "role": "asr",
+      "engine": "whisper",
+      "repo": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "files": [
+        {
+          "name": "ggml-large-v3-turbo.bin",
+          "size": 1624555275,
+          "sha256": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"
+        }
+      ],
+      "runtime": "whisper.cpp",
+      "format": "GGML"
+    },
+    {
+      "id": "qwen-translate",
+      "name": "Qwen3 4B Instruct",
+      "role": "translator",
+      "engine": "qwen3",
+      "repo": "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF",
+      "revision": "ae44f08e1392f39c0e474af10c3ff8355c8b6688",
+      "files": [
+        {
+          "name": "Qwen_Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+          "size": 2497280736,
+          "sha256": "2fde00ce69dd4899c70d020845e2638353015bba0fdf161b3eb965f2bca4464e"
+        }
+      ],
+      "runtime": "llama.cpp",
+      "format": "GGUF"
+    },
+    {
+      "id": "hunyuan-translate",
+      "name": "Hunyuan-MT 7B",
+      "role": "translator",
+      "engine": "hunyuan",
+      "repo": "mradermacher/Hunyuan-MT-7B-GGUF",
+      "revision": "6d6882aea2529efcfc898e54091ffa912744a3df",
+      "files": [
+        {
+          "name": "Hunyuan-MT-7B.Q4_K_M.gguf",
+          "size": 4624950272,
+          "sha256": "08b4dd8f25002592526194defd2481febcc9008fe37e67accde9bbe29d28cecf"
+        }
+      ],
+      "runtime": "llama.cpp",
+      "format": "GGUF"
+    },
+    {
+      "id": "whisper-tiny",
+      "name": "Whisper tiny",
+      "role": "asr",
+      "engine": "whisper",
+      "repo": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "files": [
+        {
+          "name": "ggml-tiny.bin",
+          "size": 77691713,
+          "sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"
+        }
+      ],
+      "runtime": "whisper.cpp",
+      "format": "GGML"
+    },
+    {
+      "id": "whisper-base",
+      "name": "Whisper base",
+      "role": "asr",
+      "engine": "whisper",
+      "repo": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "files": [
+        {
+          "name": "ggml-base.bin",
+          "size": 147951465,
+          "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+        }
+      ],
+      "runtime": "whisper.cpp",
+      "format": "GGML"
+    },
+    {
+      "id": "whisper-small",
+      "name": "Whisper small",
+      "role": "asr",
+      "engine": "whisper",
+      "repo": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "files": [
+        {
+          "name": "ggml-small.bin",
+          "size": 487601967,
+          "sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
+        }
+      ],
+      "runtime": "whisper.cpp",
+      "format": "GGML"
+    }
+  ]
+}

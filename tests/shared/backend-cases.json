@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "sentence_cases": [
+    { "text": "你好。", "complete": true }, { "text": "Hello!", "complete": true },
+    { "text": "He said yes.)", "complete": true }, { "text": "Wait...", "complete": false },
+    { "text": "数字123.", "complete": false }, { "text": "Dr.", "complete": false },
+    { "text": "U.S.", "complete": false }, { "text": "unfinished", "complete": false },
+    { "text": "", "complete": false }, { "text": "继续…", "complete": false }
+  ],
+  "segment_cases": [
+    { "name": "fixed_stop", "config": { "endpoint_mode": "fixed" }, "actions": [{ "frames": 3, "voiced": true }, { "frames": 50, "voiced": false }], "finals": [[0,16960]] },
+    { "name": "preroll_240ms", "config": { "endpoint_mode": "fixed" }, "actions": [{ "frames": 20, "voiced": false }, { "frames": 3, "voiced": true }, { "frames": 50, "voiced": false }], "finals": [[2560,23360]] },
+    { "name": "smart_no_feedback", "config": {}, "actions": [{ "frames": 3, "voiced": true }, { "frames": 90, "voiced": false }], "finals": [[0,29760]] },
+    { "name": "smart_one_feedback", "config": {}, "actions": [{ "frames": 60, "voiced": true }, { "feedback": "你好。" }, { "frames": 50, "voiced": false }], "finals": [[0,35200]] },
+    { "name": "smart_stable_feedback", "config": {}, "actions": [{ "frames": 60, "voiced": true }, { "feedback": "你好。" }, { "frames": 60, "voiced": true }, { "feedback": "你好。" }, { "frames": 25, "voiced": false }], "finals": [[0,46400]] },
+    { "name": "32s_input_no_forced_cut", "config": {}, "actions": [{ "frames": 1600, "voiced": true }, { "flush": true }], "finals": [[0,512000]] },
+    { "name": "stop_flush_tail", "config": {}, "actions": [{ "frames": 3, "voiced": true }, { "flush": true }], "finals": [[0,960]] },
+    { "name": "short_noise_filtered", "config": {}, "actions": [{ "frames": 1, "voiced": true }, { "flush": true }], "finals": [] },
+    { "name": "contiguous_segments", "config": { "endpoint_mode": "fixed" }, "actions": [{ "frames": 3, "voiced": true }, { "frames": 50, "voiced": false }, { "frames": 10, "voiced": false }, { "frames": 3, "voiced": true }, { "frames": 50, "voiced": false }], "finals": [[0,16960],[16960,37120]] }
+  ]
+}

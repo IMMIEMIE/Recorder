@@ -1,0 +1,328 @@
+{
+  "date": "2026-10-17",
+  "baseline": "4d69912",
+  "llama_commit": "f74e2fa6a31cc33ab4ee4ae516641cfe62df3924",
+  "whisper_commit": "a8d002cfd879315632a579e73f0148d06959de36",
+  "os": "Windows 11 x64",
+  "cpu": "AMD Ryzen 7 7800X3D",
+  "gpu": "NVIDIA RTX 5060 Ti 16 GB",
+  "cuda_toolkit": "12.8.61",
+  "cuda_architecture": "120a (Whisper: 120)",
+  "driver": "610.88",
+  "cpu_results": [
+    {
+      "model": "qwen-asr",
+      "device": "cpu",
+      "load_ms": 2765,
+      "loaded_private_bytes": 2806231040,
+      "samples": [
+        {
+          "fixture": "chinese",
+          "text": "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+          "elapsed_ms": 9198,
+          "audio_seconds": 8.005625
+        },
+        {
+          "fixture": "english",
+          "text": "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+          "elapsed_ms": 6467,
+          "audio_seconds": 5.188
+        },
+        {
+          "fixture": "mixed",
+          "text": "今天我们测试Python和Swift，所有音频都在本地处理。谢谢，谢谢。",
+          "elapsed_ms": 4455,
+          "audio_seconds": 6.599625
+        }
+      ],
+      "cancel_recovery": true,
+      "unloaded_private_bytes": [
+        5849088,
+        6062080,
+        5955584
+      ],
+      "passed": true
+    },
+    {
+      "model": "whisper-turbo",
+      "device": "cpu",
+      "load_ms": 340,
+      "loaded_private_bytes": 2258673664,
+      "samples": [
+        {
+          "fixture": "chinese",
+          "text": "你好,这是一个本地语音识别测试,今天下午三点开会,请记住数字12345。",
+          "elapsed_ms": 17203,
+          "audio_seconds": 8.005625
+        },
+        {
+          "fixture": "english",
+          "text": " This is a local speech recognition test. Please remember the number 12345.",
+          "elapsed_ms": 16559,
+          "audio_seconds": 5.188
+        },
+        {
+          "fixture": "mixed",
+          "text": "今天我们测试Python和Swift,所有音频都在本地处理,谢谢,谢谢。",
+          "elapsed_ms": 16971,
+          "audio_seconds": 6.599625
+        }
+      ],
+      "cancel_recovery": true,
+      "unloaded_private_bytes": [
+        3670016,
+        2719744,
+        2961408
+      ],
+      "passed": true
+    },
+    {
+      "model": "qwen-translate",
+      "device": "cpu",
+      "load_ms": 3302,
+      "loaded_private_bytes": 3454427136,
+      "translation": "Hello, we have a meeting at 3 p.m. today, please remember the number 12345.",
+      "generation_release": true,
+      "cancel_recovery": true,
+      "unloaded_private_bytes": [
+        5464064,
+        5668864,
+        5718016
+      ],
+      "passed": true
+    },
+    {
+      "model": "hunyuan-translate",
+      "device": "cpu",
+      "load_ms": 5940,
+      "loaded_private_bytes": 4892053504,
+      "translation": "Hello, there is a meeting scheduled for 3 p.m. today. Please remember the number 12345.",
+      "generation_release": true,
+      "cancel_recovery": true,
+      "unloaded_private_bytes": [
+        5566464,
+        5705728,
+        6176768
+      ],
+      "passed": true
+    }
+  ],
+  "cuda_results": [
+    {
+      "model": "qwen-asr",
+      "device": "cuda",
+      "load_ms": 2965,
+      "loaded_private_bytes": 6765232128,
+      "loaded_gpu_memory": [
+        {
+          "free_bytes": 9965666304,
+          "name": "CUDA0",
+          "total_bytes": 17102864384
+        }
+      ],
+      "samples": [
+        {
+          "fixture": "chinese",
+          "text": "你好，这是一个本地语音识别测试。今天下午三点开会，请记住数字一二三四五。",
+          "elapsed_ms": 461,
+          "audio_seconds": 8.005625
+        },
+        {
+          "fixture": "english",
+          "text": "This is a local speech recognition test. Please remember the number one, two, three, four, five.",
+          "elapsed_ms": 306,
+          "audio_seconds": 5.188
+        },
+        {
+          "fixture": "mixed",
+          "text": "今天我们测试Python和Swift，所有音频都在本地处理。谢谢，谢谢。",
+          "elapsed_ms": 252,
+          "audio_seconds": 6.599625
+        }
+      ],
+      "cancel_recovery": true,
+      "unloaded_gpu_memory": [
+        [
+          {
+            "free_bytes": 15890120704,
+            "name": "CUDA0",
+            "total_bytes": 17102864384
+          }
+        ],
+        [
+          {
+            "free_bytes": 15890120704,
+            "name": "CUDA0",
+            "total_bytes": 17102864384
+          }
+        ],
+        [
+          {
+            "free_bytes": 15890120704,
+            "name": "CUDA0",
+            "total_bytes": 17102864384
+          }
+        ]
+      ],
+      "unloaded_private_bytes": [
+        1098752000,
+        1103822848,
+        1104347136
+      ],
+      "passed": true
+    },
+    {
+      "model": "whisper-turbo",
+      "device": "cuda",
+      "load_ms": 395,
+      "loaded_private_bytes": 2752909312,
+      "loaded_gpu_memory": [
+        {
+          "free_bytes": 13878951936,
+          "name": "CUDA0",
+          "total_bytes": 17102864384
+        }
+      ],
+      "samples": [
+        {
+          "fixture": "chinese",
+          "text": "你好,这是一个本地语音识别测试,今天下午三点开会,请记住数字12345。",
+          "elapsed_ms": 508,
+          "audio_seconds": 8.005625
+        },
+        {
+          "fixture": "english",
+          "text": " This is a local speech recognition test. Please remember the number 12345.",
+          "elapsed_ms": 430,
+          "audio_seconds": 5.188
+        },
+        {
+          "fixture": "mixed",
+          "text": "今天我们测试Python和Swift,所有音频都在本地处理,谢谢,谢谢。",
+          "elapsed_ms": 455,
+          "audio_seconds": 6.599625
+        }
+      ],
+      "cancel_recovery": true,
+      "unloaded_gpu_memory": [
+        [
+          {
+            "free_bytes": 15906897920,
+            "name": "CUDA0",
+            "total_bytes": 17102864384
+          }
+        ],
+        [
+          {
+            "free_bytes": 15906897920,
+            "name": "CUDA0",
+            "total_bytes": 17102864384
+          }
+        ],
+        [
+          {
+            "free_bytes": 15906897920,
+            "name": "CUDA0",
+            "total_bytes": 17102864384
+          }
+        ]
+      ],
+      "unloaded_private_bytes": [
+        799715328,
+        785682432,
+        823779328
+      ],
+      "passed": true
+    },
+    {
+      "model": "qwen-translate",
+      "device": "cuda",
+      "load_ms": 1141,
+      "loaded_private_bytes": 4696961024,
+      "loaded_gpu_memory": [
+        {
+          "free_bytes": 11867783168,
+          "name": "CUDA0",
+          "total_bytes": 17102864384
+        }
+      ],
+      "translation": "Hello, we have a meeting at 3 p.m. today. Please remember the number 12345.",
+      "generation_release": true,
+      "cancel_recovery": true,
+      "unloaded_gpu_memory": [
+        [
+          {
+            "free_bytes": 15892217856,
+            "name": "CUDA0",
+            "total_bytes": 17102864384
+          }
+        ],
+        [
+          {
+            "free_bytes": 15892217856,
+            "name": "CUDA0",
+            "total_bytes": 17102864384
+          }
+        ],
+        [
+          {
+            "free_bytes": 15892217856,
+            "name": "CUDA0",
+            "total_bytes": 17102864384
+          }
+        ]
+      ],
+      "unloaded_private_bytes": [
+        832987136,
+        836947968,
+        836665344
+      ],
+      "passed": true
+    },
+    {
+      "model": "hunyuan-translate",
+      "device": "cuda",
+      "load_ms": 1993,
+      "loaded_private_bytes": 6676529152,
+      "loaded_gpu_memory": [
+        {
+          "free_bytes": 9911140352,
+          "name": "CUDA0",
+          "total_bytes": 17102864384
+        }
+      ],
+      "translation": "Hello, there is a meeting scheduled for 3 p.m. today. Please remember the number 12345.",
+      "generation_release": true,
+      "cancel_recovery": true,
+      "unloaded_gpu_memory": [
+        [
+          {
+            "free_bytes": 15892217856,
+            "name": "CUDA0",
+            "total_bytes": 17102864384
+          }
+        ],
+        [
+          {
+            "free_bytes": 15892217856,
+            "name": "CUDA0",
+            "total_bytes": 17102864384
+          }
+        ],
+        [
+          {
+            "free_bytes": 15892217856,
+            "name": "CUDA0",
+            "total_bytes": 17102864384
+          }
+        ]
+      ],
+      "unloaded_private_bytes": [
+        889016320,
+        890302464,
+        890941440
+      ],
+      "passed": true
+    }
+  ]
+}
