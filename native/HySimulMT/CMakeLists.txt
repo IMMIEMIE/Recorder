@@ -19,6 +19,12 @@ set(GGML_METAL ON CACHE BOOL "" FORCE)
 set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 set(MTMD_VIDEO OFF CACHE BOOL "" FORCE)
+# llama.cpp embeds the commit of the enclosing git repository, which here is this one, so every
+# commit would change the helper's bytes and void its validation report. Pin both values: these are
+# what the validated build embedded, and they say nothing about the runtime (see runtime_commit).
+set(LLAMA_BUILD_NUMBER 27)
+set(LLAMA_BUILD_COMMIT "9b514ad")
+set(HY_PINNED_BUILD_INFO ON)  # scripts/build_hy_runtime.sh makes ggml honour this
 add_subdirectory("${HY_LLAMA_SOURCE}" llama)
 # The same WebRTC VAD sources the backend's segmenter compiles.
 get_filename_component(HY_VAD_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../../Sources/Cwebrtcvad" ABSOLUTE)

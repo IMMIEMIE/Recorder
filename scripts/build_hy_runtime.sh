@@ -33,6 +33,18 @@ output = pathlib.Path(sys.argv[2])
 if not output.exists() or output.read_text() != source:
     output.write_text(source)
 PY
+# ggml reads the enclosing repository's commit with git even when one is given; that is this
+# repository, so every commit would change the helper. native/HySimulMT/CMakeLists.txt pins it.
+python3 - "$SOURCE/ggml/CMakeLists.txt" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+source = path.read_text()
+pinned = 'if(GIT_EXE AND NOT HY_PINNED_BUILD_INFO)'
+if pinned not in source:
+    needle = 'find_program(GIT_EXE NAMES git git.exe NO_CMAKE_FIND_ROOT_PATH)\nif(GIT_EXE)'
+    assert source.count(needle) == 1, 'Pinned ggml build info changed'
+    path.write_text(source.replace(needle, needle[:-len('if(GIT_EXE)')] + pinned))
+PY
 "$CMAKE" -S "$ROOT/native/HySimulMT" -B "$ROOT/.build/hy-runtime" \
   -DHY_LLAMA_SOURCE="$SOURCE" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 >&2
 "$CMAKE" --build "$ROOT/.build/hy-runtime" --target HySimulMTHelper HySimulMTReferenceCLI -j "${HY_BUILD_JOBS:-8}" >&2
