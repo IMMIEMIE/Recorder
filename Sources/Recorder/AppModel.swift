@@ -2,6 +2,7 @@ import SwiftUI
 import AVFoundation
 import Carbon
 import UniformTypeIdentifiers
+import Combine
 // SwiftPM builds import the backend module; the swiftc test scripts compile its sources into one module.
 #if canImport(RecorderBackend)
 import RecorderBackend
@@ -119,21 +120,43 @@ final class AppModel: ObservableObject {
     @Published private(set) var livePlaying = false
     @Published private(set) var replayingTranscriptID: String?
     @Published private(set) var replayRevision = 0
-    private var replayCache = LiveTranslateReplayCache()
+    private var replayCache = LiveSessionReplayCache()
     private let replayPlayer = LiveTranslateAudioPlayer()
     private var replayAttempt = UUID()
     private let liveAudioPlayer = LiveTranslateAudioPlayer()
-    private var livePlaybackQueue = LiveTranslatePlaybackQueue(timing: .streaming)
     private var liveAudioMuted = false
     private var livePlaybackSession = UUID()
     @Published var liveKeyInput = ""
     @Published var liveMessage = ""
     @Published private(set) var liveTesting = false
     private let liveClientFactory: () -> LiveTranslateClient
+    private let liveSessionFactory: ((LiveTranslateProvider) -> any LiveTranslationSession)?
     private let liveKeyReader: (String) throws -> String?
     private let liveDefaults: UserDefaults
-    private var liveClient: LiveTranslateClient?
-    private var liveEvents = LiveTranslateEvents()
+    private var liveSession: (any LiveTranslationSession)?
+    private var liveRowRevisions: [String: Int] = [:]
+    private var liveSentenceRows = LiveSentenceRows()
+    private var liveRowRanges: [String: (Int, Int)] = [:]
+    private var liveUntranslatedRanges: [(Int, Int)] = []
+    private let localSpeech: any LocalSpeechOutputting
+    private let replaySpeech: any LocalSpeechOutputting
+    let hyModelStore: HyModelStore
+    private let hyRuntime = HyLocalSession()
+    private let runtimeVerified: () -> Bool
+    private let runtimeExecutable: () -> URL?
+    private var hyObservation: AnyCancellable?
+    private var hyLoadAttempt = UUID()
+    @Published var liveProvider: LiveTranslateProvider = .qwenCloud
+    @Published private(set) var hyRuntimeState = "idle"
+    @Published private(set) var hyRuntimeDetail = "本地模型未加载"
+    var hyRuntimeVerified: Bool { runtimeVerified() }
+    var hyRuntimeUnavailableReason: String { HyRuntimeAvailability.unavailableReason }
+    /// The model occupies about 23 GB while loaded; below this it would push everything else into swap.
+    var hyMemoryIsLow: Bool { ProcessInfo.processInfo.physicalMemory < 32 << 30 }
+    var canLoadHyModel: Bool {
+        !liveSettingsBusy && liveEnabled && liveConfiguration.provider == .hyLocal && hyRuntimeVerified
+            && !["loading", "ready"].contains(hyRuntimeState) && hyModelStore.state != "downloading"
+    }
     private var liveAttempt = UUID()
     var liveEnabled: Bool { liveConfiguration.enabled }
     var liveSettingsBusy: Bool { recording || pendingStart || state == "finalizing" || liveTesting }
@@ -147,16 +170,16 @@ final class AppModel: ObservableObject {
     private var streamingActive: Bool { activeASRProvider == "api" && activeAPIProtocol == "qwen_realtime" }
     var recording: Bool { state == "recording" }
     var canStart: Bool {
-        if liveEnabled { return state == "ready" && !liveTesting }
+        if liveEnabled { return state == "ready" && !liveTesting && (liveConfiguration.provider == .qwenCloud || (hyRuntimeVerified && hyRuntimeState == "ready")) }
         return state == "ready" && !asrTesting && asrProvider == activeASRProvider &&
         (asrProvider != "api" || (asrAPIBaseURL == activeAPIBaseURL && asrAPIModel == activeAPIModel && asrAPIProtocol == activeAPIProtocol))
     }
-    var joinedText: String { finalText.map(\.text).joined(separator: "\n") }
+    var joinedText: String { finalText.map { $0.text.isEmpty ? $0.translation : $0.text }.joined(separator: "\n") }
     var exportText: String {
         let translated = finalText.contains { !$0.translation.isEmpty }
         return finalText.map { item in
             let translation = item.translation
-            return translation.isEmpty ? item.text : item.text + "\n" + translation
+            return [item.text, translation].filter { !$0.isEmpty }.joined(separator: "\n")
         }.joined(separator: translated ? "\n\n" : "\n")
     }
     var translatorBusy: Bool { ["downloading", "loading", "warming"].contains(translatorState) }
@@ -171,7 +194,7 @@ final class AppModel: ObservableObject {
         }
     }
     var translationSummary: String {
-        if liveEnabled { return "LiveTranslate → \(liveConfiguration.languageName)" }
+        if liveEnabled { return "\(liveConfiguration.modelName) → \(liveConfiguration.languageName)" }
         if translationProvider == "api" {
             guard translationEnabled else { return "已关闭" }
             let profile = AIProfiles.shared.profiles.first { $0.id == translationAPIProfile }
@@ -190,13 +213,32 @@ final class AppModel: ObservableObject {
 
     init(defaults: UserDefaults = .standard, integrateSystem: Bool = true,
          liveClientFactory: @escaping () -> LiveTranslateClient = { LiveTranslateClient() },
-         liveKeyReader: @escaping (String) throws -> String? = { try APIKeyStore.read(endpoint: $0) }) {
+         liveKeyReader: @escaping (String) throws -> String? = { try APIKeyStore.read(endpoint: $0) },
+         liveSessionFactory: ((LiveTranslateProvider) -> any LiveTranslationSession)? = nil,
+         hyModelStore: HyModelStore? = nil,
+         runtimeVerified: @escaping () -> Bool = { HyRuntimeAvailability.isVerified },
+         runtimeExecutable: @escaping () -> URL? = { HyRuntimeAvailability.executableURL },
+         localSpeech: (any LocalSpeechOutputting)? = nil,
+         replaySpeech: (any LocalSpeechOutputting)? = nil) {
         self.liveClientFactory = liveClientFactory; self.liveKeyReader = liveKeyReader
+        self.liveSessionFactory = liveSessionFactory
+        self.hyModelStore = hyModelStore ?? HyModelStore()
+        self.runtimeVerified = runtimeVerified; self.runtimeExecutable = runtimeExecutable
+        self.localSpeech = localSpeech ?? LocalSpeechOutput()
+        self.replaySpeech = replaySpeech ?? LocalSpeechOutput()
         liveDefaults = defaults
         liveConfiguration = LiveTranslateConfiguration.load(defaults: defaults)
+        liveProvider = liveConfiguration.provider
         liveEndpoint = liveConfiguration.endpoint; liveLanguage = liveConfiguration.language
         liveAudioOutput = liveConfiguration.audioOutput; liveVolume = liveConfiguration.volume
         livePlaybackTiming = liveConfiguration.playbackTiming
+        hyObservation = self.hyModelStore.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        self.localSpeech.onPlayingChange = { [weak self] playing in
+            guard let self, self.liveConfiguration.provider == .hyLocal else { return }
+            self.livePlaying = playing
+        }
+        self.localSpeech.onFailure = { [weak self] message in self?.error = message; self?.stopLivePlayback() }
+        self.replaySpeech.onFailure = { [weak self] message in self?.error = message; self?.stopReplay() }
         apiTranslations.onUpdate = { [weak self] id, text, done in
             guard let self, let index = self.rows[id], self.finalText.indices.contains(index) else { return }
             // Negative unit IDs are reserved for frontend API translations.
@@ -238,7 +280,14 @@ final class AppModel: ObservableObject {
 
     func launch() {
         shutdown()
-        if liveEnabled { state = "ready"; detail = "LiveTranslate 已就绪"; error = ""; return }
+        if liveEnabled {
+            state = liveConfiguration.provider == .qwenCloud ? "ready" : "idle"
+            detail = liveConfiguration.provider == .qwenCloud ? "LiveTranslate 已就绪"
+                : !hyRuntimeVerified ? hyRuntimeUnavailableReason
+                : hyModelStore.hasCachedFile ? "请加载 Hy-SimulMT 模型" : "请在 LiveTranslate 设置中下载 Hy-SimulMT 模型"
+            error = ""
+            return
+        }
         generation = UUID()
         let currentGeneration = generation
         state = "connecting"; error = ""
@@ -259,6 +308,7 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        audioLock.lock(); accepting = false; let previousLiveSession = liveSession; liveSession = nil; audioLock.unlock()
         stopReplay()
         stopLivePlayback()
         asrTestClient?.cancel(); asrTestClient = nil; asrTesting = false
@@ -266,7 +316,9 @@ final class AppModel: ObservableObject {
         audioLock.lock(); let stream = streamClient; streamClient = nil; audioLock.unlock()
         stream?.cancel()
         liveAttempt = UUID()
-        liveClient?.cancel(); liveClient = nil; liveTesting = false
+        previousLiveSession?.cancel(); liveTesting = false
+        hyLoadAttempt = UUID(); hyRuntime.unload(); hyRuntimeState = "idle"; hyRuntimeDetail = "本地模型未加载"
+        if hyModelStore.state == "checking" { hyModelStore.cancel() }
         settleLiveRows()
         cancelLiveTranslations()
         generation = UUID()
@@ -313,7 +365,7 @@ final class AppModel: ObservableObject {
         } else { command(download ? "download" : "load", extra:["config":config]) }
     }
     var activeModelName: String {
-        if liveEnabled { return "Qwen3.8 LiveTranslate" }
+        if liveEnabled { return liveConfiguration.modelName }
         if activeASRProvider == "api" { return "API · \(activeAPIModel)" }
         switch activeModelID {
         case Self.qwenID: return "Qwen3-ASR 1.7B"
@@ -560,7 +612,7 @@ final class AppModel: ObservableObject {
         audioLock.lock()
         guard accepting else { audioLock.unlock(); return }
         let audioSession = session
-        let sent = liveEnabled ? (liveClient?.append(pcm) ?? false)
+        let sent = liveEnabled ? (liveSession?.append(pcm) ?? false)
             : streamClient.map { $0.append(pcm) } ?? (transport?.audio(pcm, session: session, sequence: sequence, start: samples) ?? false)
         if sent { sequence += 1; samples += pcm.count / 2 }
         else { accepting = false }
@@ -579,9 +631,11 @@ final class AppModel: ObservableObject {
         audioLock.lock(); accepting = false; audioLock.unlock()
         level = 0
         if liveEnabled {
-            if state == "recording" { state = "finalizing"; liveClient?.finish() }
+            if state == "recording" { state = "finalizing"; liveSession?.finish() }
             else if state == "connecting" {
-                liveAttempt = UUID(); liveClient?.cancel(); liveClient = nil; state = "ready"
+                liveAttempt = UUID()
+                audioLock.lock(); let previousLiveSession = liveSession; liveSession = nil; audioLock.unlock()
+                previousLiveSession?.cancel(); state = "ready"
             }
         } else if let client = streamClient {
             if state == "recording" { state = "finalizing"; detail = "正在等待尾句识别结果…"; client.finish() }
@@ -727,58 +781,145 @@ extension AppModel {
     func saveLiveSettings(enabled: Bool? = nil) -> Bool {
         guard !liveSettingsBusy else { return false }
         do {
-            var next = LiveTranslateConfiguration(enabled: enabled ?? liveEnabled, endpoint: liveEndpoint, language: liveLanguage, audioOutput: liveAudioOutput, volume: liveVolume, playbackTiming: livePlaybackTiming)
+            var next = liveConfiguration
+            next.enabled = enabled ?? liveEnabled; next.provider = liveProvider; next.endpoint = liveEndpoint
+            next.language = liveLanguage; next.audioOutput = liveAudioOutput; next.volume = liveVolume
+            next.playbackTiming = livePlaybackTiming
+            if next.enabled && next.provider == .hyLocal && !hyRuntimeVerified {
+                liveMessage = hyRuntimeUnavailableReason
+                return false
+            }
             next = try next.normalized()
             let key = liveKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !key.isEmpty { try APIKeyStore.save(key, endpoint: next.keyAccount) }
+            if next.provider == .qwenCloud, !key.isEmpty { try APIKeyStore.save(key, endpoint: next.keyAccount) }
             try next.save(defaults: liveDefaults)
-            let changedMode = next.enabled != liveEnabled
-            // Stop the old service before publishing the new selection.
+            let changedMode = next.enabled != liveEnabled || next.provider != liveConfiguration.provider
             if changedMode { shutdown() }
             liveConfiguration = next; liveEndpoint = next.endpoint; liveLanguage = next.language; liveKeyInput = ""
-            liveMessage = key.isEmpty ? "设置已保存；保留此地址已有的密钥" : "设置已保存；专用 API Key 已存入钥匙串"
-            if changedMode { launch() }
+            liveMessage = next.provider == .hyLocal ? "本地设置已保存，下次会话生效" : (key.isEmpty ? "设置已保存；保留此地址已有的密钥" : "设置已保存；专用 API Key 已存入钥匙串")
+            if changedMode { launch(); loadChosenHyModel() }
             return true
         } catch { liveMessage = error.localizedDescription; return false }
     }
     func setLiveEnabled(_ enabled: Bool) {
         guard !liveSettingsBusy, enabled != liveEnabled else { return }
+        if enabled && liveProvider == .hyLocal && !hyRuntimeVerified {
+            liveMessage = hyRuntimeUnavailableReason
+            return
+        }
         if enabled { _ = saveLiveSettings(enabled: true) }
         else {
-            // Leaving the mode must work even if the settings editor contains an invalid draft.
+            // Leaving the mode must work even if its settings editor contains an invalid draft.
             do {
                 var next = liveConfiguration; next.enabled = false; try next.save(defaults: liveDefaults)
                 shutdown(); liveConfiguration = next; launch()
             } catch { liveMessage = error.localizedDescription }
         }
     }
+    func setLiveProvider(_ provider: LiveTranslateProvider) {
+        guard !liveSettingsBusy, provider != liveProvider else { return }
+        guard provider != .hyLocal || hyRuntimeVerified else {
+            liveMessage = hyRuntimeUnavailableReason
+            return
+        }
+        do {
+            // A provider switch restores its saved choices. Unsaved drafts (including a broken
+            // cloud address) must not block leaving a provider or silently change its saved state.
+            let next = liveConfiguration.selecting(provider)
+            try next.save(defaults: liveDefaults)
+            shutdown(); liveConfiguration = next; liveProvider = provider
+            liveEndpoint = next.endpoint; liveLanguage = next.language; liveAudioOutput = next.audioOutput
+            liveVolume = next.volume; livePlaybackTiming = next.playbackTiming; liveKeyInput = ""
+            liveMessage = "已切换翻译方式，并恢复该方式已保存的设置"
+            launch(); loadChosenHyModel()
+        } catch { liveMessage = error.localizedDescription }
+    }
+    /// Turning the switches on is the request to use the model. A plain app launch stays idle, like
+    /// the other local models: 23 GB of memory should not be taken just because the app opened.
+    private func loadChosenHyModel() {
+        if canLoadHyModel, !hyMemoryIsLow, hyModelStore.hasCachedFile { loadHyModel() }
+    }
+    func downloadHyModel() {
+        guard !liveSettingsBusy, hyRuntimeVerified else { liveMessage = hyRuntimeUnavailableReason; return }
+        hyModelStore.download()
+    }
+    func loadHyModel() {
+        guard !liveSettingsBusy, liveEnabled, liveConfiguration.provider == .hyLocal,
+              hyRuntimeState != "loading", hyModelStore.state != "downloading" else { return }
+        guard hyRuntimeVerified, let executable = runtimeExecutable() else {
+            liveMessage = hyRuntimeUnavailableReason; return
+        }
+        let attempt = UUID(); hyLoadAttempt = attempt
+        hyRuntimeState = "loading"; hyRuntimeDetail = "正在校验并加载本地 Hy-SimulMT…"
+        state = "loading"; error = ""
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.hyModelStore.refresh()
+            guard self.hyLoadAttempt == attempt, self.liveEnabled, self.liveConfiguration.provider == .hyLocal else { return }
+            guard let path = self.hyModelStore.modelPath else {
+                self.hyRuntimeState = "error"; self.hyRuntimeDetail = self.hyModelStore.detail
+                self.state = "idle"; self.detail = self.hyModelStore.detail; return
+            }
+            self.hyRuntime.onLoaded = { [weak self] in
+                guard let self, self.hyLoadAttempt == attempt else { return }
+                self.hyRuntimeState = "ready"; self.hyRuntimeDetail = "Hy-SimulMT 已加载，可开始中英实时翻译"
+                self.state = "ready"; self.detail = self.hyRuntimeDetail
+            }
+            self.hyRuntime.onLoadFailure = { [weak self] message in
+                guard let self, self.hyLoadAttempt == attempt else { return }
+                self.hyRuntimeState = "error"; self.hyRuntimeDetail = message
+                self.state = "error"; self.error = message
+            }
+            do { try self.hyRuntime.load(executableURL: executable, modelURL: URL(fileURLWithPath: path)) }
+            catch {
+                self.hyRuntimeState = "error"; self.hyRuntimeDetail = error.localizedDescription
+                self.state = "error"; self.error = error.localizedDescription
+            }
+        }
+    }
+    func unloadHyModel() {
+        guard !liveSettingsBusy else { return }
+        hyLoadAttempt = UUID(); hyRuntime.unload()
+        if hyModelStore.state == "checking" { hyModelStore.cancel() }
+        hyRuntimeState = "idle"; hyRuntimeDetail = "本地模型已卸载"
+        if liveEnabled && liveConfiguration.provider == .hyLocal { state = "idle"; detail = hyRuntimeDetail }
+    }
     func testLiveConnection() {
         guard !inputBusy, !liveSettingsBusy, saveLiveSettings() else { return }
+        if liveConfiguration.provider == .hyLocal && (!hyRuntimeVerified || hyRuntimeState != "ready") {
+            liveMessage = hyRuntimeVerified ? "请先加载本地 Hy-SimulMT 模型" : hyRuntimeUnavailableReason
+            return
+        }
         connectLive(test: true)
     }
     private func connectLive(test: Bool) {
         let attempt = UUID(); liveAttempt = attempt
-        let currentSession = session
-        let client = liveClientFactory()
-        liveClient = client; liveTesting = test
+        let currentSession = test ? UUID().uuidString : session
+        let configuration = liveConfiguration
+        let client: any LiveTranslationSession
+        if let factory = liveSessionFactory { client = factory(configuration.provider) }
+        else if configuration.provider == .qwenCloud { client = QwenLiveTranslationSession(client: liveClientFactory()) }
+        else { client = hyRuntime }
+        audioLock.lock(); liveSession = client; audioLock.unlock()
+        liveTesting = test
         if !test {
-            liveAudioPlayer.stop(); livePlaying = false; liveAudioMuted = false
-            replayCache.beginSession()
-            livePlaybackQueue = LiveTranslatePlaybackQueue(timing: liveConfiguration.playbackTiming); livePlaybackSession = UUID()
+            liveAudioPlayer.stop(); localSpeech.stop(); livePlaying = false; liveAudioMuted = false
+            liveRowRevisions.removeAll(); liveRowRanges.removeAll(); liveUntranslatedRanges.removeAll(); livePlaybackSession = UUID()
+            liveSentenceRows = LiveSentenceRows()
+            state = "connecting"; detail = configuration.provider == .hyLocal ? "正在启动本地翻译会话…" : "正在连接 LiveTranslate…"
         }
-        if !test { state = "connecting"; detail = "正在连接 LiveTranslate…"; liveEvents = LiveTranslateEvents() }
-        liveMessage = "正在连接并确认会话配置…"
+        liveMessage = configuration.provider == .hyLocal ? "正在确认本地会话…" : "正在连接并确认会话配置…"
         client.onReady = { [weak self, weak client] in
-            guard let self, self.liveAttempt == attempt, self.liveClient === client else { return }
-            if test { client?.finish() }
+            guard let self, self.liveAttempt == attempt, let client, self.liveSession === client else { return }
+            if test { client.finish() }
             else {
-                guard self.pendingStart else { client?.cancel(); return }
-                if self.liveConfiguration.audioOutput {
-                    self.liveAudioPlayer.onFailure = { [weak self] message in
-                        guard let self else { return }
-                        self.error = message; self.stopLivePlayback()
-                    }
-                    do { try self.liveAudioPlayer.start(volume: self.liveConfiguration.volume) }
+                guard self.pendingStart else { client.cancel(); return }
+                if configuration.provider == .hyLocal {
+                    self.localSpeech.start(session: currentSession, language: configuration.language,
+                        volume: Double(configuration.volume), timing: configuration.playbackTiming, enabled: configuration.audioOutput)
+                } else if configuration.audioOutput {
+                    self.liveAudioPlayer.onFailure = { [weak self] message in self?.error = message; self?.stopLivePlayback() }
+                    do { try self.liveAudioPlayer.start(volume: configuration.volume) }
                     catch { self.error = "无法播放译音，请检查系统声音输出；字幕继续更新"; self.liveAudioMuted = true }
                 }
                 self.state = "recording"; self.beginCapture()
@@ -786,150 +927,158 @@ extension AppModel {
         }
         client.onEvent = { [weak self] event in
             guard let self, !test, self.liveAttempt == attempt, self.session == currentSession else { return }
-            self.liveEvents.apply(event)
-            if self.liveConfiguration.audioOutput {
-                self.replayCache.consume(event, transcripts: self.liveEvents, session: currentSession)
-                if self.replayRevision != self.replayCache.revision { self.replayRevision = self.replayCache.revision }
-            }
-            if self.liveConfiguration.audioOutput && !self.liveAudioMuted {
-                do {
-                    for pcm in try self.livePlaybackQueue.consume(event, transcripts: self.liveEvents) {
-                        try self.liveAudioPlayer.append(pcm); self.livePlaying = true
+            switch event {
+            case .update(let update):
+                let placed: LiveSentenceRows.Placement
+                if configuration.provider == .hyLocal {
+                    guard update.revision > (self.liveRowRevisions[update.segmentID] ?? -1) else { return }
+                    placed = self.liveSentenceRows.place(update)
+                } else {
+                    placed = .init(row: update.segmentID, source: update.source ?? "", translation: update.translation,
+                                   startSample: update.startSample, endSample: update.endSample)
+                }
+                guard self.publishLiveUpdate(update, placed: placed) else { return }
+                if configuration.provider == .hyLocal {
+                    if configuration.audioOutput && update.committed && update.translationDone && !placed.translation.isEmpty {
+                        self.replayCache.insert(.speech(text: placed.translation, language: configuration.language),
+                            for: "\(currentSession):live:\(placed.row)")
+                        self.replayRevision = self.replayCache.revision
                     }
-                    if self.livePlaybackQueue.hasPendingAudio { self.livePlaying = true }
-                } catch { self.error = error.localizedDescription; self.stopLivePlayback() }
+                    if !self.liveAudioMuted {
+                        self.localSpeech.consume(session: currentSession, itemID: update.segmentID,
+                            text: update.translation, committed: update.committed, final: update.translationDone)
+                    }
+                }
+            case .audio(let pcm):
+                guard configuration.audioOutput, !self.liveAudioMuted else { return }
+                do { try self.liveAudioPlayer.append(pcm); self.livePlaying = true }
+                catch { self.error = error.localizedDescription; self.stopLivePlayback() }
+            case .audioPending:
+                if configuration.audioOutput && !self.liveAudioMuted { self.livePlaying = true }
+            case .replayClip(let segmentID, let pcm):
+                self.replayCache.insert(.pcm(pcm), for: "\(currentSession):live:\(segmentID)")
+                self.replayRevision = self.replayCache.revision
+            case .playbackWarning(let message):
+                guard !self.liveAudioMuted else { return }
+                self.error = message; self.stopLivePlayback()
+            case .untranslatedAudio(let start, let end):
+                self.liveUntranslatedRanges.append((start, end))
+                self.error = String(format: "%.1f–%.1f 秒的音频未能完整翻译，已有文字已保留", Double(start) / 16000, Double(end) / 16000)
+                for (segmentID, range) in self.liveRowRanges where range.0 < end && range.1 > start {
+                    if let index = self.rows["\(currentSession):live:\(segmentID)"] { self.finalText[index].incomplete = true }
+                }
+                self.translationTick += 1
             }
-            self.publishLiveRows()
         }
         client.onEnd = { [weak self] message in
             guard let self, self.liveAttempt == attempt else { return }
             self.liveAttempt = UUID()
+            self.audioLock.lock(); self.accepting = false; self.liveSession = nil; self.audioLock.unlock()
+            self.liveTesting = false
             if !test {
-                self.audioLock.lock(); self.accepting = false; self.audioLock.unlock()
-                self.stopInputs()
-                self.pendingStart = false; self.level = 0
-                self.preserveUnmatchedLiveOutput()
+                self.stopInputs(); self.pendingStart = false; self.level = 0
                 self.settleLiveRows()
-                let incompleteAudio = self.livePlaybackQueue.hasIncompleteSample
-                if self.livePlaybackQueue.hasPendingAudio {
-                    self.error = "部分译音未收到完整定稿，已跳过播放；已有字幕已保留"
-                }
-                if message == nil && !self.liveAudioMuted && self.livePlaying {
+                if let message { self.error = message }
+                // Local speech can hold an unfinished phrase without playing yet. A successful
+                // session must flush that tail; cancellation and failures must only discard it.
+                if message == nil && !self.liveAudioMuted && (self.livePlaying || configuration.provider == .hyLocal) {
                     self.state = "finalizing"; self.detail = "正在播放最后一段译音…"
                     let playback = self.livePlaybackSession
-                    self.liveAudioPlayer.finish { [weak self] in
+                    let drained: () -> Void = { [weak self] in
                         guard let self, self.livePlaybackSession == playback else { return }
                         self.livePlaying = false; self.state = "ready"
                     }
+                    if configuration.provider == .hyLocal { self.localSpeech.finish(completion: drained) }
+                    else { self.liveAudioPlayer.finish(drained) }
                 } else { self.stopLivePlayback(); self.state = "ready" }
-                if incompleteAudio { self.error = "末段译音数据不完整，已有字幕已保留" }
-                if let message { self.error = message }
-                else if self.liveEvents.hasUnmatchedOutput { self.error = "部分译文未收到对应句子信息，请重新连接服务" }
             }
-            if !test {
-                self.livePlaybackQueue = LiveTranslatePlaybackQueue(timing: self.liveConfiguration.playbackTiming)
-                self.replayCache.beginSession()
-            }
-            self.liveTesting = false; self.liveClient = nil
-            self.liveMessage = message ?? (test ? "连接成功，已确认所选输出方式与目标语言" : "本次会话已结束")
+            let testPassed = configuration.provider == .hyLocal ? "本地会话正常，模型已就绪" : "连接成功，已确认所选输出方式与目标语言"
+            self.liveMessage = message ?? (test ? testPassed : "本次会话已结束")
         }
         do {
-            let key = try liveKeyReader(liveConfiguration.keyAccount) ?? ""
-            try client.connect(configuration: liveConfiguration, key: key)
+            let key = configuration.provider == .qwenCloud ? (try liveKeyReader(configuration.keyAccount) ?? "") : ""
+            try client.start(configuration: configuration, key: key, sessionID: currentSession)
         } catch {
-            client.cancel(); liveClient = nil; liveTesting = false; pendingStart = false
+            client.cancel()
+            audioLock.lock(); accepting = false; liveSession = nil; audioLock.unlock()
+            liveTesting = false; pendingStart = false
             liveMessage = error.localizedDescription
             if !test { state = "ready"; self.error = error.localizedDescription }
         }
     }
     func canReplay(_ transcript: Transcript) -> Bool {
-        transcript.sourceDone && !transcript.incomplete && !transcript.translating && replayCache.audio(for: transcript.id) != nil
+        transcript.sourceDone && !transcript.incomplete && !transcript.translating && replayCache.content(for: transcript.id) != nil
     }
     func replay(_ transcript: Transcript) {
         if replayingTranscriptID == transcript.id { stopReplay(); return }
-        guard canReplay(transcript), let pcm = replayCache.audio(for: transcript.id) else { return }
-        stopReplay()
-        // A user-requested replay takes precedence over automatic translation audio.
-        stopLivePlayback()
+        guard canReplay(transcript), let content = replayCache.content(for: transcript.id) else { return }
+        stopReplay(); stopLivePlayback()
         let attempt = UUID(); replayAttempt = attempt
-        replayPlayer.onFailure = { [weak self] message in
+        let complete: () -> Void = { [weak self] in
             guard let self, self.replayAttempt == attempt else { return }
-            self.error = message; self.stopReplay()
+            self.replayingTranscriptID = nil
         }
-        do {
-            try replayPlayer.start(volume: liveConfiguration.volume)
-            replayingTranscriptID = transcript.id
-            try replayPlayer.append(pcm)
-            replayPlayer.finish { [weak self] in
+        replayingTranscriptID = transcript.id
+        switch content {
+        case .speech(let text, let language):
+            replaySpeech.replay(text: text, language: language, volume: Double(liveConfiguration.volume), completion: complete)
+        case .pcm(let pcm):
+            replayPlayer.onFailure = { [weak self] message in
                 guard let self, self.replayAttempt == attempt else { return }
-                self.replayingTranscriptID = nil
+                self.error = message; self.stopReplay()
             }
-        } catch { self.error = "无法重播译音，请检查系统声音输出"; stopReplay() }
+            do {
+                try replayPlayer.start(volume: liveConfiguration.volume)
+                try replayPlayer.append(pcm); replayPlayer.finish(complete)
+            } catch { self.error = "无法重播译音，请检查系统声音输出"; stopReplay() }
+        }
     }
     func stopReplay() {
-        replayAttempt = UUID(); replayPlayer.stop(); replayingTranscriptID = nil
+        replayAttempt = UUID(); replayPlayer.stop(); replaySpeech.stop(); replayingTranscriptID = nil
     }
     func stopLivePlayback() {
         livePlaybackSession = UUID(); liveAudioMuted = true
-        liveAudioPlayer.stop(); livePlaying = false
-        livePlaybackQueue = LiveTranslatePlaybackQueue(timing: liveConfiguration.playbackTiming)
-        if liveEnabled && state == "finalizing" && liveClient == nil { state = "ready" }
+        liveSession?.stopAutomaticPlayback()
+        liveAudioPlayer.stop(); localSpeech.stop(); livePlaying = false
+        if liveEnabled && state == "finalizing" && liveSession == nil { state = "ready" }
     }
-    private func publishLiveRows() {
-        var changed = false
-        for sourceID in liveEvents.order {
-            guard let row = liveEvents.rows[sourceID] else { continue }
-            let translation = liveEvents.translation(for: row)
-            guard !row.source.text.isEmpty || !translation.text.isEmpty else { continue }
-            let id = "\(session):live:\(sourceID)"
-            let index: Int
-            if let existing = rows[id] { index = existing }
-            else {
-                index = finalText.count; rows[id] = index
-                finalText.append(Transcript(id: id, text: "", seconds: row.seconds))
-            }
-            let previous = finalText[index]
-            guard previous.text != row.source.text || previous.seconds != row.seconds || previous.sourceDone != row.source.done ||
-                    previous.translations[-2]?.text != translation.text || previous.translations[-2]?.done != translation.done else { continue }
-            var updated = previous
-            updated.text = row.source.text; updated.seconds = row.seconds; updated.sourceDone = row.source.done
-            updated.translations[-2] = TranslationPart(text: translation.text, revision: 0, done: translation.done)
-            finalText[index] = updated; changed = true
+    @discardableResult
+    private func publishLiveUpdate(_ update: LiveTranslationUpdate, placed: LiveSentenceRows.Placement) -> Bool {
+        guard update.revision > (liveRowRevisions[update.segmentID] ?? -1) else { return false }
+        liveRowRevisions[update.segmentID] = update.revision
+        liveRowRanges[placed.row] = (placed.startSample, placed.endSample)
+        guard !placed.source.isEmpty || !placed.translation.isEmpty else { return true }
+        let id = "\(session):live:\(placed.row)"
+        let index: Int
+        let added = rows[id] == nil
+        if let existing = rows[id] { index = existing }
+        else {
+            index = finalText.count; rows[id] = index
+            finalText.append(Transcript(id: id, text: "", seconds: Double(placed.startSample) / 16000))
         }
-        if changed {
-            // Late ASR/translation must not move an earlier spoken sentence behind a newer one.
+        var row = finalText[index]
+        let moved = row.seconds != Double(placed.startSample) / 16000
+        row.text = placed.source; row.seconds = Double(placed.startSample) / 16000
+        row.sourceDone = update.source == nil || update.sourceDone
+        row.incomplete = update.incomplete || liveUntranslatedRanges.contains { placed.startSample < $0.1 && placed.endSample > $0.0 }
+        row.translations[-2] = TranslationPart(text: placed.translation, revision: update.revision, done: update.translationDone)
+        finalText[index] = row
+        // Updates arrive once per generated token; order can only change with a new row or start time.
+        if added || moved {
             let prefix = "\(session):live:"
-            let orderedIDs = liveEvents.order.enumerated().sorted {
-                let left = liveEvents.rows[$0.element]?.seconds ?? 0
-                let right = liveEvents.rows[$1.element]?.seconds ?? 0
-                return left == right ? $0.offset < $1.offset : left < right
-            }.map { prefix + $0.element }
-            let currentIDs = finalText.filter { $0.id.hasPrefix(prefix) }.map(\.id)
-            let visibleIDs = orderedIDs.filter { rows[$0] != nil }
-            if currentIDs != visibleIDs {
-                let current = Dictionary(uniqueKeysWithValues: finalText.filter { $0.id.hasPrefix(prefix) }.map { ($0.id, $0) })
-                finalText = finalText.filter { !$0.id.hasPrefix(prefix) } + visibleIDs.compactMap { current[$0] }
-                rows = Dictionary(uniqueKeysWithValues: finalText.enumerated().map { ($0.element.id, $0.offset) })
-            }
-            translationTick += 1
+            let current = finalText.enumerated().filter { $0.element.id.hasPrefix(prefix) }.sorted {
+                $0.element.seconds == $1.element.seconds ? $0.offset < $1.offset : $0.element.seconds < $1.element.seconds
+            }.map(\.element)
+            finalText = finalText.filter { !$0.id.hasPrefix(prefix) } + current
+            rows = Dictionary(uniqueKeysWithValues: finalText.enumerated().map { ($0.element.id, $0.offset) })
         }
-    }
-    private func preserveUnmatchedLiveOutput() {
-        for (outputID, part) in liveEvents.unmatchedOutputs {
-            let id = "\(session):live:unmatched:\(outputID)"
-            guard rows[id] == nil else { continue }
-            rows[id] = finalText.count
-            var row = Transcript(id: id, text: "", seconds: 0, sourceDone: false, incomplete: true)
-            row.translations[-2] = TranslationPart(text: part.text, revision: 0, done: true)
-            finalText.append(row)
-        }
+        translationTick += 1
+        return true
     }
     private func settleLiveRows() {
         for index in finalText.indices where finalText[index].id.hasPrefix("\(session):live:") {
             if !finalText[index].sourceDone || finalText[index].translating { finalText[index].incomplete = true }
-            if var part = finalText[index].translations[-2] {
-                part.done = true; finalText[index].translations[-2] = part
-            }
+            if var part = finalText[index].translations[-2] { part.done = true; finalText[index].translations[-2] = part }
         }
         translationTick += 1
     }

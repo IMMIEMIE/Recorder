@@ -219,6 +219,78 @@ func testUnsafeNamesRejected() throws {
     try expect(HubDownloader.displayName(String(repeating: "a", count: 41)) == "(…)" + String(repeating: "a", count: 40), "tqdm desc truncation")
 }
 
+func testPinnedGGUFArtifact() async throws {
+    let cache = tempCache()
+    defer { try? FileManager.default.removeItem(at: cache) }
+    let (_, files) = try await HubDownloader(endpoint: mockURL).modelInfo(modelID: "mock/gguf", revision: mockSHA)
+    let file = files.first { $0.name == "model-Q4_K_M.gguf" }!
+    let artifact = PinnedModelArtifact(modelID: "mock/gguf", revision: mockSHA,
+                                       filename: file.name, size: file.size, sha256: file.etag)
+    try await resetLog()
+    try expect(!artifact.hasCompleteFile(in: cache), "nothing is cached before the download")
+    let pointer = try await artifact.download(to: cache, endpoint: mockURL) { _, _, _ in }
+    try expect(artifact.hasCompleteFile(in: cache), "the presence check follows the snapshot symlink")
+    let paths = try await mockLog().compactMap { $0["path"] as? String }
+    try expect(paths.contains { $0.hasSuffix("model-Q4_K_M.gguf") }, "selected GGUF fetched")
+    try expect(!paths.contains { $0.contains("Q8_0") || $0.contains("config.json") || $0.contains("/api/models") },
+               "pinned artifact requires neither repository listing, sibling quantizations nor config.json")
+    try expect(pointer == artifact.fileURL(in: cache), "GGUF uses shared pinned snapshot layout")
+    try await resetLog()
+    let verified = try await artifact.verifiedFile(in: cache)
+    try expect(verified == pointer, "existing symlink validates its blob bytes")
+    _ = try await artifact.download(to: cache, endpoint: mockURL) { _, _, _ in }
+    let cachedLog = try await mockLog()
+    try expect(cachedLog.isEmpty, "cached GGUF stays completely offline")
+    let blob = pointer.resolvingSymlinksInPath()
+    var contents = try Data(contentsOf: blob)
+    contents[0] ^= 0xff
+    try contents.write(to: blob)
+    var rejected = false
+    do { _ = try await artifact.verifiedFile(in: cache) } catch { rejected = true }
+    try expect(rejected, "same-size cached corruption is not silently trusted")
+    _ = try await artifact.download(to: cache, endpoint: mockURL) { _, _, _ in }
+    try expect(try fileSHA256(blob) == file.etag, "explicit download repairs this artifact")
+
+    // Losing a snapshot pointer must not require a second click to repair its orphaned blob.
+    try FileManager.default.removeItem(at: pointer)
+    try contents.write(to: blob)
+    try await resetLog()
+    _ = try await artifact.download(to: cache, endpoint: mockURL) { _, _, _ in }
+    try expect(try fileSHA256(blob) == file.etag && FileManager.default.fileExists(atPath: pointer.path),
+               "one explicit download repairs a corrupt orphan blob and restores its snapshot pointer")
+    let repairedPaths = try await mockLog().compactMap { $0["path"] as? String }
+    try expect(repairedPaths.contains { $0.hasSuffix("model-Q4_K_M.gguf") }, "corrupt orphan blob is refetched")
+    try FileManager.default.removeItem(at: pointer)
+    try await resetLog()
+    _ = try await artifact.download(to: cache, endpoint: mockURL) { _, _, _ in }
+    let relinkLog = try await mockLog()
+    try expect(relinkLog.isEmpty && FileManager.default.fileExists(atPath: pointer.path),
+               "valid orphan blob is relinked without network")
+    let unsafe = PinnedModelArtifact(modelID: "mock/gguf", revision: mockSHA,
+                                    filename: "../escape.gguf", size: 1, sha256: file.etag)
+    rejected = false
+    do { _ = try await unsafe.verifiedFile(in: cache) } catch { rejected = true }
+    try expect(rejected, "pinned artifact validates paths before any disk access")
+}
+
+func testCancelledPartialHash() async throws {
+    let cache = tempCache()
+    defer { try? FileManager.default.removeItem(at: cache) }
+    let partial = cache.appendingPathComponent("weights.incomplete")
+    let contents = Data(repeating: 0xAB, count: 4096)
+    try contents.write(to: partial)
+    let task = Task {
+        withUnsafeCurrentTask { $0?.cancel() }
+        var hash = ContentHash(file: HubFile(name: "weights.gguf", size: Int64(contents.count), etag: "", lfs: true))
+        try hash.update(contentsOf: partial)
+    }
+    do {
+        try await task.value
+        throw TestFailure(message: "cancelled partial hash completed")
+    } catch is CancellationError {}
+    try expect(try Data(contentsOf: partial) == contents, "cancelling a resumed-file hash preserves partial bytes")
+}
+
 // MARK: - Real hub (`hub <model_id> <cache> [--full]`)
 
 /// Compares the layout the Swift downloader would write against a cache the Python build downloaded:
@@ -292,6 +364,8 @@ func checkRealHub(modelID: String, reference: URL, full: Bool) async throws {
         await run("corrupt blob rejected", testCorruptBlobRejected)
         await run("errors match download.py", testErrorsMatchDownloadPy)
         await run("unsafe names rejected", testUnsafeNamesRejected)
+        await run("pinned GGUF selection, offline validation and repair", testPinnedGGUFArtifact)
+        await run("cancelled partial hash preserves bytes", testCancelledPartialHash)
         print("\(passed) passed, \(failures) failed in \(String(format: "%.1fs", -started.timeIntervalSinceNow))")
         if failures > 0 { exit(1) }
     }

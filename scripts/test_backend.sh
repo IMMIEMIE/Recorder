@@ -5,8 +5,8 @@ cd "$(dirname "$0")/.."
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache"
 mkdir -p .build/backend-tests
-bin=$(swift build --show-bin-path)
-swift build --target Cwebrtcvad >/dev/null
+bin=$(swift build --build-system native --show-bin-path)
+swift build --build-system native --target Cwebrtcvad >/dev/null
 objects=$(find "$bin/Cwebrtcvad.build" -name '*.o')
 swiftc \
   Sources/RecorderBackend/*.swift \

@@ -691,6 +691,99 @@ final class CoreHarness {
     }
 }
 
+func testChannelControlFIFO() async throws {
+    let harness = CoreHarness()
+    defer { try? FileManager.default.removeItem(at: harness.dir) }
+    let channel = InProcessChannel(core: harness.core)
+    let recorder = EventRecorder()
+    channel.onEvent = { recorder.deliver($0) }
+    // Unlike direct actor tests, exercise the frontend channel with back-to-back commands.
+    for i in 0..<200 {
+        channel.send(command("hello", extra: ["request_id": String(i)]))
+    }
+    for _ in 0..<500 {
+        if recorder.of("config").count == 200 { break }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    let ids = recorder.of("config").compactMap { $0["request_id"] as? String }
+    channel.close()
+    try expect(ids == (0..<200).map(String.init), "channel reordered commands: \(ids.prefix(20))")
+}
+
+func testChannelAudioBeforeStop() async throws {
+    let harness = CoreHarness()
+    defer { try? FileManager.default.removeItem(at: harness.dir) }
+    await harness.core.prepareForTest(state: "ready")
+    let channel = InProcessChannel(core: harness.core)
+    let recorder = EventRecorder()
+    channel.onEvent = { recorder.deliver($0) }
+    channel.send(command("start"))
+    let silence = Data(repeating: 0, count: Backend.frame * 2)
+    for i in 0..<200 {
+        try expect(channel.audio(silence, session: "test", sequence: i, start: i * Backend.frame),
+                   "audio accepted below backpressure limit")
+    }
+    channel.send(command("stop"))
+    channel.send(command("hello", extra: ["request_id": "fence"]))
+    for _ in 0..<500 {
+        if recorder.last("config")?["request_id"] as? String == "fence" { break }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    let position = await harness.core.segmenter?.position
+    let errors = recorder.of("error")
+    channel.close()
+    try expect(recorder.last("config")?["request_id"] as? String == "fence", "channel drained")
+    try expect(errors.isEmpty, "no audio sequence gaps: \(errors)")
+    try expect(position == 200 * Backend.frame, "stop must consume all preceding audio")
+    try expect(!channel.audio(silence, session: "test", sequence: 200, start: 200 * Backend.frame),
+               "closed channel rejects audio")
+}
+
+func testChannelVariableAudioAndRestart() async throws {
+    let harness = CoreHarness()
+    defer { try? FileManager.default.removeItem(at: harness.dir) }
+    await harness.core.prepareForTest(state: "ready")
+    let channel = InProcessChannel(core: harness.core)
+    defer { channel.close() }
+    let recorder = EventRecorder()
+    channel.onEvent = { recorder.deliver($0) }
+
+    // System capture's resampled callbacks need not match the VAD's 320-sample
+    // frames. Exercise partial frames, a short tail, and a fresh session's counters.
+    let chunkSizes = [170, 171, 1, 512, 160]
+    for session in ["system-first", "system-restarted"] {
+        channel.send(command("start", session: session))
+        var samples = 0
+        for sequence in 0..<400 {
+            if sequence == 100 {
+                // Rejection must not reserve buffer space or submit a packet to the
+                // core; the next accepted callback still uses the same counters.
+                try expect(!channel.audio(Data(repeating: 0, count: 320_000), session: session,
+                                          sequence: sequence, start: samples), "oversized audio rejected")
+            }
+            let count = chunkSizes[sequence % chunkSizes.count]
+            try expect(channel.audio(Data(repeating: 0, count: count * 2), session: session,
+                                     sequence: sequence, start: samples), "variable audio accepted")
+            samples += count
+            if sequence % 50 == 0 { channel.send(command("hello", session: session)) }
+        }
+        channel.send(command("stop", session: session))
+        channel.send(command("hello", session: session, extra: ["request_id": session]))
+        for _ in 0..<500 {
+            if recorder.last("config")?["request_id"] as? String == session { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try expect(recorder.last("config")?["request_id"] as? String == session, "session audio drained")
+        try await harness.settleDown()
+        let position = await harness.core.segmenter?.position
+        let paddedSamples = ((samples + Backend.frame - 1) / Backend.frame) * Backend.frame
+        try expect(position == paddedSamples, "all variable audio and padded tail consumed")
+        try expect(recorder.of("error").isEmpty, "continuous counters across variable audio: \(recorder.of("error"))")
+        let state = await harness.core.state
+        try expect(state == "ready", "session finished before restart")
+    }
+}
+
 func testHelloBeforeAttachBuffersEvents() async throws {
     let dir = tempRoot()
     defer { try? FileManager.default.removeItem(at: dir) }
@@ -1161,6 +1254,9 @@ func testTranslatorDownloadThenLoads() async throws {
         await run("validate translator", testValidateTranslator)
         await run("whisper validation", testWhisperValidation)
         await run("resolve cached model", testResolveCachedModel)
+        await run("channel control FIFO", testChannelControlFIFO)
+        await run("channel audio before stop", testChannelAudioBeforeStop)
+        await run("channel variable audio and restart", testChannelVariableAudioAndRestart)
         await run("hello before attach", testHelloBeforeAttachBuffersEvents)
         await run("stop finalizes once", testStopFinalizesOnceAndPreservesRepetition)
         await run("start applies pause", testStartAppliesAndSavesPauseWithoutModelReload)

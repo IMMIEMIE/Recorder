@@ -19,9 +19,10 @@ public protocol BackendChannel: AnyObject {
 /// ordering (hello -> config + translator + status), same 320 KB audio backpressure semantics.
 public final class InProcessChannel: BackendChannel, BackendEventSink, @unchecked Sendable {
     private let core: BackendCore
-    // Audio frames must reach the core in capture order; a serial queue spawns the actor tasks
-    // in FIFO order so the actor mailbox receives them in sequence.
-    private let audioQueue = DispatchQueue(label: "recorder.inprocess.audio")
+    // Even Tasks created on a serial DispatchQueue can reach an actor out of order.
+    // Chain every accepted operation, including stop/close, so commands cannot
+    // overtake audio that the frontend has already submitted.
+    private var pending: Task<Void, Never>?
     private let lock = NSLock()
     private var buffered = 0
     private var closed = false
@@ -31,7 +32,9 @@ public final class InProcessChannel: BackendChannel, BackendEventSink, @unchecke
 
     public init(core: BackendCore) {
         self.core = core
-        Task { await core.attach(self) }
+        lock.lock()
+        enqueueLocked { await core.attach(self) }
+        lock.unlock()
     }
 
     public func deliver(_ event: [String: Any]) {
@@ -40,11 +43,10 @@ public final class InProcessChannel: BackendChannel, BackendEventSink, @unchecke
 
     public func send(_ message: [String: Any]) {
         lock.lock()
-        let isClosed = closed
-        lock.unlock()
-        guard !isClosed else { return }
+        defer { lock.unlock() }
+        guard !closed else { return }
         let core = core
-        Task { await core.control(message) }
+        enqueueLocked { await core.control(message) }
     }
 
     public func audio(_ pcm: Data, session: String, sequence: Int, start: Int) -> Bool {
@@ -53,23 +55,25 @@ public final class InProcessChannel: BackendChannel, BackendEventSink, @unchecke
         guard let header = try? JSONSerialization.data(withJSONObject: meta) else { return false }
         let sizeBytes = Swift.withUnsafeBytes(of: UInt32(header.count).bigEndian) { Data($0) }
         let payload = sizeBytes + header + pcm
-        guard reserveAudio(payload.count) else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+        guard !closed, buffered + payload.count <= 320_000 else { return false }
+        buffered += payload.count
         let core = core
-        audioQueue.async { [weak self] in
-            Task {
-                await core.audio(payload)
-                self?.releaseAudio(payload.count)
-            }
+        enqueueLocked { [weak self] in
+            await core.audio(payload)
+            self?.releaseAudio(payload.count)
         }
         return true
     }
 
-    private func reserveAudio(_ count: Int) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if closed || buffered + count > 320_000 { return false }
-        buffered += count
-        return true
+    // Caller holds lock, making admission and ordering atomic across frontend threads.
+    private func enqueueLocked(_ operation: @escaping @Sendable () async -> Void) {
+        let previous = pending
+        pending = Task {
+            await previous?.value
+            await operation()
+        }
     }
 
     private func releaseAudio(_ count: Int) {
@@ -80,9 +84,10 @@ public final class InProcessChannel: BackendChannel, BackendEventSink, @unchecke
 
     public func close() {
         lock.lock()
+        defer { lock.unlock() }
+        guard !closed else { return }
         closed = true
-        lock.unlock()
         let core = core
-        Task { await core.shutdown() }
+        enqueueLocked { await core.shutdown() }
     }
 }

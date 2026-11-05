@@ -15,9 +15,9 @@
 
 **声笺**可将麦克风、音频文件或系统声音近实时转写为文本。识别可使用本机 MLX 模型、兼容 OpenAI 音频转写接口的 API 或千问流式语音识别（WebSocket）；应用还支持悬浮字幕窗口，以及通过本地模型或 API 对定稿句子进行翻译。
 
-Local transcription does not upload audio. LiveTranslate streams audio to the selected service. API transcription sends speech segments to the selected service. Model downloads, optional AI prompts, and optional API translation also require network access; see [Privacy / 隐私](#privacy--隐私) for the exact boundary.
+Local transcription does not upload audio. Cloud LiveTranslate streams audio to the selected service; the experimental local Hy-SimulMT mode runs offline after its model is downloaded and its runtime has passed validation. API transcription sends speech segments to the selected service. Model downloads, optional AI prompts, and optional API translation also require network access; see [Privacy / 隐私](#privacy--隐私) for the exact boundary.
 
-本地转写不会上传音频。LiveTranslate 会持续发送音频到所选服务。API 识别会将语音片段发送到所选服务。模型下载、可选 AI 提问和可选 API 翻译也需要联网；准确的数据边界见[隐私](#privacy--隐私)。
+本地转写不会上传音频。云端 LiveTranslate 会持续发送音频到所选服务；实验性的本地 Hy-SimulMT 模式在模型下载完成、推理程序通过验证后离线运行。API 识别会将语音片段发送到所选服务。模型下载、可选 AI 提问和可选 API 翻译也需要联网；准确的数据边界见[隐私](#privacy--隐私)。
 
 ## Highlights / 特性
 
@@ -57,9 +57,9 @@ cd Recorder
 open "dist/声笺.app"
 ```
 
-`build.sh` builds the single-process Swift app (MLX inference via [mlx-swift](https://github.com/ml-explore/mlx-swift), dependencies pinned in `Package.resolved`), compiles the MLX Metal kernels, and produces `dist/声笺.app`. No Python environment is needed. To make a DMG as well:
+`build.sh` builds the Swift app (ordinary local MLX inference via [mlx-swift](https://github.com/ml-explore/mlx-swift), dependencies pinned in `Package.resolved`), compiles the MLX Metal kernels, and produces `dist/声笺.app`. A verified Hy-SimulMT helper is bundled separately when its real-model validation report matches the executable. Running the app needs no Python environment. To make a DMG as well:
 
-`build.sh` 构建单进程 Swift 应用（通过 mlx-swift 在进程内推理，依赖版本锁定于 `Package.resolved`），编译 MLX 的 Metal 内核，生成 `dist/声笺.app`，无需 Python 环境。如需 DMG，可继续运行：
+`build.sh` 构建 Swift 应用（普通本地模型通过 mlx-swift 在进程内推理，依赖版本锁定于 `Package.resolved`），编译 MLX 的 Metal 内核，生成 `dist/声笺.app`。当真实模型验证报告与可执行文件匹配时，另行打包 Hy-SimulMT 辅助进程；运行应用无需 Python 环境。如需 DMG，可继续运行：
 
 ```bash
 ./scripts/package.sh
@@ -76,8 +76,8 @@ open "dist/声笺.app"
 4. Stop to process the final phrase; then copy or export the transcript.
    停止后会处理尾句；随后可复制或导出文本。
 
-The default shortcut is `Control + Option + Space`. Open subtitle mode from the toolbar or menu bar.
-默认快捷键为 `Control + Option + Space`；可从工具栏或菜单栏打开字幕模式。
+The default shortcut is `Control + Option + Space`. Open subtitle mode from the toolbar or menu bar. Subtitles show only the latest lines (YouTube-style bars or shadowed text); drag them or use the arrow keys (Shift: faster, Option: finer) while they are focused, and right-click for size, lines, background and translation. In the main window, new text no longer pulls you down while you read earlier lines; use “回到底部” (⌘↓) to jump back and follow again.
+默认快捷键为 `Control + Option + Space`；可从工具栏或菜单栏打开字幕模式。字幕只显示最新几行文字（每行半透明底色，或仅文字带阴影）；可拖动，或在字幕获得焦点时用方向键移动（⇧ 加速、⌥ 微调），右键可调整字号、行数、背景与译文。主窗口中向上翻看历史时，新文字不会再强制滚到底部；点「回到底部」（⌘↓）即可返回并继续自动跟随。
 
 ## Models and translation / 模型与翻译
 
@@ -120,7 +120,11 @@ Targets are Simplified Chinese, Traditional Chinese, English, Japanese, Korean, 
 
 ### LiveTranslate 独立实时翻译
 
-在**设置 → LiveTranslate**填写专用 API Key，选择目标语言，点击**保存**和**测试连接**，然后开启**使用 LiveTranslate 独立转写与翻译**。返回主窗口选择音源并开始转写，无需下载识别或翻译模型。
+顶部的**使用 LiveTranslate 独立转写与翻译**开关启用该模式；下方的**使用本地模型 Hy-SimulMT**开关选择本地模型，关闭时使用云端 Qwen。旧版本设置继续使用云端，两种方式的设置分别保留。
+
+#### 云端 Qwen
+
+在**设置 → LiveTranslate**关闭本地模型开关，填写专用 API Key，选择目标语言，点击**保存**和**测试连接**，然后开启主开关。返回主窗口选择音源并开始转写，无需下载识别或翻译模型。
 
 - 固定模型：`qwen3.8-livetranslate-flash-realtime`；默认地址为 `wss://maas.qianwenaiapi.com/api-ws/v1/realtime`。也可填写账户对应的工作空间 WSS 地址，例如 `wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime`；密钥须与地址所属区域和工作空间匹配。
 - 麦克风、系统声音和音频文件均支持；原文和译文边生成边显示，可使用悬浮字幕、复制和 TXT 导出。默认仅输出文字；可在设置中开启「播放译音」并设置音量，保存后在下次会话生效，使用系统当前输出设备。播放时机可选「边说边播放」（默认，收到译音即播放）或「定稿后播放」（等待该句原文、译文及译音完整，按句序播放，不必等整场录音结束）。
@@ -133,6 +137,19 @@ Targets are Simplified Chinese, Traditional Chinese, English, Japanese, Korean, 
 
 协议依据：[模型页面](https://www.qianwenai.com/models/qwen3.8-livetranslate-flash-realtime)、[客户端事件](https://help.aliyun.com/en/model-studio/live-translator-client-events)、[服务端事件](https://help.aliyun.com/en/model-studio/live-translator-server-events)。模拟测试验证客户端行为；实际模型权限、翻译效果与延迟仍需使用有效 API Key 验证。
 
+#### 本地 Hy-SimulMT（实验性）
+
+实测数据和已知限制见[实测记录](docs/HY-SIMULMT-VALIDATION.md)。
+
+- 使用腾讯官方 `Hy-SimulMT-30B-A3B-Interleave-Q4_K_M.gguf`，约 **19.75 GB**，运行时约占用 **23 GB** 内存，直接接收音频并生成原文和译文。支持英译中和中译英，默认英译中；FP8 权重不能用于这条 Mac 推理链路。
+- 打开上方两个开关后，已下载的模型会自动加载；重新打开应用后，在主窗口点击**加载模型**。首次使用先点击**下载本地模型**。下载支持取消、恢复和 SHA-256 校验；权重沿用 `~/Library/Application Support/LocalRecorder/models` 缓存，不进入 App 或 DMG。
+- 只有打包的推理程序通过双向各至少 10 分钟的真机实时验证、底噪、CLI 对照、上下文切换和尾句恢复验证时，本地开关才可用；否则设置页显示不可用原因。
+- 麦克风、系统声音和音频文件共用现有采集与双语字幕界面。文字边生成边显示，并按句合并成一行。停止后处理尾句；关闭开关、卸载或退出应用会释放本地推理进程。异常时保留收到的文字并提示未完成内容，不自动转到云端。
+- 「播放译音」默认关闭。开启后由已安装的 macOS 系统语音朗读已确认的译文，积压时自动加快语速，支持音量、播放时机及逐段重播；不提供音色克隆，不另行加载 TTS 模型。声音问题不影响字幕。本地模式的语言和译音设置修改后立即保存。
+- 本地推理、字幕和系统译音不访问云端，也不保存用户录音或文字历史。首次下载权重需要联网。
+
+构建步骤、固定版本、验证门槛及已知限制见 [Hy-SimulMT 开发与验证说明](docs/HY-SIMULMT.md)。硬件是否能持续实时运行，以该机器的实测报告为准。
+
 ## Privacy / 隐私
 
 | Activity / 操作 | Data location / 数据位置 |
@@ -141,7 +158,8 @@ Targets are Simplified Chinese, Traditional Chinese, English, Japanese, Korean, 
 | API transcription / API 识别 | Sends speech segments; OpenAI mode also sends provisional previews / 将语音片段发送给所选服务；OpenAI 模式也发送临时预览 |
 | Model download / 模型下载 | Downloads selected model weights / 下载所选模型权重 |
 | API live translation / API 实时翻译 | Sends finalized text only—not audio or preview text / 仅发送定稿文本，不发送音频或预览文字 |
-| LiveTranslate | Sends the selected audio stream for cloud transcription and translation; does not save recordings / 将所选音频流发送至云端转写翻译，不保存录音 |
+| Cloud LiveTranslate / 云端 LiveTranslate | Sends the selected audio stream for cloud transcription and translation; does not save recordings / 将所选音频流发送至云端转写翻译，不保存录音 |
+| Local Hy-SimulMT / 本地 Hy-SimulMT | Local helper and system speech synthesis; no upload or recording persistence / 本地辅助进程与系统语音合成，不上传或保存录音 |
 | AI prompt / AI 提问 | Sends the text in the prompt panel and the requested task / 发送提问面板中的文字及任务 |
 | Credentials / 凭据 | API keys are stored in macOS Keychain; LiveTranslate configuration lives in app preferences; other profile metadata lives in `~/Library/Application Support/LocalRecorder/` / 密钥保存在 macOS 钥匙串；LiveTranslate 配置保存在应用偏好设置，其他配置元数据位于上述目录 |
 
@@ -159,6 +177,9 @@ Model-free tests (local mock servers need only the system `python3`):
 ./scripts/test_audio.sh
 ./scripts/test_streaming_asr.sh
 ./scripts/test_livetranslate.sh
+./scripts/test_local_speech.sh
+./scripts/test_hy_gate.sh
+./scripts/test_hy_livetranslate.sh
 ```
 
 Model-dependent verification requires cached weights under `models/` and Metal access:

@@ -12,6 +12,12 @@ out=${1:-.build/metallib/mlx.metallib}
 src=.build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal
 [ -d "$src" ] || swift package resolve >&2
 [ -d "$src" ] || { echo "未找到 $src，请确认 mlx-swift 依赖已解析" >&2; exit 1; }
+# A matching library is already built; packaging it does not need the compiler.
+stamp=$(find "$src" -type f \( -name '*.metal' -o -name '*.h' \) -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | cut -c1-16)
+if [ -f "$out" ] && [ "$(cat "$out.stamp" 2>/dev/null)" = "$stamp" ]; then
+  echo "$out"
+  exit 0
+fi
 # Xcode's Metal compiler (CommandLineTools has none): fall back to a full Xcode when the
 # active developer directory lacks it, so callers need not export DEVELOPER_DIR themselves.
 if ! xcrun --find metal >/dev/null 2>&1 && [ -d /Applications/Xcode.app/Contents/Developer ]; then
@@ -20,11 +26,6 @@ fi
 if ! echo '' | xcrun -sdk macosx metal -x metal -E - >/dev/null 2>&1; then
   echo "缺少 Metal 编译器：请安装完整 Xcode（xcode-select 指向 Xcode），并执行 xcodebuild -downloadComponent MetalToolchain" >&2
   exit 1
-fi
-stamp=$(find "$src" -type f \( -name '*.metal' -o -name '*.h' \) -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | cut -c1-16)
-if [ -f "$out" ] && [ "$(cat "$out.stamp" 2>/dev/null)" = "$stamp" ]; then
-  echo "$out"
-  exit 0
 fi
 work=$(mktemp -d /tmp/recorder-metallib.XXXXXX)
 trap 'rm -rf "$work"' EXIT
