@@ -37,6 +37,17 @@ Real-model verification (needs Metal GPU and models cached in `models/` in the H
 
 `asr`/`whisper`/`translate` run single models through `RecorderVerify` (`docs/model-verification-swift.json`, `whisper-verification-swift.json`, `translation-verification-swift.json`). `pipeline` plays the fixtures in real time (20 ms frames) through `BackendCore` with the real engines: endpointing latency per final, ASR call counts, local translation per unit (same-language speech must be skipped), and a Qwen → Whisper → Qwen switch that must release the previous weights (`docs/pipeline-verification-swift.json`; exits non-zero on failed checks). The `docs/*-verification.json` files without `-swift` are the Python-era reference results.
 
+Hy-SimulMT helper (needs the model cached in `<root>/models`; the pinned fork and CMake are fetched into `.build`):
+
+```bash
+./scripts/build_hy_runtime.sh       # verify the pinned llama.cpp archive, build .build/hy-runtime/bin/HySimulMTHelper
+python3 scripts/test_hy_session.py  # the helper's real Session class against a fake model; no GPU
+./scripts/test_hy_gate.sh           # HyRuntimeAvailability against crafted reports
+./scripts/test_hy_livetranslate.sh  # AppModel + HyLocalSession + a JSONL fixture helper (this test binary re-executes itself)
+./scripts/test_local_speech.sh      # LocalSpeechOutput and HyModelStore with fake devices
+python3 scripts/make_hy_validation_audio.py && python3 scripts/verify_hy_runtime.py --help  # the real-model release gate, about 35 minutes
+```
+
 Version bumps: the version string is hardcoded in `scripts/build.sh` (Info.plist `CFBundleShortVersionString`/`CFBundleVersion`), `scripts/package.sh` (DMG name, volume name, install notes), and `README.md`. `package.sh` refuses to overwrite an existing DMG of the same name. After replacing `assets/AppIcon.png`, run `python3 scripts/make_icon.py`.
 
 ## Architecture
@@ -52,6 +63,7 @@ Version bumps: the version string is hardcoded in `scripts/build.sh` (Info.plist
 - `AppModel` holds session and transcript state. `Transcript.translations` is keyed by backend unit id, and `rows` maps `session:segment` to a row, so translations that finish after a new session starts still land on their row. `AppModel.translationTargets` must match `Backend.translationTargets`.
 - `RecorderApp` contains the views, menu bar, and settings; `SubtitleWindow` is the floating subtitle overlay; `TextExport` handles transcript export.
 - `LiveTranslate` is a standalone mode that bypasses the local backend entirely: when enabled, the app shuts down the backend and streams audio over WSS to the fixed `qwen3.8-livetranslate-flash-realtime` model for cloud transcription + translation, disabling the other ASR/translation/AI entry points. Optional translated speech playback uses the same session (24 kHz mono PCM16); `LiveTranslateAudio.swift` decodes audio deltas and plays them through AVAudioEngine with bounded buffering. Audio transcript events feed the same subtitle rows; old configurations default to text-only. Its config lives in UserDefaults (`livetranslate.configuration.v1`), and its Keychain account is namespaced `livetranslate:<endpoint>`, separate from ASR and chat-completions credentials.
+- `LiveTranslationSession` is the provider boundary inside LiveTranslate: `QwenLiveTranslationSession` wraps the cloud client, `HyLocalSession` the local helper (see "Hy-SimulMT local mode"). `AppModel` only sees cumulative per-segment updates.
 - The AI client (`AIClient`, `AIProfiles`, `AIWorkspace`) uses native HTTP. `APITranslationQueue` also reuses this client for finalized transcript translation when `TranslationConfig.provider` is `api`; `api_profile` selects a saved base URL. The backend persists these choices but never sees API keys or sends API requests. API mode unloads and bypasses the local translator. Queue callbacks use transcript IDs across sessions, and negative translation unit IDs are reserved for API output (`-1` API translation, `-2` LiveTranslate; local units are ≥ 1). It streams from OpenAI-compatible `/chat/completions` endpoints. It stores one JSON profile per normalized base URL under `LocalRecorder/AIProfiles`, API keys in the Keychain keyed by endpoint, and the current selection in UserDefaults.
 
 **Backend** (`Sources/RecorderBackend/`, a line-by-line port of the former `backend/*.py`; error texts and state semantics are kept verbatim, `BackendError` carries the Python exception name so error events read the same):
@@ -70,10 +82,28 @@ Version bumps: the version string is hardcoded in `scripts/build.sh` (Info.plist
 
 **Invariants to preserve:**
 - Model weights never go in the app bundle (`package.sh` enforces this).
-- Local model load, local transcription, and local translation stay offline; explicit downloads, API transcription, LiveTranslate, AI requests, and enabled API translation use the network.
+- Local model load, local transcription, local translation, and local Hy-SimulMT stay offline; explicit downloads, API transcription, cloud LiveTranslate, AI requests, and enabled API translation use the network.
 - Raw audio and transcript history are never persisted (`Config` rejects `save_audio`).
 - The settings directory and model cache layout stay compatible with existing installs (`config.json`, `translation.json`, `models/models--<owner>--<model>/snapshots/<sha>`).
 - Dependencies are pinned (`Package.resolved`, mlx-swift exact version matching the compiled kernels), and nothing is installed at runtime.
+
+## Hy-SimulMT local mode
+
+`LiveTranslateProvider.hyLocal` runs LiveTranslate offline through a native helper process instead of MLX: Tencent's Hy-SimulMT Interleave GGUF hears audio directly and writes source and target text. Pins, gate and session rules are in `docs/HY-SIMULMT.md`; measured results in `docs/HY-SIMULMT-VALIDATION.md`.
+
+- **Helper** (`native/HySimulMT`, a pinned llama.cpp fork with the same WebRTC VAD sources as `Cwebrtcvad`): JSONL on stdin/stdout, base64 PCM16, diagnostics on stderr. Turns are fixed at 1600 ms for the first in a context, then 800 ms. Sampling is greedy, so a token stream reproduces exactly whatever the pacing.
+- **Session rules that are easy to break:** a microphone never delivers digital zero, so silence is decided by VAD, never by comparing samples to zero; with no untranslated audio waiting, silence skips inference entirely. A malformed turn (source with no target separator, about 1 in 1500) must not end a live session. Past 3/4 of the context budget the next finished sentence or pause rolls over early; the forced `context_limit` path is the fallback. Add a case to `scripts/test_hy_session.py` for any change here, and test with room tone: the system-voice fixtures pause in digital zero, which hides this whole class of bug.
+- **Release gate:** `HyRuntimeAvailability` (in the app) and `scripts/bundle_hy_runtime.py` (at build time) open the entry only for a real `scripts/verify_hy_runtime.py` report whose hash matches the bundled helper. Any change to `native/HySimulMT/main.cpp`, `protocol.hpp` or its CMake changes the hash and needs the 35-minute gate again, so settle helper changes before running it. Commits must not: llama.cpp and ggml embed the enclosing git commit, so `native/HySimulMT/CMakeLists.txt` pins `LLAMA_BUILD_COMMIT`/`LLAMA_BUILD_NUMBER` (the values the validated build embedded) and `build_hy_runtime.sh` patches ggml to honour them. Don't craft a report to get past it in a shipped build.
+- **App side:** `HyLocalSession` keeps the weights (about 23 GB) loaded between sessions. Turning the two switches on loads a downloaded model; a plain app launch stays idle like the other local models. `LiveSentenceRows` joins Hy's short per-turn commits into sentence rows for the transcript and subtitles. `LocalSpeechOutput` reads committed text with a system voice and speeds up as a backlog grows, because system voices have almost no margin over continuous speech.
+
+## Android (`android/`)
+
+声笺安卓版 is a separate Gradle project that keeps only LiveTranslate (cloud real-time transcription + translation); none of the local backend, models, or other API routes are ported. Plan and phases: `docs/ANDROID-PLAN.md`.
+
+- `android/core` (Kotlin/JVM, no Android SDK): a port of `LiveTranslate.swift`/`LiveTranslateAudio.swift` — `LiveTranslateConfig`, `LiveTranslateEvents`, `LiveTranslateAudioDecoder`/`LiveTranslatePlaybackQueue`, and an OkHttp `LiveTranslateClient`. Keep protocol behaviour, limits and Chinese error texts in sync with the Swift versions. It uses `org.json` as `compileOnly` (Android provides it).
+- `LiveSession` (also in `core`, Android-only behaviour with no Swift counterpart) is the session state machine: one user session spans several connections. `LiveTranslateClient.Listener.onEnd` reports whether an end is `recoverable` (transport failure, connect timeout, or a `session.finished` the app did not ask for); only those are retried, with backoff, and never for the first connection of a session. Capture keeps running while reconnecting and the last 5 s of audio are sent first on the new connection. It must be called on one thread and reaches the device only through `SessionPlatform`, so new session behaviour gets a `LiveSessionTest` case (fake transports, virtual clock) rather than an Android test.
+- `android/app` (Compose): `SessionController` implements `SessionPlatform` on the main thread (settings, connection test, notification text, network and recording-silenced callbacks); `MicrophoneSource`, `SpeechPlayer` (audio focus), `AudioRouting` (headphone detection, optional Bluetooth headset microphone), `SecretStore` (Keystore AES-GCM), `RecordingService` (microphone foreground service). Android-only options live under their own preference key, not in the JSON shared with macOS. Debug builds alone accept `ws://127.0.0.1` (for the mock server through `adb reverse`).
+- Tests: `cd android && ./gradlew -PcoreOnly=true :core:test` (runs against `tests/mock_livetranslate_server.py`; if you change that fixture, run both this and `scripts/test_livetranslate.sh`). `./gradlew :app:assembleDebug` needs the Android SDK; CI is `.github/workflows/android.yml`. Gradle 8.14 does not run on JDK 25, so the daemon JDK is pinned to 17 in `android/gradle/gradle-daemon-jvm.properties` and provisioned automatically; any JDK can launch the wrapper.
 
 Release notes and verification history are in `docs/RELEASE-*.md` and `docs/VALIDATION.md`.
 

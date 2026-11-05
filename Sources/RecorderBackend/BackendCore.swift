@@ -246,8 +246,8 @@ public actor BackendCore {
     private func send(_ event: [String: Any]) {
         var full: [String: Any] = ["protocol_version": 1, "session_id": session, "request_id": request]
         for (key, value) in event { full[key] = value }
-        // attach() runs as a detached Task and may lose the race with the first command
-        // (hello); buffer until the sink is present so no reply is ever dropped.
+        // Keep replies for callers that invoke the core before attaching a sink.
+        // InProcessChannel orders attach before commands, but direct callers need not.
         if let channel {
             channel.deliver(full)
         } else {

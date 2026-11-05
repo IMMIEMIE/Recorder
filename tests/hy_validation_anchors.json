@@ -1,0 +1,10 @@
+{
+  "en-zh": {
+    "source": [["Thursday"], ["five percent", "5%", "5 percent"], ["forty-eight", "48", "forty eight"], ["742", "seven hundred and forty-two", "seven hundred and forty two", "seven hundred forty-two", "seven hundred forty two"]],
+    "target": [["星期四", "周四"], ["百分之五", "5%", "5％", "百分之5"], ["四十八", "48"], ["742", "七百四十二"]]
+  },
+  "zh-en": {
+    "source": [["星期四", "周四"], ["百分之五", "5%", "5％", "百分之5"], ["四十八", "48"], ["742", "七百四十二"]],
+    "target": [["Thursday"], ["five percent", "5%", "5 percent"], ["forty-eight", "48", "forty eight"], ["742", "seven hundred and forty-two", "seven hundred and forty two", "seven hundred forty-two", "seven hundred forty two"]]
+  }
+}

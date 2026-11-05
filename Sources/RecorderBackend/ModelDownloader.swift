@@ -172,6 +172,7 @@ final class HubDownloader: ModelDownloading, @unchecked Sendable {
         let display = Self.displayName(file.name)
         var retries = 5
         while true {
+            try Task.checkCancellation()
             // Only LFS blobs resume: small git files may arrive gzip-encoded and are cheap to refetch.
             var offset: Int64 = 0
             if file.lfs, let size = (try? manager.attributesOfItem(atPath: partial.path))?[.size] as? NSNumber {
@@ -184,6 +185,7 @@ final class HubDownloader: ModelDownloading, @unchecked Sendable {
             let fresh = ContentHash(file: file)
             var hash = fresh
             if offset > 0 { try hash.update(contentsOf: partial) }
+            try Task.checkCancellation()
             var written = offset
             if offset < file.size || !manager.fileExists(atPath: partial.path) {
                 var request = URLRequest(url: url)
@@ -269,9 +271,11 @@ struct ContentHash {
     }
 
     mutating func update(contentsOf url: URL) throws {
+        try Task.checkCancellation()
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         while let chunk = try handle.read(upToCount: 8 << 20), !chunk.isEmpty {
+            try Task.checkCancellation()
             update(chunk)
         }
     }

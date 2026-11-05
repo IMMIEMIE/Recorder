@@ -6,37 +6,61 @@ enum LiveTranslatePlaybackTiming: String, Codable, CaseIterable {
     var title: String { self == .streaming ? "边说边播放" : "定稿后播放" }
 }
 
+enum LiveTranslateProvider: String, Codable, CaseIterable {
+    case qwenCloud, hyLocal
+}
+
+struct LiveTranslatePreferences: Codable, Equatable {
+    var language = "zh"
+    var audioOutput = false
+    var volume: Float = 0.8
+    var playbackTiming: LiveTranslatePlaybackTiming = .streaming
+}
+
 struct LiveTranslateConfiguration: Codable, Equatable {
     static let model = "qwen3.8-livetranslate-flash-realtime"
     static let languages = [("zh", "中文"), ("en", "English"), ("ja", "日本語"), ("ko", "한국어"),
                             ("fr", "Français"), ("de", "Deutsch"), ("es", "Español"), ("ru", "Русский")]
     var enabled = false
+    var provider: LiveTranslateProvider = .qwenCloud
     var endpoint = "wss://maas.qianwenaiapi.com/api-ws/v1/realtime"
     var language = "zh"
     var audioOutput = false
     var volume: Float = 0.8
     var playbackTiming: LiveTranslatePlaybackTiming = .streaming
+    var cloudPreferences = LiveTranslatePreferences()
+    var localPreferences = LiveTranslatePreferences()
     var outputModalities: [String] { audioOutput ? ["text", "audio"] : ["text"] }
-    enum CodingKeys: String, CodingKey { case enabled, endpoint, language, audioOutput, volume, playbackTiming }
+    var supportedLanguages: [(String, String)] { provider == .hyLocal ? [("zh", "中文"), ("en", "English")] : Self.languages }
+    var modelName: String { provider == .hyLocal ? "Hy-SimulMT Interleave Q4_K_M" : "Qwen3.8 LiveTranslate" }
+    enum CodingKeys: String, CodingKey { case enabled, provider, endpoint, language, audioOutput, volume, playbackTiming, cloudPreferences, localPreferences }
     init(enabled: Bool = false, endpoint: String = "wss://maas.qianwenaiapi.com/api-ws/v1/realtime", language: String = "zh",
-         audioOutput: Bool = false, volume: Float = 0.8, playbackTiming: LiveTranslatePlaybackTiming = .streaming) {
+         audioOutput: Bool = false, volume: Float = 0.8, playbackTiming: LiveTranslatePlaybackTiming = .streaming,
+         provider: LiveTranslateProvider = .qwenCloud) {
         self.enabled = enabled; self.endpoint = endpoint; self.language = language
+        self.provider = provider
         self.audioOutput = audioOutput; self.volume = volume; self.playbackTiming = playbackTiming
+        rememberActivePreferences()
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try c.decode(Bool.self, forKey: .enabled)
+        provider = try c.decodeIfPresent(LiveTranslateProvider.self, forKey: .provider) ?? .qwenCloud
         endpoint = try c.decode(String.self, forKey: .endpoint)
         language = try c.decode(String.self, forKey: .language)
         audioOutput = try c.decodeIfPresent(Bool.self, forKey: .audioOutput) ?? false
         volume = try c.decodeIfPresent(Float.self, forKey: .volume) ?? 0.8
         playbackTiming = try c.decodeIfPresent(LiveTranslatePlaybackTiming.self, forKey: .playbackTiming) ?? .streaming
+        cloudPreferences = try c.decodeIfPresent(LiveTranslatePreferences.self, forKey: .cloudPreferences) ?? LiveTranslatePreferences()
+        localPreferences = try c.decodeIfPresent(LiveTranslatePreferences.self, forKey: .localPreferences) ?? LiveTranslatePreferences()
+        rememberActivePreferences()
     }
     var languageName: String { Self.languages.first { $0.0 == language }?.1 ?? language }
     // Separate namespace from both ASR credentials and Chat Completions profiles.
     var keyAccount: String { "livetranslate:" + endpoint }
 
     func url(allowLocalhost: Bool = false) throws -> URL {
+        guard provider == .qwenCloud else { throw AIError.message("本地 Hy-SimulMT 不使用云端服务地址") }
         guard var parts = URLComponents(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
               let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil, parts.fragment == nil,
               parts.scheme == "wss" || (allowLocalhost && parts.scheme == "ws" && host == "127.0.0.1"),
@@ -52,10 +76,30 @@ struct LiveTranslateConfiguration: Codable, Equatable {
     }
     func normalized() throws -> Self {
         var result = self
+        if provider == .hyLocal {
+            guard supportedLanguages.contains(where: { $0.0 == language }), volume.isFinite, (0...1).contains(volume) else {
+                throw AIError.message("Hy-SimulMT 仅支持中英互译，请选择有效的目标语言和音量")
+            }
+            result.rememberActivePreferences()
+            return result
+        }
         var parts = URLComponents(url: try url(), resolvingAgainstBaseURL: false)!
         parts.query = nil; parts.host = parts.host?.lowercased()
         if parts.port == 443 { parts.port = nil }
         result.endpoint = parts.url!.absoluteString
+        result.rememberActivePreferences()
+        return result
+    }
+    private mutating func rememberActivePreferences() {
+        let settings = LiveTranslatePreferences(language: language, audioOutput: audioOutput, volume: volume, playbackTiming: playbackTiming)
+        if provider == .qwenCloud { cloudPreferences = settings } else { localPreferences = settings }
+    }
+    func selecting(_ provider: LiveTranslateProvider) -> Self {
+        var result = self
+        result.rememberActivePreferences(); result.provider = provider
+        let settings = provider == .qwenCloud ? result.cloudPreferences : result.localPreferences
+        result.language = settings.language; result.audioOutput = settings.audioOutput
+        result.volume = settings.volume; result.playbackTiming = settings.playbackTiming
         return result
     }
     static func load(defaults: UserDefaults = .standard) -> Self {

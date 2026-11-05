@@ -35,6 +35,8 @@ REPOS = {
     'mock/norange': FILES,
     'mock/corrupt': FILES,
     'mock/noconfig': {k: v for k, v in FILES.items() if k != 'config.json'},
+    'mock/gguf': {'model-Q4_K_M.gguf': (WEIGHTS, True),
+                  'model-Q8_0.gguf': (WEIGHTS + b'other quantization', True)},
 }
 log = []
 lock = threading.Lock()

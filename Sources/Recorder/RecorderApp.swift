@@ -155,9 +155,9 @@ struct MainView: View {
                                 HStack(alignment: .top, spacing: 18) {
                                     Text(String(format:"%02d:%02d", Int(item.seconds) / 60, Int(item.seconds) % 60)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).frame(width: 38).padding(.top, 6)
                                     VStack(alignment: .leading, spacing: 6) {
-                                        if item.incomplete { Text("连接结束，此句可能不完整").font(.caption2).foregroundStyle(.orange) }
+                                        if item.incomplete { Text("此段内容可能不完整").font(.caption2).foregroundStyle(.orange) }
                                         else if !item.sourceDone { Text("识别中…").font(.caption2).foregroundStyle(.secondary) }
-                                        Text(item.text).font(.system(size: 17)).lineSpacing(7).textSelection(.enabled)
+                                        if !item.text.isEmpty { Text(item.text).font(.system(size: 17)).lineSpacing(7).textSelection(.enabled) }
                                         if !item.translation.isEmpty {
                                             Text(item.translation).font(.system(size: 15)).lineSpacing(5).foregroundStyle(.secondary).textSelection(.enabled)
                                         } else if item.translating {
@@ -227,12 +227,13 @@ struct MainView: View {
                         Circle().fill(model.recording ? .red : accent).frame(width: 8, height: 8)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(model.statusTitle).font(.system(size: 13, weight: .medium))
-                            if ["loading", "warming", "connecting", "finalizing"].contains(model.state) {
+                            if ["loading", "warming", "connecting", "finalizing"].contains(model.state) || (model.liveEnabled && model.state == "idle") {
                                 Text(model.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                             }
                         }
                         Spacer()
                         if model.liveEnabled {
+                            if model.canLoadHyModel { Button("加载模型") { model.loadHyModel() } }
                             Button { model.toggle() } label: {
                                 Label(model.canStop ? "停止转写" : "开始转写", systemImage: model.canStop ? "stop.fill" : "mic.fill")
                             }.buttonStyle(.borderedProminent).tint(model.canStop ? .red : accent).disabled(!model.canStart && !model.canStop)

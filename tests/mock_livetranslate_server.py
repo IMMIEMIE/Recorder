@@ -9,6 +9,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 
 
+dropped = set()
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
@@ -84,10 +87,19 @@ class Handler(BaseHTTPRequestHandler):
             self.frame({'type': 'session.updated', 'session': session})
             sent = False
             total = 0
+            # /drop-once/<name>: the first connection of each name is cut after its first audio; later ones work.
+            drop = route.path.startswith('/drop-once/') and route.path not in dropped
+            dropped.add(route.path)
             while (event := self.read_frame()) is not None:
                 if event['type'] == 'input_audio_buffer.append':
                     total += len(base64.b64decode(event['audio']))
                     if route.path == '/disconnect':
+                        return
+                    if route.path == '/finished-early':
+                        self.frame({'type': 'session.finished'})
+                        return
+                    if drop:
+                        self.frame({'type': 'conversation.item.input_audio_transcription.delta', 'item_id': 'lost', 'delta': 'Before the break'})
                         return
                     if not sent:
                         # Translation precedes both its association and the source transcript.

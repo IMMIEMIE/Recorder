@@ -1,0 +1,78 @@
+{
+  "synthetic_fixture_only": true,
+  "fixture_sha256": "5d24d9070b5fd36cfa058421d958bd8c14d2721fee1ab0bc3a2d00dc2a1ae728",
+  "helper_sha256": "a9f9c5579c6eed6c3f4d9125713cfb65f1d14acbbb16d226560ef82a5004d159",
+  "metrics": {
+    "direction": "en-zh",
+    "audio_seconds": 79.7609375,
+    "fixture": "/Users/liu/Documents/Recorder/.build/hy-verification/english-validation.wav",
+    "realtime_factor": 0.2311436299755128,
+    "complete": true,
+    "max_queue_seconds": 0.4461875,
+    "first_translation_ms": 1890.8172500014189,
+    "committed_segments": 28,
+    "source_characters": 1339,
+    "translated_characters": 391,
+    "streamed_before_eof": true,
+    "duplicate_commits": false,
+    "invalid_interval": false,
+    "invalid_revision": false,
+    "warnings": 0,
+    "window_resets": 0,
+    "context_resets": 0,
+    "tail_padding_samples": 3825,
+    "recovery_attempts": 0,
+    "successful_recoveries": 0,
+    "eof_recovery_attempts": 0,
+    "successful_eof_recoveries": 0,
+    "peak_rss_bytes": 22893953024,
+    "unresolved_audio_ms": 0,
+    "skipped_untranslated_audio_ms": 0,
+    "duration_accounted": true,
+    "repeated_fixture": false
+  },
+  "percent_segments": [
+    {
+      "segment_id": 10,
+      "start_sample": 345600,
+      "end_sample": 396800,
+      "source": " meeting was originally scheduled for tuesday at 9 30",
+      "translation": "会议原本安排在周二9点半。"
+    },
+    {
+      "segment_id": 11,
+      "start_sample": 396800,
+      "end_sample": 435200,
+      "source": " but it has been moved to thursday at 11",
+      "translation": "但改到了周四11点。"
+    },
+    {
+      "segment_id": 12,
+      "start_sample": 435200,
+      "end_sample": 486400,
+      "source": " the cost did not increase by 15 it",
+      "translation": "成本并没有增加15%，"
+    },
+    {
+      "segment_id": 13,
+      "start_sample": 486400,
+      "end_sample": 537600,
+      "source": " decreased by 5 compared with the previous month",
+      "translation": "而是比上个月减少了5%。"
+    },
+    {
+      "segment_id": 14,
+      "start_sample": 537600,
+      "end_sample": 576000,
+      "source": " before we publish the software we must",
+      "translation": "在我们发布该软件之前，我们必须"
+    },
+    {
+      "segment_id": 15,
+      "start_sample": 576000,
+      "end_sample": 627200,
+      "source": " test both english to chinese and chinese to english if a",
+      "translation": "测试英译中和汉译英。如果一个"
+    }
+  ]
+}
