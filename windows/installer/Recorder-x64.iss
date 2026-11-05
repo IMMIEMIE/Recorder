@@ -5,7 +5,10 @@
   #error OutputDir is required
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.6.1"
+  #define AppVersion "0.6.12"
+#endif
+#ifndef CpuOnly
+  #define CpuOnly 0
 #endif
 #ifndef OutputName
   #define OutputName "Shengjian-" + AppVersion + "-windows-x64-preview-setup"
@@ -33,7 +36,7 @@ WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
 LicenseFile=..\..\LICENSE
-InfoBeforeFile=..\INSTALL-NOTES-x64.txt
+InfoBeforeFile={#PublishDir}\INSTALL-NOTES.txt
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
@@ -41,6 +44,10 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 Name: "desktopicon"; Description: "创建声笺 x64 桌面快捷方式"; Flags: unchecked
 [Files]
 Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+#if CpuOnly
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\runtime\cuda"
+#endif
 [Icons]
 Name: "{group}\声笺 Windows x64"; Filename: "{app}\Shengjian.exe"
 Name: "{autodesktop}\声笺 Windows x64"; Filename: "{app}\Shengjian.exe"; Tasks: desktopicon

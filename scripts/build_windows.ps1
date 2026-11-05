@@ -22,6 +22,7 @@ function Assert-X86([string]$path) {
 Push-Location $repoRoot
 try {
     $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
+    & "$PSScriptRoot/make_windows_icon.ps1"
     New-Item -ItemType Directory -Force $bootstrap, $publish | Out-Null
     if (-not (Test-Path (Join-Path $whisper '.git'))) {
         & git clone --depth 1 --branch v1.7.6 https://github.com/ggml-org/whisper.cpp.git $whisper

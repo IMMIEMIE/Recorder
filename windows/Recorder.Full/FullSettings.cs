@@ -4,6 +4,12 @@ namespace Recorder.Windows;
 
 public sealed partial record AppSettings
 {
+    public string RegularMode { get; set; } = "local";
+    public string LiveTargetLanguage { get; set; } = "";
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string RecognitionMode => Mode == "live" ? RegularMode : Mode;
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string EffectiveLiveTarget => (string.IsNullOrEmpty(LiveTargetLanguage) ? TargetLanguage : LiveTargetLanguage) switch { "zh-TW" => "zh", var target => target };
     public string AsrModelId { get; set; } = "ggml-org/Qwen3-ASR-1.7B-GGUF";
     public string AsrRevision { get; set; } = "";
     public string AsrEngine { get; set; } = "qwen";
@@ -13,6 +19,8 @@ public sealed partial record AppSettings
     public bool UseLocalFile { get; set; }
     public string Device { get; set; } = "auto";
     public string EndpointMode { get; set; } = "smart";
+    public int SmartSentenceSilenceMs { get; set; } = 600;
+    public int SmartFallbackSilenceMs { get; set; } = 1500;
     public int PreviewMs { get; set; } = 1200;
     public int MaxSegmentSeconds { get; set; } = 18;
     public string TranslationProvider { get; set; } = "local";
@@ -35,8 +43,9 @@ public sealed partial record AppSettings
     public int MainHeight { get; set; } = 700;
     public bool MainTopMost { get; set; }
     public ModelConfig RecognitionConfig() => new() { ModelId = AsrModelId, Revision = AsrRevision, LocalModelPath = UseLocalFile ? ModelPath : "", Language = Languages.RecognitionName(Language),
-        Provider = Mode == "local" ? "local" : "api", ApiProtocol = Mode == "stream" ? "qwen_realtime" : "openai", ApiBaseUrl = ApiBase, ApiModel = ApiModel,
-        EndpointMode = EndpointMode, EndpointSilenceMs = SilenceMs, PreviewIntervalMs = PreviewMs, MaxSegmentSeconds = MaxSegmentSeconds };
+        Provider = RecognitionMode == "local" ? "local" : "api", ApiProtocol = RecognitionMode == "stream" ? "qwen_realtime" : "openai", ApiBaseUrl = ApiBase, ApiModel = ApiModel,
+        EndpointMode = EndpointMode, EndpointSilenceMs = SilenceMs, SmartSentenceSilenceMs = SmartSentenceSilenceMs, SmartFallbackSilenceMs = SmartFallbackSilenceMs,
+        PreviewIntervalMs = PreviewMs, MaxSegmentSeconds = MaxSegmentSeconds };
     public TranslationConfig TranslationConfig() => new() { ModelId = TranslatorModelId, Revision = TranslatorRevision, Enabled = Translation, Provider = TranslationProvider, TargetLanguage = Languages.Target(TargetLanguage), ApiProfile = ApiProfileId };
     public RuntimeConfig RuntimeConfig() => new() { Device = Device, TranslatorDevice = Device, AsrEngine = AsrEngine, AsrProjectorPath = AsrProjector, AsrFilename = AsrFilename, AsrProjectorFilename = AsrProjectorFilename,
         TranslatorEngine = TranslatorEngine, TranslatorPath = TranslatorPath, TranslatorFilename = TranslatorFilename };
@@ -54,18 +63,20 @@ internal static class FullSettingsStore
         AppSettings settings = new();
         try { settings = File.Exists(ui) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(ui)) ?? new() : File.Exists(legacy) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(legacy)) ?? new() : new(); }
         catch (Exception ex) { StartupError = "界面设置未加载：" + ex.Message; }
+        settings.LiveTargetLanguage = settings.EffectiveLiveTarget;
         try
         {
             var config = store.Load("config.json", settings.RecognitionConfig()); var translation = store.Load("translation.json", settings.TranslationConfig()); var runtime = store.Load("runtime.json", settings.RuntimeConfig());
             settings.AsrModelId = config.ModelId; settings.AsrRevision = config.Revision; settings.UseLocalFile = config.LocalModelPath.Length > 0; settings.Language = config.Language;
-            if (settings.Mode != "live") settings.Mode = config.Provider == "local" ? "local" : config.ApiProtocol == "qwen_realtime" ? "stream" : "api";
+            settings.RegularMode = config.Provider == "local" ? "local" : config.ApiProtocol == "qwen_realtime" ? "stream" : "api";
+            if (settings.Mode != "live") settings.Mode = settings.RegularMode;
             settings.ApiBase = config.ApiBaseUrl.Length > 0 ? config.ApiBaseUrl : settings.ApiBase; settings.ApiModel = config.ApiModel.Length > 0 ? config.ApiModel : settings.ApiModel;
             settings.SilenceMs = config.EndpointSilenceMs; settings.EndpointMode = config.EndpointMode; settings.PreviewMs = config.PreviewIntervalMs; settings.MaxSegmentSeconds = config.MaxSegmentSeconds;
+            settings.SmartSentenceSilenceMs = config.SmartSentenceSilenceMs; settings.SmartFallbackSilenceMs = config.SmartFallbackSilenceMs;
             settings.Device = runtime.Device; settings.AsrEngine = runtime.AsrEngine; settings.AsrProjector = runtime.AsrProjectorPath;
             settings.AsrFilename = runtime.AsrFilename; settings.AsrProjectorFilename = runtime.AsrProjectorFilename; settings.TranslatorFilename = runtime.TranslatorFilename;
             settings.TranslatorPath = runtime.TranslatorPath; settings.TranslatorEngine = runtime.TranslatorEngine;
             settings.Translation = translation.Enabled; settings.TranslationProvider = translation.Provider; settings.TargetLanguage = TargetCode(translation.TargetLanguage);
-            if (settings.Mode == "live" && settings.TargetLanguage == "zh-TW") settings.TargetLanguage = "zh";
             settings.TranslatorModelId = translation.ModelId; settings.TranslatorRevision = translation.Revision; settings.ApiProfileId = translation.ApiProfile;
             string profileMigration = Path.Combine(Root, "profiles/.legacy-migrated");
             if (translation.Provider == "api" && settings.TranslationSecret.Length > 0 && !File.Exists(profileMigration))

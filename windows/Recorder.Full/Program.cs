@@ -17,6 +17,8 @@ internal static class Program
             if (!Environment.Is64BitProcess || System.Runtime.InteropServices.RuntimeInformation.OSArchitecture != System.Runtime.InteropServices.Architecture.X64 || !OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) throw new PlatformNotSupportedException("完整版需要 Windows 11 x64；旧版 Windows 请使用 x86 兼容版。");
             if (args.Length > 0) { var error = Path.Combine(SettingsStore.Root, "verification-error.txt"); if (File.Exists(error)) File.Delete(error); }
             if (args.Length > 0 && args[0] == "--verify-file") return Task.Run(() => VerifyAsync(args)).GetAwaiter().GetResult();
+            var appearanceSettings = SettingsStore.Load();
+            Theme.Initialize(appearanceSettings.Appearance);
             if (args.Length > 0 && args[0] == "--smoke")
             {
                 Directory.CreateDirectory(args[1]);
@@ -28,10 +30,10 @@ internal static class Program
             }
             using var mutex = new Mutex(true, "Local\\Shengjian.Windows.x64", out bool first);
             if (!first) return 0;
-            Application.Run(new MainForm(SettingsStore.Load())); return 0;
+            Application.Run(new MainForm(appearanceSettings)); return 0;
         }
         catch (Exception ex) { if (args.Length > 0) { Directory.CreateDirectory(SettingsStore.Root); File.WriteAllText(Path.Combine(SettingsStore.Root, "verification-error.txt"), ex.ToString()); } else MessageBox.Show(ex.Message, "声笺", MessageBoxButtons.OK, MessageBoxIcon.Error); return 1; }
-        finally { DesktopBackend.ShutdownAsync().AsTask().GetAwaiter().GetResult(); }
+        finally { Theme.Shutdown(); DesktopBackend.ShutdownAsync().AsTask().GetAwaiter().GetResult(); }
     }
     private static void ReportUiError(Exception error)
     {

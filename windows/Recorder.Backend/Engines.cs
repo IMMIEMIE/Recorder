@@ -47,6 +47,11 @@ public sealed class NativeEngine(string runtimeRoot, Func<string, IReadOnlyList<
         foreach (var device in devices)
         {
             NativeClient? candidate = null;
+            if (device == "cuda" && !File.Exists(Path.Combine(runtimeRoot, device, "recorder-native.exe")))
+            {
+                if (next.Device == "auto") continue;
+                throw new InvalidOperationException("当前安装包不包含 CUDA 推理组件。请使用标准版开启 NVIDIA GPU 加速，或将运行设备改为 CPU / 自动。");
+            }
             var directories = dllDirectories == null ? [] : dllDirectories(device);
             if (directories == null)
             {

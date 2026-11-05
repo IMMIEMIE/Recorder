@@ -39,6 +39,7 @@ public sealed class TranslationPlanner
 {
     private string session = "", carry = ""; private int anchor;
     private static readonly Regex sentenceEnd = new("(?:[。！？!?；;…]|\\.(?=\\s|$))[」』”’\"')）\\]]*"), punctuation = new("[。！？!?；;….]+$");
+    public string Preview(string session, string text) => TranslationText.Join(this.session == session ? carry : "", text.Trim());
     public TranslationUnit? Add(string session, int segment, string raw, bool forced)
     {
         if (this.session != session) { this.session = session; carry = ""; anchor = 0; }

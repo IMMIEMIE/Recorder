@@ -3,8 +3,9 @@ using System.Threading.Channels;
 using Recorder.Backend;
 namespace Recorder.Windows;
 
-public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
+public sealed class RecordingSession(AppSettings settings) : IAsyncDisposable
 {
+    private readonly AppSettings config = settings.Mode == "live" ? settings with { TargetLanguage = settings.EffectiveLiveTarget } : settings with { };
     private readonly DesktopBackend backend = DesktopBackend.Shared;
     private readonly string id = Guid.NewGuid().ToString("N");
     private readonly CancellationTokenSource cancel = new(), inputCancel = new();
@@ -21,6 +22,8 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
     private StreamingClient? stream;
     private Task? fileTask, sender;
     private long audioBytes, sequence;
+    private long streamPreviewRevision, previewRevision = -1, displayedPreviewRevision = -1;
+    private int previewSegment = -1;
     private int stopping;
     private bool started;
     private volatile bool acceptResults = true;
@@ -28,6 +31,7 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
     public Task Completion => complete.Task;
     public event Action<TranscriptRow>? Row;
     public event Action<string>? Partial;
+    public event Action<string>? PartialTranslation;
     public event Action<string>? Notice;
     public event Action<float>? Level;
     public event Action? FileEnded;
@@ -41,7 +45,16 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
         else await backend.SuspendAsync(cancel.Token);
         if (config.Mode is "stream" or "live")
         {
-            stream = new(config); stream.Partial += text => Partial?.Invoke(text);
+            stream = new(config);
+            if (config.Mode == "live") stream.Partial += text => { if (acceptResults) Partial?.Invoke(text); };
+            else stream.PartialRow += row =>
+            {
+                if (!acceptResults || !int.TryParse(row.Id.AsSpan(4), out int number)) return;
+                var message = DesktopBackend.Command("asr_stream_partial", id);
+                message["segment_id"] = number; message["revision"] = ++streamPreviewRevision;
+                message["start_sample"] = (long)(row.Seconds * 16000); message["text"] = row.Text;
+                _ = backend.Channel.ControlAsync(message);
+            };
             stream.Row += row =>
             {
                 if (!acceptResults) return;
@@ -128,12 +141,35 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
         string type = (string)message["type"]!;
         switch (type)
         {
-            case "partial": if (acceptResults) Partial?.Invoke((string?)message["text"] ?? ""); break;
+            case "partial":
+                if (!acceptResults) break;
+                int partialSegment = checked((int)BackendJson.Integer(message["segment_id"]));
+                if (previewSegment != partialSegment)
+                {
+                    displayedPreviewRevision = -1;
+                    PartialTranslation?.Invoke("");
+                }
+                previewSegment = partialSegment;
+                previewRevision = BackendJson.Integer(message["revision"]);
+                Partial?.Invoke((string?)message["text"] ?? ""); break;
+            case "translation_preview":
+                long sourceRevision = BackendJson.Integer(message["source_revision"]);
+                if (!acceptResults || previewSegment != BackendJson.Integer(message["segment_id"]) || sourceRevision > previewRevision || sourceRevision < displayedPreviewRevision) break;
+                // A slow translator may finish an earlier snapshot of this sentence. Keep useful text
+                // until a newer snapshot arrives, but never let an older translation overwrite it.
+                displayedPreviewRevision = sourceRevision;
+                PartialTranslation?.Invoke((string?)message["text"] ?? ""); break;
             case "final":
                 if (!acceptResults) break;
                 int segment = (int)message["segment_id"]!;
                 var row = new TranscriptRow(segment.ToString(), (long?)message["start_sample"] / 16000.0 ?? 0, (string?)message["text"] ?? "");
-                rows[segment] = row; Row?.Invoke(row); Partial?.Invoke(""); break;
+                rows[segment] = row; Row?.Invoke(row);
+                if (previewSegment == segment || previewSegment < 0)
+                {
+                    previewSegment = -1; previewRevision = displayedPreviewRevision = -1;
+                    PartialTranslation?.Invoke(""); Partial?.Invoke("");
+                }
+                break;
             case "translation":
                 int target = (int)message["segment_id"]!, unit = checked((int)Recorder.Backend.BackendJson.Integer(message["unit_id"]));
                 if (!rows.TryGetValue(target, out var original)) break;
@@ -176,6 +212,7 @@ public sealed class RecordingSession(AppSettings config) : IAsyncDisposable
     public void Cancel()
     {
         acceptResults = false;
+        PartialTranslation?.Invoke("");
         cancel.Cancel(); inputCancel.Cancel(); outgoing.Writer.TryComplete();
         if (started && config.Mode != "live") _ = backend.Channel.ControlAsync(DesktopBackend.Command("cancel_session", id));
         else if (!started) _ = backend.Channel.ControlAsync(DesktopBackend.Command("cancel_operation"));

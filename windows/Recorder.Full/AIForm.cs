@@ -2,7 +2,7 @@ using Recorder.Backend;
 namespace Recorder.Windows;
 internal sealed class AIForm : Form
 {
-    private readonly RichTextBox output = new() { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.White, Font = Theme.Body(11) };
+    private readonly RichTextBox output = new() { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Theme.Surface, ForeColor = Theme.Ink, Font = Theme.Body(11) };
     private readonly TextBox question = new() { Dock = DockStyle.Fill, Text = "总结主要内容、结论和待办事项。" };
     private readonly Label status = Theme.Label("选择服务后发送。", 9, Theme.Muted);
     private readonly ComboBox profiles = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 320 };

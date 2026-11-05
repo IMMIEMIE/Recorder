@@ -35,6 +35,8 @@ public sealed record ModelConfig : IValidated
     public int PreviewIntervalMs { get; init; } = 1200;
     public string EndpointMode { get; init; } = "smart";
     public int EndpointSilenceMs { get; init; } = 1000;
+    public int SmartSentenceSilenceMs { get; init; } = 600;
+    public int SmartFallbackSilenceMs { get; init; } = 1500;
     public int MaxSegmentSeconds { get; init; } = 18;
     public string Provider { get; init; } = "local";
     public string ApiBaseUrl { get; init; } = "";
@@ -45,6 +47,8 @@ public sealed record ModelConfig : IValidated
         if (SchemaVersion != 1) throw new InvalidDataException("不支持的识别配置版本。");
         if (!Languages.Recognition.Contains(Language)) throw new InvalidDataException("不支持的识别语言。");
         if (PreviewIntervalMs is < 800 or > 10000 || EndpointSilenceMs is < 300 or > 2000 || MaxSegmentSeconds is < 5 or > 25) throw new InvalidDataException("识别参数超出允许范围。");
+        if (SmartSentenceSilenceMs is < 300 or > 1200 || SmartFallbackSilenceMs is < 800 or > 3000 || SmartFallbackSilenceMs < SmartSentenceSilenceMs + 200)
+            throw new InvalidDataException("完整句停顿须为 300–1200 毫秒，兜底停顿须为 800–3000 毫秒，且至少比完整句停顿长 200 毫秒。");
         if (EndpointMode is not ("smart" or "fixed") || Provider is not ("local" or "api") || ApiProtocol is not ("openai" or "qwen_realtime")) throw new InvalidDataException("不支持的识别模式。");
         if (Provider == "local" && LocalModelPath.Length == 0) ModelAddress.ValidateId(ModelId);
         if (Provider == "api" && ApiProtocol == "openai") { ServiceAddress.Endpoint(ApiBaseUrl, "/audio/transcriptions"); if (string.IsNullOrWhiteSpace(ApiModel) || ApiModel.Any(char.IsControl)) throw new InvalidDataException("请填写有效的音频转写模型名称。"); }

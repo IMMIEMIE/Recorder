@@ -35,6 +35,7 @@ public sealed class CudaRuntime : IDisposable
     }
     public string InstallDirectory => Path.Combine(dataRoot, "runtime", Lock.Id);
     public long DownloadSize => Lock.Packages.Sum(p => p.Size);
+    public bool KernelsAvailable => File.Exists(Path.Combine(bundledDirectory, "recorder-native.exe"));
     private IEnumerable<CudaRuntimeFile> Libraries => Lock.Packages.SelectMany(p => p.Files).Where(f => f.Name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
     /// <summary>An offline "full" package may still bundle the libraries next to the CUDA worker.</summary>
     public bool Bundled => Libraries.All(f => File.Exists(Path.Combine(bundledDirectory, f.Name)));

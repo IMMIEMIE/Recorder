@@ -9,6 +9,8 @@ public sealed partial class BackendCore
         public readonly string Session = session, Source = source;
         public readonly int Segment = segment;
         public readonly long Unit = unit;
+        public bool Preview;
+        public long SourceRevision;
         public string Target = "", Text = ""; public int Revision; public bool Cancelled;
         public long Started, Sent; public CancellationTokenSource? Cancel;
         public IAsyncEnumerator<string>? Stream; public ITranslatorEngine? ApiEngine;
@@ -17,6 +19,8 @@ public sealed partial class BackendCore
     private readonly Queue<TranslationJob> translations = new();
     private readonly List<(string Target, string Session, string Source, string Text)> context = new();
     private TranslationJob? translating;
+    // One replaceable preview slot; finalized units retain their separate bounded queue.
+    private TranslationJob? pendingTranslationPreview, latestTranslationPreview;
     private EngineModel? activeTranslator;
     private long nextUnit;
     private string overloadSession = "";
@@ -26,9 +30,36 @@ public sealed partial class BackendCore
     private Func<TranslationConfig, ITranslatorEngine>? apiTranslationFactory;
     public void SetApiTranslationFactory(Func<TranslationConfig, ITranslatorEngine> factory) { lock (gate) apiTranslationFactory = factory; }
     private bool CanTranslate => translation.Enabled && (translation.Provider == "local" ? translator.IsLoaded : apiTranslationFactory != null);
-    private partial bool HasTranslation => translating != null || translations.Count > 0;
+    private partial bool HasTranslation => translating != null || translations.Count > 0 || pendingTranslationPreview != null;
+    private void PlanTranslationPreview(string sessionId, int segmentId, long revision, string text)
+    {
+        if (!CanTranslate || translation.Provider != "local" || state != "recording") return;
+        string source = planner.Preview(sessionId, text);
+        if (TranslationText.AlreadyInTarget(source, translation.TargetLanguage)) { ClearTranslationPreview(); return; }
+        if (latestTranslationPreview is { } same && same.Session == sessionId && same.Segment == segmentId && same.Source == source && !same.Cancelled)
+        {
+            same.SourceRevision = revision; if (same.Text.Length > 0) TranslationEvent(same, false); return;
+        }
+        // Let a same-segment generation finish; otherwise slower CPUs never reach their first visible token.
+        // Replace just the pending snapshot. Crossing a segment boundary invalidates the old generation.
+        if (latestTranslationPreview is { } previous && (previous.Session != sessionId || previous.Segment != segmentId)) ClearTranslationPreview();
+        var job = new TranslationJob(sessionId, segmentId, 0, source) { Preview = true, SourceRevision = revision };
+        pendingTranslationPreview = latestTranslationPreview = job;
+        Wake();
+    }
+    private void ClearTranslationPreview(string? sessionId = null, int? segmentId = null)
+    {
+        bool Matches(TranslationJob job) => (sessionId == null || job.Session == sessionId) && (segmentId == null || job.Segment == segmentId);
+        if (latestTranslationPreview is { } latest && Matches(latest))
+        {
+            TranslationEvent(latest, true, ""); latestTranslationPreview = null;
+        }
+        if (pendingTranslationPreview is { } pending && Matches(pending)) pendingTranslationPreview = null;
+        if (translating is { Preview: true } current && Matches(current)) current.Cancelled = true;
+        Wake();
+    }
     partial void PlanTranslation(string sessionId, int segmentId, string text, bool forcedCut)
-    { if (CanTranslate) QueueUnit(sessionId, planner.Add(sessionId, segmentId, text, forcedCut)); }
+    { ClearTranslationPreview(sessionId, segmentId); if (CanTranslate) QueueUnit(sessionId, planner.Add(sessionId, segmentId, text, forcedCut)); }
     partial void FlushTranslation(string sessionId) { if (CanTranslate) QueueUnit(sessionId, planner.Flush(sessionId)); }
     private void QueueUnit(string sessionId, TranslationUnit? unit)
     {
@@ -37,16 +68,31 @@ public sealed partial class BackendCore
         while (translations.Count >= 4) { EndTranslation(translations.Dequeue()); dropped = true; }
         if (dropped && overloadSession != sessionId) { overloadSession = sessionId; Error("翻译跟不上语速，已跳过部分句子的译文；原文不受影响。"); }
         var job = new TranslationJob(sessionId, unit.AnchorSegment, ++nextUnit, unit.Source);
+        if (translating is { Preview: true, Cancelled: false } current)
+        {
+            // A final unit takes priority, but a newer segment's latest preview can resume afterwards.
+            if (latestTranslationPreview == current)
+                pendingTranslationPreview = latestTranslationPreview = new TranslationJob(current.Session, current.Segment, 0, current.Source) { Preview = true, SourceRevision = current.SourceRevision };
+            current.Cancelled = true;
+        }
         TranslationEvent(job, false); translations.Enqueue(job); Wake();
     }
     private void TranslationEvent(TranslationJob job, bool done, string? text = null)
     {
+        if (job.Preview)
+        {
+            if (latestTranslationPreview is not { } latest || job.Cancelled || job.Session != latest.Session || job.Segment != latest.Segment) return;
+            Emit("translation_preview", new() { ["session_id"] = job.Session, ["segment_id"] = job.Segment, ["source_revision"] = job.SourceRevision,
+                ["source_text"] = job.Source, ["text"] = text ?? job.Text.Trim(), ["done"] = done });
+            return;
+        }
         Emit("translation", new() { ["session_id"] = job.Session, ["segment_id"] = job.Segment, ["unit_id"] = job.Unit, ["revision"] = job.Revision,
             ["text"] = text ?? job.Text.Trim(), ["done"] = done, ["skipped"] = done && string.IsNullOrEmpty(text), ["elapsed_ms"] = job.Started == 0 ? 0 : (long)Stopwatch.GetElapsedTime(job.Started).TotalMilliseconds });
     }
     private void EndTranslation(TranslationJob job, string text = "") { job.Revision++; TranslationEvent(job, true, text); }
     private void DropTranslations()
     {
+        ClearTranslationPreview();
         while (translations.TryDequeue(out var job)) EndTranslation(job);
         if (translating is { } current) { current.Cancelled = true; try { current.Cancel?.Cancel(); } catch (AggregateException ex) { DiagnosticLog.Write("translation-cancel", ex); } }
         context.Clear(); Wake();
@@ -71,7 +117,15 @@ public sealed partial class BackendCore
     private partial async Task TranslationStepAsync()
     {
         TranslationJob? job;
-        lock (gate) { if (translating == null && translations.Count > 0) translating = translations.Dequeue(); job = translating; }
+        lock (gate)
+        {
+            if (translating == null)
+            {
+                if (translations.Count > 0) translating = translations.Dequeue();
+                else if (pendingTranslationPreview is { } pending) { translating = pending; pendingTranslationPreview = null; }
+            }
+            job = translating;
+        }
         if (job == null) return;
         try
         {
@@ -82,11 +136,13 @@ public sealed partial class BackendCore
                 IReadOnlyList<ChatMessage> messages; ITranslatorEngine engine;
                 lock (gate)
                 {
+                    if (job.Cancelled || !CanTranslate) { job.Cancelled = true; throw new OperationCanceledException(); }
                     job.Target = translation.TargetLanguage; job.Started = job.Sent = Stopwatch.GetTimestamp(); job.Cancel = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
                     engine = translation.Provider == "local" ? translator : job.ApiEngine = apiTranslationFactory!(translation);
                     messages = TranslationText.Messages(runtime.TranslatorEngine, job.Source, job.Target, context.Where(p => p.Session == job.Session && p.Target == job.Target).Select(p => (p.Source, p.Text)));
                 }
-                job.Stream = engine.StreamAsync(messages, TranslationText.MaxTokens(job.Source), job.Cancel.Token).GetAsyncEnumerator();
+                int maxTokens = TranslationText.MaxTokens(job.Source);
+                job.Stream = engine.StreamAsync(messages, job.Preview ? Math.Min(256, maxTokens) : maxTokens, job.Cancel.Token).GetAsyncEnumerator();
             }
             // One token per step lets the pump run final/load/stop jobs first.
             if (await job.Stream.MoveNextAsync())
@@ -100,7 +156,7 @@ public sealed partial class BackendCore
             else
             {
                 string result = job.Text.Trim(); if (TranslationText.Same(result, job.Source)) result = "";
-                lock (gate) if (result.Length > 0 && !job.Cancelled) { context.Add((job.Target, job.Session, job.Source, result)); while (context.Count > 2) context.RemoveAt(0); }
+                lock (gate) if (result.Length > 0 && !job.Cancelled && !job.Preview) { context.Add((job.Target, job.Session, job.Source, result)); while (context.Count > 2) context.RemoveAt(0); }
                 await FinishTranslationAsync(job, job.Cancelled ? "" : result);
             }
         }
@@ -115,7 +171,7 @@ public sealed partial class BackendCore
     private async Task FinishTranslationAsync(TranslationJob job, string result = "")
     {
         try { await CloseTranslationAsync(job); }
-        finally { lock (gate) { if (translating == job) translating = null; EndTranslation(job, result); } }
+        finally { lock (gate) { if (translating == job) translating = null; job.Text = result; EndTranslation(job, result); } }
     }
     private partial async Task LoadTranslatorAsync(TranslationConfig next, RuntimeConfig nextRuntime, EngineModel? resolved)
     {

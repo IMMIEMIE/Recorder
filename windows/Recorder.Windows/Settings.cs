@@ -6,6 +6,8 @@ namespace Recorder.Windows;
 
 public sealed partial record AppSettings
 {
+    private string appearance = "system";
+    public string Appearance { get => appearance; set => appearance = value is "light" or "dark" ? value : "system"; }
     public string Mode { get; set; } = "local";
     public string Language { get; set; } = "auto";
     public int SilenceMs { get; set; } = 1000;

@@ -6,6 +6,7 @@ internal sealed class SettingsForm : Form
     private readonly ComboBox mode = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox language = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox target = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private readonly ComboBox appearance = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly NumericUpDown silence = new() { Minimum = 200, Maximum = 6000, Increment = 100, Dock = DockStyle.Fill };
     private readonly CheckBox translate = new() { Text = "对定稿句子启用 API 翻译", AutoSize = true };
     private readonly TextBox modelPath, apiBase, apiModel, apiKey, streamKey, translationBase, translationModel, translationKey, liveEndpoint, liveKey;
@@ -16,6 +17,7 @@ internal sealed class SettingsForm : Form
     private static readonly string[] Modes = ["local", "api", "stream", "live"];
     private static readonly string[] Languages = ["auto", "zh", "en", "ja", "ko", "fr", "de", "es", "ru"];
     private static readonly string[] Targets = ["zh", "zh-TW", "en", "ja", "ko", "fr", "de", "es", "ru"];
+    private static readonly string[] Appearances = ["system", "light", "dark"];
     private static TextBox Field(string value, bool secret = false) => new() { Text = value, Dock = DockStyle.Fill, UseSystemPasswordChar = secret, Margin = new(0, 5, 0, 5) };
     public SettingsForm(AppSettings current)
     {
@@ -27,6 +29,8 @@ internal sealed class SettingsForm : Form
         language.SelectedIndex = Math.Max(0, Array.IndexOf(Languages, settings.Language));
         target.Items.AddRange(["简体中文", "繁體中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]);
         target.SelectedIndex = Math.Max(0, Array.IndexOf(Targets, settings.TargetLanguage));
+        appearance.Items.AddRange(["跟随系统", "浅色", "深色"]);
+        appearance.SelectedIndex = Math.Max(0, Array.IndexOf(Appearances, settings.Appearance));
         silence.Value = Math.Clamp(settings.SilenceMs, 200, 6000); translate.Checked = settings.Translation;
         modelPath = Field(settings.ModelPath); apiBase = Field(settings.ApiBase); apiModel = Field(settings.ApiModel); apiKey = Field("", true);
         streamKey = Field("", true); translationBase = Field(settings.TranslationBase); translationModel = Field(settings.TranslationModel);
@@ -72,6 +76,21 @@ internal sealed class SettingsForm : Form
         Note(l, "模型：qwen3.8-livetranslate-flash-realtime\n在「转写」页选择 LiveTranslate 后生效。\n目标语言沿用「翻译」页的选择，繁体中文会使用 zh。\n此版本仅接收原文和译文，暂不支持译音播放。\n音频持续上传；密钥须匹配服务地址、区域和工作空间。");
         var p = l;
         Note(p, "API Key 由 Windows 当前用户加密，留空保存会保留已有密钥。\n更换服务地址后必须重新填写对应密钥。\n程序不保存录音或文字历史；复制和导出由你主动触发。\n关闭软件后，未导出的文字会被清除。\n系统音频采集包含所有应用的声音，建议使用耳机。\n\n设置和模型目录：\n" + SettingsStore.Root);
+        Page(tabs, "外观", out var appearancePage);
+        Add(appearancePage, "界面外观", appearance);
+        var appearanceHint = Theme.Label("默认跟随 Windows 的应用颜色模式。外观保存后立即生效。", 9, Theme.Muted);
+        appearanceHint.MaximumSize = new(380, 0); Add(appearancePage, "", appearanceHint);
+        var applyAppearance = Theme.Button("应用外观", true); Add(appearancePage, "", applyAppearance);
+        applyAppearance.Click += (_, _) =>
+        {
+            try
+            {
+                string value = Appearances[appearance.SelectedIndex];
+                SettingsStore.Save(SettingsStore.Load() with { Appearance = value });
+                settings.Appearance = value; Theme.SetAppearance(value); appearanceHint.Text = "外观已保存并应用。";
+            }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "外观未保存", MessageBoxButtons.OK, MessageBoxIcon.Information); }
+        };
         void ShowRow(Control control, bool visible) {
             int row = a.GetRow(control);
             foreach (Control child in a.Controls) if (a.GetRow(child) == row) child.Visible = visible;
@@ -98,7 +117,7 @@ internal sealed class SettingsForm : Form
     }
     private static TabPage Page(TabControl tabs, string title, out TableLayoutPanel grid)
     {
-        var page = new TabPage(title) { BackColor = Color.White, Padding = new(20), AutoScroll = true };
+        var page = new TabPage(title) { BackColor = Theme.Surface, Padding = new(20), AutoScroll = true };
         grid = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
         grid.ColumnStyles.Add(new(SizeType.Absolute, 140)); grid.ColumnStyles.Add(new(SizeType.Percent, 100));
         page.Controls.Add(grid); tabs.TabPages.Add(page); return page;
@@ -117,7 +136,7 @@ internal sealed class SettingsForm : Form
     {
         try
         {
-            var next = settings with { Mode = Modes[mode.SelectedIndex], Language = Languages[language.SelectedIndex], SilenceMs = (int)silence.Value,
+            var next = settings with { Appearance = Appearances[appearance.SelectedIndex], Mode = Modes[mode.SelectedIndex], Language = Languages[language.SelectedIndex], SilenceMs = (int)silence.Value,
                 ModelPath = modelPath.Text.Trim(), ApiBase = apiBase.Text.Trim().TrimEnd('/'), ApiModel = apiModel.Text.Trim(),
                 Translation = translate.Checked, TargetLanguage = Targets[target.SelectedIndex], TranslationBase = translationBase.Text.Trim().TrimEnd('/'),
                 TranslationModel = translationModel.Text.Trim(), LiveEndpoint = liveEndpoint.Text.Trim() };
@@ -132,7 +151,7 @@ internal sealed class SettingsForm : Form
             next.StreamingSecret = Secret(streamKey, settings.StreamingSecret, false);
             next.TranslationSecret = Secret(translationKey, settings.TranslationSecret, next.TranslationBase != settings.TranslationBase);
             next.LiveSecret = Secret(liveKey, settings.LiveSecret, next.LiveEndpoint != settings.LiveEndpoint);
-            SettingsStore.Save(next); DialogResult = DialogResult.OK; Close();
+            SettingsStore.Save(next); Theme.SetAppearance(next.Appearance); DialogResult = DialogResult.OK; Close();
         }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "设置未保存", MessageBoxButtons.OK, MessageBoxIcon.Information); }
     }

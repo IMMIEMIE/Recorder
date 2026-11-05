@@ -30,6 +30,7 @@ public sealed class StreamingClient : IAsyncDisposable
     public event Action<TranscriptRow>? Row;
 #if FULL_BACKEND
     public event Action<JsonNode, LiveTranscript>? LiveEvent;
+    public event Action<TranscriptRow>? PartialRow;
 #endif
     public Task Completion => finished.Task;
     public StreamingClient(AppSettings config) { this.config = config; live = config.Mode == "live"; }
@@ -186,7 +187,19 @@ public sealed class StreamingClient : IAsyncDisposable
                                 if (id > 0) Row?.Invoke(new("asr:" + id, Math.Max(0, (double?)sentence["begin_time"] ?? 0) / 1000, text));
 #endif
                             }
-                            else Partial?.Invoke(text);
+                            else
+                            {
+#if FULL_BACKEND
+                                var id = (int?)sentence["sentence_id"] ?? -1;
+                                if (id >= 0 && id < int.MaxValue && !finalIds.Contains(id))
+                                {
+                                    PartialRow?.Invoke(new("asr:" + (id + 1), Math.Max(0, (double?)sentence["begin_time"] ?? 0) / 1000, text, Final: false));
+                                    Partial?.Invoke(text);
+                                }
+#else
+                                Partial?.Invoke(text);
+#endif
+                            }
                             break;
                     }
                 }

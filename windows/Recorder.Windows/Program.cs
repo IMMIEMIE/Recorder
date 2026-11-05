@@ -9,7 +9,8 @@ internal static class Program
         Application.ThreadException += (_, e) => MessageBox.Show(e.Exception.Message, "声笺", MessageBoxButtons.OK, MessageBoxIcon.Error);
         using var mutex = new Mutex(true, "Local\\Shengjian.Windows.x86", out var owns);
         if (!owns) { MessageBox.Show("声笺已在运行，请从任务栏或托盘打开。", "声笺"); return; }
-        try { Application.Run(new MainForm(SettingsStore.Load())); }
+        try { var settings = SettingsStore.Load(); Theme.Initialize(settings.Appearance); Application.Run(new MainForm(settings)); }
         catch (Exception ex) { MessageBox.Show(ex.Message, "声笺启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        finally { Theme.Shutdown(); }
     }
 }

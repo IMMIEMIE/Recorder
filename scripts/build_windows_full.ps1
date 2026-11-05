@@ -3,15 +3,20 @@ param(
     [switch]$SkipNative, [switch]$SkipTests, [switch]$SkipInstaller, [string]$InnoCompiler,
     # Offline package: also ship NVIDIA cudart/cuBLAS (~790 MB). By default the app downloads them on first CUDA use.
     [switch]$BundleCudaRuntime,
+    # Smaller self-contained edition for CPU/cloud use; no NVIDIA acceleration kernels.
+    [switch]$CpuOnly,
     # Uncompressed size budget for the default package; exceeding it fails the build so regressions are noticed.
-    [int]$MaxPackageMiB = 700
+    [int]$MaxPackageMiB = 300
 )
-$version = '0.6.1'
-$suffix = if ($BundleCudaRuntime) { 'preview-offline' } else { 'preview' }
+$version = '0.6.12'
+if ($CpuOnly -and $BundleCudaRuntime) { throw '-CpuOnly cannot be combined with -BundleCudaRuntime.' }
+$suffix = if ($CpuOnly) { 'preview-cpu' } elseif ($BundleCudaRuntime) { 'preview-offline' } else { 'preview' }
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $bootstrap = Join-Path $repoRoot '.bootstrap'
-$publish = Join-Path $repoRoot 'dist/windows-x64'
+$publish = [IO.Path]::GetFullPath((Join-Path $repoRoot $(if ($CpuOnly) { 'dist/windows-x64-cpu' } else { 'dist/windows-x64' })))
+$expectedPublishRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'dist')) + [IO.Path]::DirectorySeparatorChar
+if (-not $publish.StartsWith($expectedPublishRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Publish directory must be inside this repository/dist.' }
 $dotnet = Join-Path $bootstrap 'dotnet10/dotnet.exe'
 if (-not (Test-Path -LiteralPath $dotnet)) { $dotnet = (Get-Command dotnet -ErrorAction Stop).Source }
 function Run([string]$Name, [scriptblock]$Action) { & $Action; if ($LASTEXITCODE -ne 0) { throw "$Name failed ($LASTEXITCODE)" } }
@@ -22,12 +27,16 @@ function Assert-X64([string]$Path) {
 Push-Location $repoRoot
 try {
     $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
-    if (-not $SkipNative) { & "$PSScriptRoot/build_windows_native.ps1" -BundleCudaRuntime:$BundleCudaRuntime }
-    foreach ($device in @('cpu','cuda')) { foreach ($binary in @('recorder-native.exe','recorder-whisper.dll','recorder-vad.dll','recorder-audio.dll')) { Assert-X64 (Join-Path $bootstrap "runtime-x64/$device/$binary") } }
+    & "$PSScriptRoot/make_windows_icon.ps1"
+    if (-not $SkipNative) { & "$PSScriptRoot/build_windows_native.ps1" -Device $(if ($CpuOnly) { 'cpu' } else { 'all' }) -BundleCudaRuntime:$BundleCudaRuntime }
+    $devices = if ($CpuOnly) { @('cpu') } else { @('cpu','cuda') }
+    foreach ($device in $devices) { foreach ($binary in @('recorder-native.exe','recorder-whisper.dll','recorder-vad.dll','recorder-audio.dll')) { Assert-X64 (Join-Path $bootstrap "runtime-x64/$device/$binary") } }
     if ($BundleCudaRuntime -and -not (Test-Path -LiteralPath (Join-Path $bootstrap 'runtime-x64/cuda/cublasLt64_12.dll'))) { throw 'Offline package requested but runtime-x64/cuda has no CUDA libraries; rerun with native build.' }
-    $redist = Get-ChildItem -Path 'C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Redist/MSVC' -Directory | Where-Object Name -Match '^14\.' | Sort-Object Name -Descending | Select-Object -First 1
-    if (-not $redist) { throw 'VC x64 app-local redistributables not found.' }
-    Get-ChildItem -LiteralPath (Join-Path $redist.FullName 'x64/Microsoft.VC143.CRT') -Filter '*.dll' | Copy-Item -Destination (Join-Path $bootstrap 'runtime-x64/cuda')
+    if (-not $CpuOnly) {
+        $redist = Get-ChildItem -Path 'C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Redist/MSVC' -Directory | Where-Object Name -Match '^14\.' | Sort-Object Name -Descending | Select-Object -First 1
+        if (-not $redist) { throw 'VC x64 app-local redistributables not found.' }
+        Get-ChildItem -LiteralPath (Join-Path $redist.FullName 'x64/Microsoft.VC143.CRT') -Filter '*.dll' | Copy-Item -Destination (Join-Path $bootstrap 'runtime-x64/cuda')
+    }
     Run 'Restore locked x64 packages' { & $dotnet restore windows/Recorder.Full --locked-mode }
     if (-not $SkipTests) {
         & "$PSScriptRoot/test_windows_backend.ps1"
@@ -37,9 +46,10 @@ try {
         & "$PSScriptRoot/test_windows_portable.ps1"
     }
     if (Test-Path -LiteralPath $publish) { Remove-Item -LiteralPath $publish -Recurse -Force }
-    Run 'Publish self-contained x64 app' { & $dotnet publish windows/Recorder.Full -c Release --no-restore -o $publish "-p:BundleCudaRuntime=$($BundleCudaRuntime.IsPresent.ToString().ToLowerInvariant())" }
+    Run 'Publish self-contained x64 app' { & $dotnet publish windows/Recorder.Full -c Release --no-restore -o $publish "-p:BundleCudaRuntime=$($BundleCudaRuntime.IsPresent.ToString().ToLowerInvariant())" "-p:IncludeCudaKernels=$((!$CpuOnly.IsPresent).ToString().ToLowerInvariant())" }
     Copy-Item -LiteralPath LICENSE -Destination $publish
     Copy-Item -LiteralPath windows/INSTALL-NOTES-x64.txt -Destination (Join-Path $publish 'INSTALL-NOTES.txt')
+    if ($CpuOnly) { "此包为 CPU 精简版：支持 CPU 本地推理及云端服务，不含 NVIDIA GPU 推理内核。需要 GPU 加速请安装标准版。`r`n`r`n" + (Get-Content -LiteralPath (Join-Path $publish 'INSTALL-NOTES.txt') -Raw) | Set-Content -LiteralPath (Join-Path $publish 'INSTALL-NOTES.txt') -Encoding utf8 }
     Copy-Item -LiteralPath windows/WINDOWS-VALIDATION.md,windows/THIRD-PARTY-NOTICES-x64.txt -Destination $publish
     Copy-Item -LiteralPath .bootstrap/llama.cpp/LICENSE -Destination (Join-Path $publish 'LLAMA-LICENSE.txt')
     Copy-Item -LiteralPath .bootstrap/whisper.cpp/LICENSE -Destination (Join-Path $publish 'WHISPER-LICENSE.txt')
@@ -57,11 +67,13 @@ try {
     $manifest = Get-ChildItem -LiteralPath $publish -File -Recurse | Where-Object Name -NE 'FILES.sha256' | Sort-Object FullName | ForEach-Object { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + [IO.Path]::GetRelativePath($publish, $_.FullName).Replace('\','/') }
     $manifest | Set-Content -LiteralPath (Join-Path $publish 'FILES.sha256') -Encoding utf8
     $zip = Join-Path $repoRoot "dist/Shengjian-$version-windows-x64-$suffix-portable.zip"
-    Compress-Archive -Path (Join-Path $publish '*') -DestinationPath $zip -Force
+    # .NET's smallest-size deflate saves download bytes without changing the runtime layout.
+    if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+    [IO.Compression.ZipFile]::CreateFromDirectory($publish, $zip, [IO.Compression.CompressionLevel]::SmallestSize, $false)
     $artifacts = @($zip)
     if (-not $SkipInstaller) {
         if (-not $InnoCompiler) { $InnoCompiler = Join-Path $bootstrap 'inno/ISCC.exe' }
-        Run 'Build x64 installer' { & $InnoCompiler "/DPublishDir=$publish" "/DOutputDir=$(Join-Path $repoRoot 'dist')" "/DAppVersion=$version" "/DOutputName=Shengjian-$version-windows-x64-$suffix-setup" windows/installer/Recorder-x64.iss }
+        Run 'Build x64 installer' { & $InnoCompiler "/DPublishDir=$publish" "/DOutputDir=$(Join-Path $repoRoot 'dist')" "/DAppVersion=$version" "/DOutputName=Shengjian-$version-windows-x64-$suffix-setup" "/DCpuOnly=$([int]$CpuOnly.IsPresent)" windows/installer/Recorder-x64.iss }
         $artifacts += Join-Path $repoRoot "dist/Shengjian-$version-windows-x64-$suffix-setup.exe"
     }
     foreach ($artifact in $artifacts) { (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + [IO.Path]::GetFileName($artifact) | Set-Content -LiteralPath ($artifact + '.sha256') -Encoding ascii; Write-Output $artifact }

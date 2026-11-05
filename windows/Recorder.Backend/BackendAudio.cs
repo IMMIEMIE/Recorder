@@ -27,7 +27,7 @@ public sealed partial class BackendCore
     private void CancelSession()
     {
         if (state is not ("recording" or "finalizing")) return;
-        cancelledSession = session; recognitionCancellation?.Cancel(); preview = null; pendingAudio.Clear(); segmenter = null;
+        cancelledSession = session; recognitionCancellation?.Cancel(); preview = null; ClearTranslationPreview(); pendingAudio.Clear(); segmenter = null;
         Status("finalizing", "正在取消识别，已有文字已保留…"); var current = session;
         Queue(() => { lock (gate) if (session == current) { ClearRecognition(); Status(config.Provider == "local" && !asr.IsLoaded ? "error" : "ready", "取消完成；如模型进程已回收，下次启动将重新加载。"); } return Task.CompletedTask; });
     }
@@ -43,7 +43,7 @@ public sealed partial class BackendCore
         var item = raw with { SessionId = session };
         if (item.Final)
         {
-            finalSegments.Add(item.SegmentId); preview = null; pendingFinals++;
+            finalSegments.Add(item.SegmentId); preview = null; ClearTranslationPreview(item.SessionId, item.SegmentId); pendingFinals++;
             Queue(async () => { lock (gate) pendingFinals--; await InferAsync(item); });
         }
         else { preview = item; Wake(); }
@@ -110,7 +110,11 @@ public sealed partial class BackendCore
                     Emit(item.Final ? "final" : "partial", new() { ["session_id"] = item.SessionId, ["segment_id"] = item.SegmentId, ["revision"] = item.Revision,
                         ["start_sample"] = item.StartSample, ["end_sample"] = item.EndSample, ["forced_cut"] = item.ForcedCut, ["elapsed_ms"] = result.ElapsedMs, ["text"] = result.Text });
                     if (item.Final) PlanTranslation(item.SessionId, item.SegmentId, result.Text, item.ForcedCut);
-                    else { segmenter?.AcceptPreview(item, result.Text); DrainSegments(); }
+                    else
+                    {
+                        PlanTranslationPreview(item.SessionId, item.SegmentId, item.Revision, result.Text);
+                        segmenter?.AcceptPreview(item, result.Text); DrainSegments();
+                    }
                 }
             }
         }
@@ -120,7 +124,7 @@ public sealed partial class BackendCore
         {
             asrFailed = true; recognition.Clear();
             if (config.Provider == "local") await asr.UnloadAsync(); else if (api != null) await api.UnloadAsync();
-            lock (gate) { preview = null; Status("error", "识别失败，已有文字已保留，请重新加载识别服务。"); Error(ex.Message); }
+            lock (gate) { preview = null; ClearTranslationPreview(); Status("error", "识别失败，已有文字已保留，请重新加载识别服务。"); Error(ex.Message); }
         }
         finally { if (item.Final) { recognition.Forget(item); lock (gate) finalSegments.Remove(item.SegmentId); } }
     }

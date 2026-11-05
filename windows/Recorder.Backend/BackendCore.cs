@@ -44,6 +44,7 @@ public sealed partial class BackendCore : IAsyncDisposable
     private string state = "idle", translatorState = "idle", session = "";
     private readonly HashSet<int> streamFinals = new();
     private SegmentJob? preview;
+    private Task? previewWork;
     private readonly HashSet<int> finalSegments = new();
     private ModelConfig config;
     private TranslationConfig translation;
@@ -53,7 +54,7 @@ public sealed partial class BackendCore : IAsyncDisposable
     public TranslationConfig Translation { get { lock (gate) return translation; } }
     public RuntimeConfig Runtime { get { lock (gate) return runtime; } }
     public string State { get { lock (gate) return state; } }
-    public bool CanSelectAsr { get { lock (gate) return state is "idle" or "ready" or "error" && !active && jobs.Count == 0; } }
+    public bool CanSelectAsr { get { lock (gate) return state is "idle" or "ready" or "error" && !active && previewWork == null && jobs.Count == 0; } }
     public bool TranslationReady { get { lock (gate) return translator.IsLoaded && translatorState == "ready"; } }
     public string TranslatorState { get { lock (gate) return translatorState; } }
     public string ActiveAsrDevice { get { lock (gate) return asr.IsLoaded ? (asr as NativeEngine)?.ActiveDevice ?? "" : ""; } }
@@ -66,7 +67,7 @@ public sealed partial class BackendCore : IAsyncDisposable
         config = Load("config.json", new ModelConfig()); translation = Load("translation.json", new TranslationConfig()); runtime = Load("runtime.json", new RuntimeConfig());
         pump = Task.Run(PumpAsync);
         // Raised on a thread-pool thread when a worker dies: never let an exception escape here, it would terminate the app.
-        if (asr is NativeEngine nativeAsr) nativeAsr.Failed += message => Isolated("asr-exit", () => { lock (gate) if (!disposed) { asrFailed = true; preview = null; segmenter = null; pendingAudio.Clear(); vad?.Dispose(); vad = null; if (active) Queue(() => { ClearRecognition(); return Task.CompletedTask; }); else ClearRecognition(); Status("error", message); Error(message); } });
+        if (asr is NativeEngine nativeAsr) nativeAsr.Failed += message => Isolated("asr-exit", () => { lock (gate) if (!disposed) { asrFailed = true; preview = null; ClearTranslationPreview(); segmenter = null; pendingAudio.Clear(); vad?.Dispose(); vad = null; if (active || previewWork != null) Queue(() => { ClearRecognition(); return Task.CompletedTask; }); else ClearRecognition(); Status("error", message); Error(message); } });
         if (translator is NativeEngine nativeTranslator) nativeTranslator.Failed += message => Isolated("translator-exit", () => { lock (gate) if (!disposed) { DropTranslations(); TranslatorStatus("error", message); Error("翻译" + message); } });
     }
     private static void Isolated(string area, Action action)
@@ -111,9 +112,10 @@ public sealed partial class BackendCore : IAsyncDisposable
                     case "stop": if ((string?)message["session_id"] == session) Finish(); break;
                     case "cancel_session": if ((string?)message["session_id"] == session) CancelSession(); break;
                     case "asr_stream_final": StreamFinal(message); break;
+                    case "asr_stream_partial": StreamPartial(message); break;
                     case "translation_settings": SetTranslation(message); break;
                     case "suspend":
-                        if (state is not ("idle" or "ready" or "error") || active) throw new InvalidOperationException("请先停止当前识别。");
+                        if (state is not ("idle" or "ready" or "error") || active || previewWork != null) throw new InvalidOperationException("请先停止当前识别。");
                         Status("loading");
                         Queue(async () => { await CancelTranslationAsync(); await asr.UnloadAsync(); await translator.UnloadAsync(); if (api != null) { await api.DisposeAsync(); api = null; } lock (gate) { activeModel = activeTranslator = null; TranslatorStatus("idle"); Status("idle"); } });
                         break;
@@ -132,7 +134,7 @@ public sealed partial class BackendCore : IAsyncDisposable
         var nextRuntime = message["runtime"] is JsonObject r ? BackendJson.Parse<RuntimeConfig>(r) : runtime;
         if (role == "asr")
         {
-            if (state is not ("idle" or "ready" or "error") || active || jobs.Count != 0) throw new InvalidOperationException("请等待当前操作结束再切换识别模型。");
+            if (state is not ("idle" or "ready" or "error") || active || previewWork != null || jobs.Count != 0) throw new InvalidOperationException("请等待当前操作结束再切换识别模型。");
             var next = message["config"] is JsonObject c ? BackendJson.Parse<ModelConfig>(c) : config;
             if ((string?)message["command"] == "download")
             {
@@ -240,14 +242,15 @@ public sealed partial class BackendCore : IAsyncDisposable
         if (state != "ready") throw new InvalidOperationException("识别服务尚未就绪。");
         var id = (string?)message["session_id"] ?? ""; if (id.Length == 0) throw new InvalidDataException("缺少会话标识。");
         var values = BackendJson.Object(config);
-        foreach (var name in new[] { "endpoint_mode", "endpoint_silence_ms" }) if (message[name] is JsonNode value) values[name] = value.DeepClone();
+        foreach (var name in new[] { "endpoint_mode", "endpoint_silence_ms", "smart_sentence_silence_ms", "smart_fallback_silence_ms" }) if (message[name] is JsonNode value) values[name] = value.DeepClone();
         var next = BackendJson.Parse<ModelConfig>(values); store.Save("config.json", next); config = next;
+        ClearTranslationPreview(); streamPreviewRevision = 0;
         session = id; streamFinals.Clear(); finalSegments.Clear(); preview = null; ClearRecognition(); StartAudio(); Status("recording");
     }
     private void Finish()
     {
         if (state != "recording") return;
-        Status("finalizing", "正在处理最后一段语音…"); FinishAudio(); preview = null;
+        Status("finalizing", "正在处理最后一段语音…"); FinishAudio(); preview = null; ClearTranslationPreview();
         var id = session;
         Queue(() => { lock (gate) if (session == id) { FlushTranslation(id); Status(asrFailed ? "error" : "ready"); } return Task.CompletedTask; });
     }
@@ -260,8 +263,22 @@ public sealed partial class BackendCore : IAsyncDisposable
         var text = ((string?)message["text"] ?? "").Trim(); if (text.Length == 0) return;
         if (System.Text.Encoding.UTF8.GetByteCount(text) > 200000) throw new InvalidDataException("流式句子文本过长。");
         if (!streamFinals.Add(id)) return;
+        ClearTranslationPreview(session, id);
         var current = session; int rev = 1;
         Queue(() => { lock (gate) { Emit("final", new() { ["session_id"] = current, ["segment_id"] = id, ["revision"] = rev, ["start_sample"] = start, ["text"] = text, ["forced_cut"] = false }); PlanTranslation(current, id, text, false); } return Task.CompletedTask; });
+    }
+    private long streamPreviewRevision;
+    private void StreamPartial(JsonObject message)
+    {
+        if (!IsStreaming || state != "recording" || (string?)message["session_id"] != session || session == cancelledSession) return;
+        int id = checked((int)BackendJson.Integer(message["segment_id"]));
+        long revision = BackendJson.Integer(message["revision"]), start = BackendJson.Integer(message["start_sample"]);
+        var text = ((string?)message["text"] ?? "").Trim();
+        if (id < 1 || revision < 1 || start < 0 || System.Text.Encoding.UTF8.GetByteCount(text) > 200000) throw new InvalidDataException("流式预览参数无效。");
+        if (streamFinals.Contains(id) || revision <= streamPreviewRevision || text.Length == 0) return;
+        streamPreviewRevision = revision;
+        Emit("partial", new() { ["session_id"] = session, ["segment_id"] = id, ["revision"] = revision, ["start_sample"] = start, ["text"] = text });
+        PlanTranslationPreview(session, id, revision, text);
     }
     private async Task PumpAsync()
     {
@@ -272,9 +289,23 @@ public sealed partial class BackendCore : IAsyncDisposable
                 Func<Task>? work = null;
                 lock (gate)
                 {
-                    if (jobs.Count > 0) { work = jobs.Dequeue(); active = true; }
+                    if (previewWork?.IsCompleted == true) previewWork = null;
+                    if (previewWork == null && jobs.Count > 0) { work = jobs.Dequeue(); active = true; }
+                    else if (previewWork == null && preview is SegmentJob item)
+                    {
+                        preview = null;
+                        // Only recognition previews overlap translation. All lifecycle/final jobs wait for this task.
+                        previewWork = Task.Run(async () =>
+                        {
+                            try { await InferAsync(item); }
+                            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+                            catch (Exception ex) { lock (gate) Error(ex.Message); }
+                        });
+                        _ = previewWork.ContinueWith(_ => Wake(), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                    }
                     else if (HasTranslation) { work = TranslationStepAsync; active = false; }
-                    else if (preview is SegmentJob item) { preview = null; work = () => InferAsync(item); active = true; }
+                    // Starting a preview must also allow translation to advance without waiting for another signal.
+                    if (work == null && HasTranslation) { work = TranslationStepAsync; active = false; }
                 }
                 if (work == null) { await signal.WaitAsync(lifetime.Token); continue; }
                 try { await work(); } catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
@@ -283,7 +314,7 @@ public sealed partial class BackendCore : IAsyncDisposable
             }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
-        finally { events.Writer.TryComplete(); }
+        finally { if (previewWork != null) await previewWork; events.Writer.TryComplete(); }
     }
     // These hooks are completed by the audio/cache and translation stages.
     partial void StartAudio(); partial void FinishAudio(); partial void ClearRecognition();
