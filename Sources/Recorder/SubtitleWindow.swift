@@ -69,7 +69,7 @@ final class SubtitleWindowController: NSWindowController, NSWindowDelegate {
         let size = Self.initialSize
         let frame = NSRect(x: start.x - size.width / 2, y: start.y, width: size.width, height: size.height)
         let panel = SubtitlePanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.title = "声笺字幕"
+        panel.title = InterfaceLanguageSettings.shared.string("声笺字幕")
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isOpaque = false
@@ -150,6 +150,7 @@ final class SubtitleWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func makeMenu() -> NSMenu {
+        let language = InterfaceLanguageSettings.shared
         let defaults = UserDefaults.standard
         let fontSize = defaults.object(forKey: SubtitleStyle.fontSizeKey) as? Double ?? SubtitleStyle.defaultFontSize
         let opacity = defaults.object(forKey: SubtitleStyle.opacityKey) as? Double ?? SubtitleStyle.defaultOpacity
@@ -157,25 +158,25 @@ final class SubtitleWindowController: NSWindowController, NSWindowDelegate {
         let bars = (defaults.string(forKey: SubtitleStyle.backgroundKey) ?? "box") == "box"
         let translation = defaults.object(forKey: SubtitleStyle.translationKey) as? Bool ?? true
         let menu = NSMenu(); menu.autoenablesItems = false
-        menu.addItem(Self.submenu("字号", [18, 20, 24, 28, 32, 36, 40].map { size in
+        menu.addItem(Self.submenu(language.string("字号"), [18, 20, 24, 28, 32, 36, 40].map { size in
             SubtitleMenuItem("\(size)", checked: Int(fontSize.rounded()) == size) { defaults.set(Double(size), forKey: SubtitleStyle.fontSizeKey) }
         }))
-        menu.addItem(Self.submenu("最多显示行数", [1, 2, 3].map { count in
-            SubtitleMenuItem("\(count) 行", checked: lines == count) { defaults.set(count, forKey: SubtitleStyle.linesKey) }
+        menu.addItem(Self.submenu(language.string("最多显示行数"), [1, 2, 3].map { count in
+            SubtitleMenuItem(String(format: language.string("%lld 行"), count), checked: lines == count) { defaults.set(count, forKey: SubtitleStyle.linesKey) }
         }))
-        menu.addItem(Self.submenu("背景", [
-            SubtitleMenuItem("每行半透明底色", checked: bars) { defaults.set("box", forKey: SubtitleStyle.backgroundKey) },
-            SubtitleMenuItem("仅文字（带阴影）", checked: !bars) { defaults.set("text", forKey: SubtitleStyle.backgroundKey) }
+        menu.addItem(Self.submenu(language.string("背景"), [
+            SubtitleMenuItem(language.string("每行半透明底色"), checked: bars) { defaults.set("box", forKey: SubtitleStyle.backgroundKey) },
+            SubtitleMenuItem(language.string("仅文字（带阴影）"), checked: !bars) { defaults.set("text", forKey: SubtitleStyle.backgroundKey) }
         ]))
-        let opacityMenu = Self.submenu("底色不透明度", [0.3, 0.5, 0.7, 0.9].map { value in
+        let opacityMenu = Self.submenu(language.string("底色不透明度"), [0.3, 0.5, 0.7, 0.9].map { value in
             SubtitleMenuItem("\(Int(value * 100))%", checked: abs(opacity - value) < 0.05) { defaults.set(value, forKey: SubtitleStyle.opacityKey) }
         })
         opacityMenu.isEnabled = bars
         menu.addItem(opacityMenu)
-        menu.addItem(SubtitleMenuItem("显示译文", checked: translation) { defaults.set(!translation, forKey: SubtitleStyle.translationKey) })
+        menu.addItem(SubtitleMenuItem(language.string("显示译文"), checked: translation) { defaults.set(!translation, forKey: SubtitleStyle.translationKey) })
         menu.addItem(.separator())
-        menu.addItem(SubtitleMenuItem("回到默认位置") { [weak self] in self?.resetPosition() })
-        menu.addItem(SubtitleMenuItem("关闭字幕") { [weak self] in self?.model?.setSubtitleMode(false) })
+        menu.addItem(SubtitleMenuItem(language.string("回到默认位置")) { [weak self] in self?.resetPosition() })
+        menu.addItem(SubtitleMenuItem(language.string("关闭字幕")) { [weak self] in self?.model?.setSubtitleMode(false) })
         return menu
     }
     private static func submenu(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
@@ -255,6 +256,7 @@ enum SubtitleLayout {
 }
 
 struct SubtitleView: View {
+    @ObservedObject private var interface = InterfaceLanguageSettings.shared
     @ObservedObject var model: AppModel
     @ObservedObject var stage: SubtitleStage
     let onSize: (CGSize) -> Void
@@ -286,7 +288,7 @@ struct SubtitleView: View {
                     .padding(.bottom, 2)
             }
             if source.isEmpty && translation.isEmpty {
-                line(model.recording ? "正在聆听…" : "开始转写后，字幕将显示在这里", size: fontSize * 0.75, color: .white.opacity(0.75))
+                line(interface.string(model.recording ? "正在聆听…" : "开始转写后，字幕将显示在这里"), size: fontSize * 0.75, color: .white.opacity(0.75))
             }
             ForEach(Array(source.enumerated()), id: \.offset) { line($0.element, size: fontSize, color: .white) }
             ForEach(Array(translation.enumerated()), id: \.offset) { line($0.element, size: translationSize, color: Color(red: 0.65, green: 0.88, blue: 1)) }
@@ -305,6 +307,7 @@ struct SubtitleView: View {
         .preferredColorScheme(.dark)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("声笺字幕")
+        .environment(\.locale, interface.locale)
     }
 
     /// One caption line: YouTube-style bar behind the text, or text alone with a shadow for contrast.

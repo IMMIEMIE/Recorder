@@ -21,7 +21,7 @@ struct LiveTranslateSettingsView: View {
                     .toggleStyle(.switch)
                     // An unverified build can still leave local mode, but cannot enter it.
                     .disabled(model.liveSettingsBusy || (!local && !model.hyRuntimeVerified))
-                Text(model.hyRuntimeVerified ? (local ? "音频和文字都留在本机，不访问云端。" : "关闭时使用云端 Qwen LiveTranslate。") : model.hyRuntimeUnavailableReason)
+                Text(LocalizedStringKey(model.hyRuntimeVerified ? (local ? "音频和文字都留在本机，不访问云端。" : "关闭时使用云端 Qwen LiveTranslate。") : model.hyRuntimeUnavailableReason))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Group {
@@ -29,7 +29,7 @@ struct LiveTranslateSettingsView: View {
                     Text("由本机 Hy-SimulMT Interleave 同时生成原文和译文，支持中英互译。")
                         .font(.caption).foregroundStyle(.secondary)
                     LabeledContent("模型") { Text("Hy-SimulMT Interleave Q4_K_M").font(.caption) }
-                    Text(model.hyModelStore.detail).font(.caption).textSelection(.enabled)
+                    Text(LocalizedStringKey(model.hyModelStore.detail)).font(.caption).textSelection(.enabled)
                     if model.hyModelStore.isBusy { ProgressView(value: model.hyModelStore.progress) }
                     HStack {
                         Button("下载本地模型") { model.downloadHyModel() }
@@ -41,7 +41,7 @@ struct LiveTranslateSettingsView: View {
                         Button("卸载模型") { model.unloadHyModel() }
                             .disabled(!["loading", "ready", "error"].contains(model.hyRuntimeState))
                     }
-                    Text(model.hyRuntimeDetail).font(.caption).foregroundStyle(.secondary)
+                    Text(LocalizedStringKey(model.hyRuntimeDetail)).font(.caption).foregroundStyle(.secondary)
                     if model.hyRuntimeState == "loading" { ProgressView().controlSize(.small) }
                     Text("首次需下载约 19.75 GB 模型，运行时约占用 23 GB 内存。打开上方两个开关会加载已下载的模型；重新打开应用后，在主窗口点击「加载模型」。卸载会释放内存。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -62,7 +62,7 @@ struct LiveTranslateSettingsView: View {
                 Toggle("播放译音", isOn: $model.liveAudioOutput).toggleStyle(.switch)
                 if model.liveAudioOutput {
                     Picker("播放时机", selection: $model.livePlaybackTiming) {
-                        ForEach(LiveTranslatePlaybackTiming.allCases, id: \.self) { Text($0.title).tag($0) }
+                        ForEach(LiveTranslatePlaybackTiming.allCases, id: \.self) { Text(LocalizedStringKey($0.title)).tag($0) }
                     }
                     Text(local
                          ? (model.livePlaybackTiming == .streaming ? "使用 macOS 系统语音，已确认的译文短句生成后立即朗读。" : "使用 macOS 系统语音，等待每句译文定稿后朗读。")

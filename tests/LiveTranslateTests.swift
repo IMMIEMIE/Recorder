@@ -168,6 +168,9 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         try check(model.liveEnabled && model.canStart, "Live mode starts without local models")
         model.load(); model.loadTranslator()
         try check(model.state == "ready", "local model load routes disabled")
+        let liveMenu = TranslationMenu(model: model)
+        model.partial = "live partial"
+        try check(liveMenu == TranslationMenu(model: model), "LiveTranslate transcription keeps the menu stable")
         let target = model.translationTarget
         model.setTranslation(enabled: true); model.setTranslationTarget("English")
         try check(!model.translationEnabled && model.translationTarget == target, "other translation route disabled")
@@ -181,6 +184,22 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         model.setLiveEnabled(false)
         try check(!model.liveEnabled && !LiveTranslateConfiguration.load(defaults: defaults).enabled, "can leave mode with invalid draft")
         try check(model.translationTarget == target, "previous translation preference preserved")
+
+        let menu = TranslationMenu(model: model)
+        try check(menu != liveMenu, "leaving LiveTranslate reveals ordinary translation controls")
+        model.level = 0.5
+        model.partial = "in progress"
+        model.translationTick += 1
+        try check(menu == TranslationMenu(model: model), "transcript updates leave the open translation menu alone")
+        model.setTranslationTarget("日本語")
+        try check(menu != TranslationMenu(model: model), "a new target updates the checkmark even with translation off")
+        model.setTranslationTarget(target)
+        model.translatorState = "warming"
+        let warmingMenu = TranslationMenu(model: model)
+        try check(menu != warmingMenu, "warming disables the ordinary translation toggle")
+        model.translatorState = "downloading"
+        try check(warmingMenu == TranslationMenu(model: model), "a tooltip-only change leaves the open menu alone")
+        model.translatorState = "idle"
 
         var events = LiveTranslateEvents()
         let delta: [String: Any] = ["event_id": "same", "type": "response.text.delta", "item_id": "t", "delta": "译文"]
