@@ -137,14 +137,19 @@ class LiveSessionTest {
         assertEquals(SessionState.CONNECTING, device.state)
         assertTrue(device.active && device.transport.connected)
         assertEquals("", device.session.snapshot.error)
-        assertNull("no capture before the configuration is acknowledged", device.onChunk)
+        // The microphone opens on start; speech before the configuration is acknowledged waits, then goes first.
+        assertEquals(1, device.captureStarts)
+        device.speak(fill = 1)
+        assertTrue("nothing sent before ready", device.transport.audio.isEmpty())
         device.transport.listener.onReady()
         assertEquals(SessionState.RECORDING, device.state)
         assertTrue(device.session.snapshot.status.contains("English"))
-        device.speak()
+        device.speak(fill = 2)
+        assertEquals(listOf<Byte>(1, 2), device.transport.audio.map { it[0] })
+        assertEquals("one capture for the whole session", 1, device.captureStarts)
         device.utter("a")
         device.transport.listener.onEvent(json("type" to "conversation.item.input_audio_transcription.delta", "item_id" to "b", "delta" to "Tail"))
-        assertEquals(1, device.transport.audio.size)
+        assertEquals(2, device.transport.audio.size)
 
         device.session.stop()
         assertEquals(SessionState.FINISHING, device.state)
@@ -422,14 +427,55 @@ class LiveSessionTest {
     }
 
     @Test
+    fun speechWhileConnectingIsBoundedAndDroppedOnCancel() {
+        // A slow handshake keeps only the most recent 5 s, like a reconnect gap.
+        val slow = Device()
+        slow.session.start(LiveTranslateConfig(), "mock-only")
+        val chunk = 3200
+        repeat(LiveSession.MAX_GAP_AUDIO_BYTES / chunk + 5) { slow.speak(chunk, fill = it) }
+        slow.transport.listener.onReady()
+        val sent = slow.transport.audio
+        assertEquals(LiveSession.MAX_GAP_AUDIO_BYTES, sent.sumOf { it.size })
+        assertEquals("oldest chunks dropped first", 5.toByte(), sent.first()[0])
+
+        // Without auto-reconnect the first connection still gets the speech captured while it was set up.
+        val manual = Device()
+        manual.session.start(LiveTranslateConfig(), "mock-only", autoReconnect = false)
+        manual.speak(fill = 7)
+        manual.transport.listener.onReady()
+        assertEquals(listOf<Byte>(7), manual.transport.audio.map { it[0] })
+
+        // Cancelling while connecting closes the microphone and sends nothing.
+        val cancelled = Device()
+        cancelled.session.start(LiveTranslateConfig(), "mock-only")
+        cancelled.speak()
+        cancelled.session.stop()
+        assertEquals(SessionState.IDLE, cancelled.state)
+        assertNull(cancelled.onChunk)
+        assertTrue(cancelled.transport.cancelled && cancelled.transport.audio.isEmpty())
+
+        // A failed handshake ends the session and the microphone with it.
+        val failed = Device()
+        failed.session.start(LiveTranslateConfig(), "mock-only")
+        failed.speak()
+        failed.transport.listener.onEnd(LOST, true)
+        assertEquals(SessionState.IDLE, failed.state)
+        assertNull(failed.onChunk)
+        assertFalse(failed.active)
+    }
+
+    @Test
     fun captureFailuresEndTheSession() {
+        // The microphone opens on start, so a refused microphone ends the session before any connection is used.
         val denied = Device()
         denied.captureFails = true
         denied.session.start(LiveTranslateConfig(), "mock-only")
-        denied.transport.listener.onReady()
         assertEquals(SessionState.IDLE, denied.state)
         assertTrue(denied.session.snapshot.error.contains("麦克风"))
         assertTrue(denied.transport.cancelled)
+        assertFalse(denied.active)
+        denied.transport.listener.onReady()
+        assertEquals(SessionState.IDLE, denied.state)
 
         val device = Device()
         device.record()
