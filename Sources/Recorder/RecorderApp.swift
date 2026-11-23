@@ -44,26 +44,10 @@ struct MenuContent: View {
     }
 }
 
-/// Top and bottom of the transcript content in the scroll view's coordinate space (top < 0 once scrolled).
-private struct TranscriptBounds: Equatable {
-    var top: CGFloat = 0
-    var bottom: CGFloat = 0
-}
-private struct TranscriptBoundsKey: PreferenceKey {
-    static let defaultValue = TranscriptBounds()
-    static func reduce(value: inout TranscriptBounds, nextValue: () -> TranscriptBounds) { value = nextValue() }
-}
-
 struct MainView: View {
     @ObservedObject var model: AppModel
     @State private var floating = false
     @State private var showAI = false
-    /// Auto-scroll only while the reader is at the bottom; scrolling up keeps their place until they jump back.
-    @State private var followLatest = true
-    @State private var newBelow = false
-    @State private var jumping = false
-    @State private var viewportHeight: CGFloat = 0
-    @State private var contentBounds = TranscriptBounds()
     @StateObject private var ai = AIWorkspace()
     private let accent = Color(red: 0.14, green: 0.43, blue: 0.38)
     var body: some View {
@@ -165,81 +149,7 @@ struct MainView: View {
                     }.padding(.horizontal, 24).padding(.vertical, 8).background(Color.red.opacity(0.06))
                 }
                 Divider().padding(.horizontal, 30)
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 24) {
-                            if model.displayedTranscripts.isEmpty && (model.partial.isEmpty || model.viewedSession != nil) {
-                                VStack(spacing: 18) {
-                                    Image(systemName: "waveform.circle").font(.system(size: 62, weight: .ultraLight)).foregroundStyle(accent.opacity(0.55))
-                                    Text(model.viewedSession != nil ? "此会话没有文字" : model.recording ? "正在聆听…" : "点击开始转写").font(.system(size: 15)).foregroundStyle(.secondary)
-                                }.frame(maxWidth: .infinity).padding(.vertical, 80)
-                            }
-                            let items = model.displayedTranscripts
-                            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                                if index > 0, item.segment != items[index - 1].segment {
-                                    SessionMarker(text: "继续录制" + (model.segmentStart(item.segment).map { " " + SessionExport.stamp($0, zone: .current) } ?? ""))
-                                }
-                                if item.isBreak { SessionMarker(text: SessionExport.breakMarker) } else {
-                                HStack(alignment: .top, spacing: 18) {
-                                    Text(String(format:"%02d:%02d", Int(item.seconds) / 60, Int(item.seconds) % 60)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).frame(width: 38).padding(.top, 6)
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        if item.incomplete { Text("此段内容可能不完整").font(.caption2).foregroundStyle(.orange) }
-                                        else if !item.sourceDone { Text("识别中…").font(.caption2).foregroundStyle(.secondary) }
-                                        if !item.text.isEmpty { Text(item.text).font(.system(size: 17)).lineSpacing(7).textSelection(.enabled) }
-                                        if !item.translation.isEmpty {
-                                            Text(item.translation).font(.system(size: 15)).lineSpacing(5).foregroundStyle(.secondary).textSelection(.enabled)
-                                        } else if item.translating {
-                                            Text("翻译中…").font(.caption).foregroundStyle(.tertiary)
-                                        }
-                                        if model.canReplay(item) {
-                                            HStack {
-                                                Spacer()
-                                                Button { model.replay(item) } label: {
-                                                    Label(model.replayingTranscriptID == item.id ? "停止" : "播放译音",
-                                                          systemImage: model.replayingTranscriptID == item.id ? "stop.fill" : "play.fill")
-                                                }.buttonStyle(.borderless).font(.caption)
-                                                    .help("重播此段译音；停止本次自动译音，字幕继续更新")
-                                            }
-                                        }
-                                    }.frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                                }
-                            }
-                            if !model.partial.isEmpty && model.viewedSession == nil {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("识别中").font(.caption2).foregroundStyle(accent)
-                                    Text(model.partial).font(.system(size: 17)).lineSpacing(7).foregroundStyle(.secondary)
-                                }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
-                            }
-                            Color.clear.frame(height: 1).id("end")
-                        }.padding(30)
-                        .background(GeometryReader { geo in
-                            let frame = geo.frame(in: .named("transcript"))
-                            Color.clear.preference(key: TranscriptBoundsKey.self, value: TranscriptBounds(top: frame.minY, bottom: frame.maxY))
-                        })
-                    }
-                    .coordinateSpace(name: "transcript")
-                    .background(GeometryReader { geo in
-                        Color.clear.onAppear { viewportHeight = geo.size.height }
-                            .onChange(of: geo.size.height) { _, height in viewportHeight = height; if atBottom { followLatest = true; newBelow = false } }
-                    })
-                    .onPreferenceChange(TranscriptBoundsKey.self) { trackScroll($0) }
-                    .onChange(of: model.partial) { _, _ in keepLatest(proxy) }
-                    .onChange(of: model.finalText.count) { _, _ in keepLatest(proxy) }
-                    .onChange(of: model.selectedSessionID) { _, _ in followLatest = true; newBelow = false; proxy.scrollTo("end", anchor: .bottom) }
-                    .onChange(of: model.translationTick) { _, _ in keepLatest(proxy) }
-                    .overlay(alignment: .bottomTrailing) {
-                        if !followLatest {
-                            Button { jumpToLatest(proxy) } label: {
-                                Label(newBelow ? "有新内容" : "回到底部", systemImage: "arrow.down")
-                            }
-                            .buttonStyle(.borderedProminent).buttonBorderShape(.capsule).tint(accent)
-                            .keyboardShortcut(.downArrow, modifiers: .command)
-                            .help("回到最新文字，并恢复自动跟随（⌘↓）")
-                            .padding(.trailing, 28).padding(.bottom, 16)
-                        }
-                    }
-                }
+                TranscriptList(model: model, accent: accent)
                 VStack(spacing: 14) {
                     if !model.error.isEmpty {
                         HStack(alignment: .top) {
@@ -284,27 +194,6 @@ struct MainView: View {
             }.background(Color(nsColor: .textBackgroundColor))
         }.tint(accent).sheet(isPresented: $showAI) { AIWorkspaceView(ai: ai) }
             .onChange(of: model.liveEnabled) { _, enabled in if enabled { ai.cancel(); showAI = false } }
-    }
-
-    private var atBottom: Bool { contentBounds.bottom - viewportHeight <= 48 }
-    /// Content growing at the bottom leaves `top` unchanged; only a real scroll moves it.
-    /// So new text never turns following off, while scrolling up does.
-    private func trackScroll(_ bounds: TranscriptBounds) {
-        let scrolled = abs(bounds.top - contentBounds.top) > 0.5
-        contentBounds = bounds
-        if atBottom { followLatest = true; newBelow = false; jumping = false }
-        else if scrolled && !jumping { followLatest = false }
-    }
-    private func keepLatest(_ proxy: ScrollViewProxy) {
-        guard model.viewedSession == nil else { return }
-        if followLatest { proxy.scrollTo("end", anchor: .bottom) }
-        else if model.viewedSession == nil && (!model.finalText.isEmpty || !model.partial.isEmpty) { newBelow = true }
-    }
-    private func jumpToLatest(_ proxy: ScrollViewProxy) {
-        followLatest = true; newBelow = false; jumping = true
-        withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo("end", anchor: .bottom) }
-        // The animation's intermediate positions must not read as the reader scrolling away again.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { jumping = false }
     }
 }
 
