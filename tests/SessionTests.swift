@@ -42,6 +42,19 @@ func mode(_ path: String) -> Int {
                 try check(actual == expected, "export \(name) matches the fixture byte for byte")
             }
         }
+        let dialogueDirectory = fixtures.appendingPathComponent("dialogue")
+        let dialogue = try SessionFile.decode(Data(contentsOf: dialogueDirectory.appendingPathComponent("session.json")))
+        let roundTrip = try SessionFile.decode(dialogue.encoded())
+        try check(roundTrip == dialogue && dialogue.rows[2].languages == .init(target: "ja", source: "zh", speaker: "A"),
+                  "dialogue metadata round trips at row level")
+        for content in SessionExportContent.allCases {
+            for format in SessionExportFormat.allCases {
+                let name = "\(content.rawValue).\(format.fileExtension)"
+                let expected = try Data(contentsOf: dialogueDirectory.appendingPathComponent("expected/\(name)"))
+                let output = SessionExport.render(dialogue, format: format, content: content, zone: shanghai)
+                try check(Data(output.utf8) == expected, "dialogue export " + name)
+            }
+        }
         let meta = try JSONSerialization.jsonObject(with: Data(contentsOf: fixtures.appendingPathComponent("expected/meta.json"))) as! [String: Any]
         try check(meta["zone"] as? String == "Asia/Shanghai", "fixture zone")
         let names = meta["file_names"] as! [String: String]

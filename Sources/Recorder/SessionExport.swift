@@ -97,11 +97,15 @@ enum SessionExport {
             }
             previousSegment = row.segment
             if row.kind == .break { out.append(.marker(breakMarker)); continue }
+            if let marker = row.languages.switchMarker { out.append(.marker(marker)) }
             let source = clean(row.source), translation = clean(row.translation)
             var parts: [(translation: Bool, text: String)] = []
             if content != .translation && !source.isEmpty { parts.append((false, source)) }
             if content != .source && !translation.isEmpty { parts.append((true, translation)) }
-            if !parts.isEmpty { out.append(.row(parts)) }
+            if !parts.isEmpty {
+                parts[0].text = row.languages.speakerPrefix + parts[0].text
+                out.append(.row(parts))
+            }
         }
         return out
     }
@@ -110,7 +114,7 @@ enum SessionExport {
         let blocks: [String] = entries(session, content, zone).map { entry in
             switch (entry, format) {
             case (.marker(let value), .txt): return "【\(value)】"
-            case (.marker(let value), .markdown): return "*【\(value)】*"
+            case (.marker(let value), .markdown): return "*【\(markdownEscape(value))】*"
             case (.row(let parts), .txt): return parts.map(\.text).joined(separator: "\n")
             case (.row(let parts), .markdown):
                 // Bilingual exports set the translation in bold; single-language exports are plain.

@@ -32,6 +32,19 @@ issue #13 的会话管理与对话导出在两端分别实现，但**存储格�
 - 写入时机：定稿行变化后防抖约 1 秒写一次；停止录制、应用进入后台/退出时立即写。崩溃最多丢最后约 1 秒的定稿。
 - 译文可能在原文定稿之后才到（macOS 本地/API 翻译）：同一行就地更新后再写。
 
+### 逐句语言和说话方（v1 可选字段）
+
+`text` 行可增加以下字符串字段。保留原有 `kind` 和 `schema_version`。旧文件没有这些字段时沿用原行为，单语翻译的初始目标仍在所属段的 `target_language`。旧版读取方可直接忽略扩展字段。
+
+| 字段 | 含义 |
+| --- | --- |
+| `target_language` | 该句实际使用的目标语言代码，例如 `en`。已定稿的行保留当时的目标 |
+| `source_language` | 有可靠识别结果时记录原文语言代码 |
+| `speaker` | 对话中的说话方 `A`、`B` 或 `unknown`，均为会话内的逻辑方，与服务返回的 speaker ID 无关 |
+| `language_switch` | 用户主动切换后，首条新语言行保存所选语言的显示名，例如 `English`。对话中双方轮流发言不产生切换标记 |
+
+导出时，先输出「继续录制」等段标记，再在有 `language_switch` 的行前输出「译文语言已切换为 English」。三种导出内容均保留切换标记。对话行在所选模式第一个非空文本前加 `A：`、`B：` 或 `未识别：`，双语模式每句标注一次。TXT 与 Markdown 沿用原有清理、转义和加粗规则，Markdown 标记文字也要转义。夹具见 `tests/fixtures/session_export/dialogue/`，旧夹具继续覆盖旧文件。[双路路由与探针](DIALOGUE.md)
+
 ## 默认标题
 
 `title_edited` 为 `false` 时：`MM-dd HH:mm` + 空格 + 第一条非空原文（`text` 行，按下文「清理」后）的前 20 个 Unicode **码点**；没有原文时为 `MM-dd HH:mm 新会话`。时间用会话创建时间、设备时区。夹具：`expected/meta.json` 的 `default_titles`。

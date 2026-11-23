@@ -26,7 +26,19 @@ data class SessionRow(
     val offsetMs: Long,
     val source: String = "",
     val translation: String = "",
+    val targetLanguage: String? = null,
+    val sourceLanguage: String? = null,
+    val speaker: String? = null,
+    val languageSwitch: String? = null,
 ) {
+    val switchMarker: String? get() = languageSwitch?.let(SessionText::clean)?.takeIf { it.isNotEmpty() }
+        ?.let { "译文语言已切换为 $it" }
+    val speakerPrefix: String get() = when (speaker) {
+        "A", "B" -> "$speaker："
+        "unknown" -> "未识别："
+        else -> ""
+    }
+
     val isBreak: Boolean get() = kind == KIND_BREAK
 
     companion object {
@@ -66,7 +78,11 @@ data class SessionRecord(
                     .put("kind", row.kind)
                     .put("offset_ms", row.offsetMs)
                     .put("source", row.source)
-                    .put("translation", row.translation),
+                    .put("translation", row.translation)
+                    .put("target_language", row.targetLanguage)
+                    .put("source_language", row.sourceLanguage)
+                    .put("speaker", row.speaker)
+                    .put("language_switch", row.languageSwitch),
             )
         }
         return JSONObject()
@@ -131,6 +147,10 @@ data class SessionRecord(
                         offsetMs = item.getLong("offset_ms"),
                         source = item.getString("source"),
                         translation = item.getString("translation"),
+                        targetLanguage = item.opt("target_language") as? String,
+                        sourceLanguage = item.opt("source_language") as? String,
+                        speaker = item.opt("speaker") as? String,
+                        languageSwitch = item.opt("language_switch") as? String,
                     )
                 }
                 return SessionRecord(

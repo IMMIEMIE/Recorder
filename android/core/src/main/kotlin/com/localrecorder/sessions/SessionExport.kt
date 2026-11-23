@@ -49,7 +49,7 @@ object SessionExport {
     fun markdown(record: SessionRecord, content: ExportContent, zone: ZoneId): String {
         val blocks = entries(record, content, zone).map { entry ->
             when (entry) {
-                is Marker -> "*【${entry.text}】*"
+                is Marker -> "*【${escape(entry.text)}】*"
                 // Bilingual exports set the translation in bold; single-language exports are plain.
                 is Parts -> entry.parts.joinToString("  \n") { (isTranslation, text) ->
                     if (content == ExportContent.BILINGUAL && isTranslation) "**${escape(text)}**" else escape(text)
@@ -106,6 +106,7 @@ object SessionExport {
                 out += Marker(BREAK_MARKER)
                 continue
             }
+            row.switchMarker?.let { out += Marker(it) }
             val source = SessionText.clean(row.source)
             val translation = SessionText.clean(row.translation)
             val parts = when (content) {
@@ -113,7 +114,10 @@ object SessionExport {
                 ExportContent.TRANSLATION -> listOf(true to translation)
                 ExportContent.BILINGUAL -> listOf(false to source, true to translation)
             }.filter { it.second.isNotEmpty() }
-            if (parts.isNotEmpty()) out += Parts(parts)
+            if (parts.isNotEmpty()) {
+                val (translated, first) = parts.first()
+                out += Parts(listOf(translated to row.speakerPrefix + first) + parts.drop(1))
+            }
         }
         return out
     }

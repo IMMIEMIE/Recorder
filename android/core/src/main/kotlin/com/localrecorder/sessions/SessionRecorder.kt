@@ -172,7 +172,8 @@ class SessionRecorder(
         if (!row.sourceDone) return existing
         val translation = if (row.translationDone) row.translation else existing?.translation.orEmpty()
         if (row.source.isEmpty() && translation.isEmpty()) return existing
-        return SessionRow(segment, SessionRow.KIND_TEXT, existing?.offsetMs ?: offset, row.source, translation)
+        return SessionRow(segment, SessionRow.KIND_TEXT, existing?.offsetMs ?: offset, row.source, translation,
+            targetLanguage = record?.segments?.get(segment)?.targetLanguage)
     }
 
     private fun reindex() {

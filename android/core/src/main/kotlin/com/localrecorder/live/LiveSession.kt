@@ -166,8 +166,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     private var capturing = false
     private var live: LiveTransport? = null
     private var buffering = false
-    private val gap = ArrayDeque<ByteArray>()
-    private var gapBytes = 0
+    private val gap = LiveHandoffAudio(LiveHandoffAudio.Reason.RECOVERY)
     private var shedding = false
     private var droppedBytes = 0L
     private var lowestQueued = 0
@@ -380,7 +379,6 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             live = null
             buffering = true
             gap.clear()
-            gapBytes = 0
             resetShedding()
             ++capture
         }
@@ -402,11 +400,11 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
      */
     private fun attach(current: LiveTransport) {
         synchronized(audioLock) {
-            while (gap.isNotEmpty()) {
-                if (current.append(gap.removeFirst()) != AppendResult.SENT) break
+            while (true) {
+                val pcm = gap.poll(platform.elapsedMs()) ?: break
+                if (current.append(pcm) != AppendResult.SENT) break
             }
             gap.clear()
-            gapBytes = 0
             resetShedding()
             buffering = false
             live = current
@@ -461,7 +459,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             if (generation != capture) return
             val target = live
             if (target == null) {
-                if (buffering) keep(pcm)
+                if (buffering) gap.append(pcm)
                 return
             }
             val queued = target.queuedAudioBytes
@@ -528,13 +526,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     private fun hold(pcm: ByteArray) {
         live = null
         buffering = autoReconnect
-        if (buffering) keep(pcm)
-    }
-
-    private fun keep(pcm: ByteArray) {
-        gap.addLast(pcm)
-        gapBytes += pcm.size
-        while (gapBytes > CATCH_UP_AUDIO_BYTES && gap.size > 1) gapBytes -= gap.removeFirst().size
+        if (buffering) gap.append(pcm)
     }
 
     private fun current(generation: Int, target: LiveTransport) =
@@ -766,7 +758,6 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             live = null
             buffering = false
             gap.clear()
-            gapBytes = 0
             resetShedding()
         }
     }

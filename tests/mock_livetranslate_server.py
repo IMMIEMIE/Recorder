@@ -52,8 +52,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         route = urlsplit(self.path)
-        if route.path == '/unauthorized':
-            self.send_response(401)
+        if route.path in ('/unauthorized', '/dialogue/http-429'):
+            self.send_response(401 if route.path == '/unauthorized' else 429)
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
@@ -116,6 +116,9 @@ class Handler(BaseHTTPRequestHandler):
             if route.path == '/wrong-audio-format':
                 session['audio']['output']['format']['sample_rate'] = 16000
             self.frame({'type': 'session.updated', 'session': session})
+            if route.path.startswith('/dialogue/'):
+                self.dialogue(route.path, session)
+                return
             sent = False
             total = 0
             # /drop-once/<name>: the first connection of each name is cut after its first audio; later ones work.
@@ -172,6 +175,42 @@ class Handler(BaseHTTPRequestHandler):
                     return
         except (OSError, ValueError, TypeError):
             pass
+
+    def dialogue(self, route, session):
+        # Synthetic PCM uses a nonzero utterance followed by exact silence. Give each lane
+        # its own IDs; only the captured audio positions are comparable across sockets.
+        assert session['audio']['input']['turn_detection'] == {'type': 'speaker_detection'}
+        lane = language = session['translation']['language']
+        samples = 0
+        speaking = False
+        while (event := self.read_frame()) is not None:
+            kind = event['type']
+            if kind == 'session.update':
+                if route.endswith('/reject'):
+                    self.frame({'type': 'error', 'error': {'code': 'unsupported'}})
+                elif route.endswith('/mismatch'):
+                    self.frame({'type': 'session.updated', 'session': session})
+                elif not route.endswith('/timeout'):
+                    session = event['session']
+                    language = session['translation']['language']
+                    self.frame({'type': 'session.updated', 'session': session})
+            elif kind == 'input_audio_buffer.append':
+                pcm = base64.b64decode(event['audio'])
+                voiced = any(pcm)
+                if voiced and not speaking:
+                    source = f'{lane}-{samples}'
+                    output = source + '-out'
+                    self.frame({'type': 'input_audio_buffer.speech_started', 'item_id': source,
+                                'audio_start_ms': samples // 16, 'speaker_id': 7})
+                    self.frame({'type': 'conversation.item.created', 'previous_item_id': source,
+                                'item': {'id': output, 'role': 'assistant'}})
+                    self.frame({'type': 'response.text.done', 'item_id': output,
+                                'text': {'en': 'Hello', 'ja': 'こんにちは', 'zh': '你好'}[language]})
+                samples += len(pcm) // 2
+                speaking = voiced
+            elif kind == 'session.finish':
+                self.frame({'type': 'session.finished'})
+                return
 
 
 server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)

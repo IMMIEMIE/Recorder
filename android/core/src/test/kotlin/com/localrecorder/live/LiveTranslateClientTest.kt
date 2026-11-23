@@ -110,6 +110,36 @@ class LiveTranslateClientTest {
     }
 
     @Test
+    fun dialogueWireProbeRecordsEachLaneAndRequiresTheRequestedAcknowledgement() {
+        fun probe(path: String) = DialogueProbe(
+            LiveTranslateConfig(endpoint = base + path, language = "en"), "mock-only", localhost = true, timeoutMs = 1000,
+        ).run(ByteArray(3200) { 1 }, peer = "zh", next = "ja", pace = false)
+
+        val ok = probe("/dialogue/ok")
+        assertEquals("confirmed", ok.getJSONObject("update_A").getString("type"))
+        for ((lane, words) in mapOf("A" to listOf("Hello", "こんにちは"), "B" to listOf("你好", "你好"))) {
+            assertEquals("session.finished", ok.getJSONObject("end_$lane").getString("type"))
+            assertEquals(2 * ok.getInt("switch_audio_ms"), ok.getJSONObject(lane).getInt("queued_audio_ms"))
+            val rows = ok.getJSONObject(lane).getJSONArray("final_translations")
+            assertEquals(words, (0 until rows.length()).map { rows.getJSONObject(it).getString("translation") })
+            val starts = ok.getJSONObject(lane).getJSONArray("starts")
+            assertEquals(7, starts.getJSONObject(0).getInt("speaker_id"))
+            assertEquals(ok.getInt("switch_audio_ms"), starts.getJSONObject(1).getInt("audio_start_ms"))
+        }
+        for ((route, result) in mapOf("reject" to "server_error", "mismatch" to "mismatch", "timeout" to "timeout")) {
+            assertEquals(result, probe("/dialogue/$route").getJSONObject("update_A").getString("type"))
+        }
+        val limited = probe("/rate-limited").getJSONObject("initial_A")
+        assertEquals("rate_limited", limited.getString("type"))
+        assertEquals(1007, limited.getInt("close_code"))
+        val httpLimited = probe("/dialogue/http-429").getJSONObject("initial_A")
+        assertEquals("rate_limited", httpLimited.getString("type"))
+        assertEquals(429, httpLimited.getInt("http_status"))
+        val silence = probe("/no-semantic")
+        assertEquals("no_result", silence.getJSONObject("update_A").getString("type"))
+    }
+
+    @Test
     fun audioSessionReceivesSpeechOnce() {
         val spoken = Probe()
         spoken.connect("/ok", audio = true)

@@ -85,6 +85,7 @@ struct TranscriptList: View {
                     if row.startsSegment {
                         SessionMarker(text: InterfaceLanguageSettings.shared.string("继续录制") + (model.segmentStart(item.segment).map { " " + SessionExport.stamp($0, zone: .current) } ?? ""))
                     }
+                    if let marker = item.languages.switchMarker { SessionMarker(text: marker) }
                     if item.isBreak {
                         SessionMarker(text: InterfaceLanguageSettings.shared.string(SessionExport.breakMarker))
                     } else {
@@ -111,11 +112,11 @@ struct TranscriptList: View {
                 // Refresh the selectable AppKit text when a revision replaces its contents.
                 // The surrounding transcript row retains its ID and scroll position.
                 if !item.text.isEmpty {
-                    Text(item.text).modifier(DesignType(item.translation.isEmpty ? .translation : .source)).foregroundStyle(item.translation.isEmpty ? DesignTokens.onSurface : DesignTokens.onSurfaceVariant).lineSpacing(7).textSelection(.enabled).id(item.text)
+                    Text(item.languages.speakerPrefix + item.text).modifier(DesignType(item.translation.isEmpty ? .translation : .source)).foregroundStyle(item.translation.isEmpty ? DesignTokens.onSurface : DesignTokens.onSurfaceVariant).lineSpacing(7).textSelection(.enabled).id(item.text)
                 }
                 let translation = item.translation
                 if !translation.isEmpty {
-                    Text(translation).modifier(DesignType(.translation)).lineSpacing(5).foregroundStyle(DesignTokens.onSurface).textSelection(.enabled).id(translation)
+                    Text((item.text.isEmpty ? item.languages.speakerPrefix : "") + translation).modifier(DesignType(.translation)).lineSpacing(5).foregroundStyle(DesignTokens.onSurface).textSelection(.enabled).id(translation)
                 } else if item.translating {
                     Text("翻译中…").font(.caption).foregroundStyle(.tertiary)
                 }

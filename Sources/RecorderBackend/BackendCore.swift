@@ -125,14 +125,15 @@ final class TranslationJob {
     let segmentID: Int
     let source: String
     var cancelled = false
-    var target = ""
+    let target: String
     var text = ""
     var revision = 0
     var sent = 0.0
     var started = 0.0
     var stream: AsyncThrowingStream<String, Error>.Iterator?
 
-    init(unitID: Int, sessionID: String, segmentID: Int, source: String) {
+    init(unitID: Int, sessionID: String, segmentID: Int, source: String, target: String) {
+        self.target = target
         self.unitID = unitID
         self.sessionID = sessionID
         self.segmentID = segmentID
@@ -402,7 +403,7 @@ public actor BackendCore {
             case .streamFinal(let value):
                 let valid = value.sessionID == session
                 if valid {
-                    send(["type": "final", "text": value.text, "elapsed_ms": 0,
+                    send(["type": "final", "text": value.text, "elapsed_ms": 0, "translation_target": translation.targetLanguage,
                           "session_id": value.sessionID, "segment_id": value.segmentID,
                           "revision": value.revision, "start_sample": value.startSample,
                           "forced_cut": value.forcedCut])
@@ -446,6 +447,7 @@ public actor BackendCore {
         let valid = item.sessionID == session && (item.final || !finalSegments.contains(item.segmentID))
         if valid {
             send(["type": item.final ? "final" : "partial", "text": text, "elapsed_ms": duration,
+                  "translation_target": translation.targetLanguage,
                   "session_id": item.sessionID, "segment_id": item.segmentID, "revision": item.revision,
                   "start_sample": item.startSample, "end_sample": item.endSample, "forced_cut": item.forcedCut])
             if item.final {
@@ -532,7 +534,7 @@ public actor BackendCore {
             dropped.append(translations.removeFirst())
         }
         nextUnitID += 1
-        let job = TranslationJob(unitID: nextUnitID, sessionID: session, segmentID: unit.anchorSegment, source: unit.source)
+        let job = TranslationJob(unitID: nextUnitID, sessionID: session, segmentID: unit.anchorSegment, source: unit.source, target: translation.targetLanguage)
         for old in dropped { endTranslation(old) }
         if !dropped.isEmpty && overloadSession != session {
             overloadSession = session
@@ -553,10 +555,9 @@ public actor BackendCore {
             return finishTranslation(job)
         }
         if job.stream == nil {
-            let target = translation.targetLanguage
+            let target = job.target
             let pairs = context.filter { $0.target == target && $0.session == job.sessionID }
                 .map { ($0.source, $0.text) }
-            job.target = target
             job.text = ""
             job.revision = 0
             job.sent = backendNow()
@@ -790,6 +791,10 @@ public actor BackendCore {
             throw BackendError.value("请等待翻译模型操作结束")
         }
         try config.save(translationPath)
+        if config.targetLanguage != translation.targetLanguage && translation.enabled && translation.provider == "local" {
+            // Finish a sentence carried across a forced ASR cut in its original language.
+            queueUnit(session: session, unit: planner.flush(session: session))
+        }
         translation = config
         if busy {
             translatorStatus(translatorState, translatorDetail)

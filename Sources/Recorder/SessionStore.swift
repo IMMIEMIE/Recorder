@@ -1,5 +1,29 @@
 import Foundation
 
+/// Optional v1 fields shared by a transcript and its stored row. Codable puts them at row level.
+struct SessionRowLanguages: Codable, Equatable {
+    var target: String?
+    var source: String?
+    var speaker: String?
+    var languageSwitch: String?
+    enum CodingKeys: String, CodingKey {
+        case target = "target_language", source = "source_language", speaker, languageSwitch = "language_switch"
+    }
+    var switchMarker: String? {
+        guard let languageSwitch else { return nil }
+        let name = SessionExport.clean(languageSwitch)
+        return name.isEmpty ? nil : "译文语言已切换为 " + name
+    }
+    var speakerPrefix: String {
+        switch speaker {
+        case "A": return "A："
+        case "B": return "B："
+        case "unknown": return "未识别："
+        default: return ""
+        }
+    }
+}
+
 /// Session file v1 (docs/SESSIONS.md). One finished-text record per conversation; the format is
 /// shared with the Android app. Readers ignore unknown fields.
 struct SessionFile: Codable, Equatable, Identifiable {
@@ -42,18 +66,32 @@ struct SessionFile: Codable, Equatable, Identifiable {
         var offsetMs: Int64
         var source: String
         var translation: String
+        var languages: SessionRowLanguages
 
         enum CodingKeys: String, CodingKey { case segment, kind, offsetMs = "offset_ms", source, translation }
-        init(segment: Int, kind: Kind = .text, offsetMs: Int64, source: String, translation: String) {
+        init(segment: Int, kind: Kind = .text, offsetMs: Int64, source: String, translation: String,
+             languages: SessionRowLanguages = .init()) {
+            self.languages = languages
             self.segment = segment; self.kind = kind; self.offsetMs = offsetMs; self.source = source; self.translation = translation
         }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
+            languages = try SessionRowLanguages(from: decoder)
             segment = try c.decode(Int.self, forKey: .segment)
             kind = try c.decode(Kind.self, forKey: .kind)
             offsetMs = try c.decodeIfPresent(Int64.self, forKey: .offsetMs) ?? 0
             source = try c.decodeIfPresent(String.self, forKey: .source) ?? ""
             translation = try c.decodeIfPresent(String.self, forKey: .translation) ?? ""
+        }
+
+        func encode(to encoder: Encoder) throws {
+            try languages.encode(to: encoder)
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(segment, forKey: .segment)
+            try c.encode(kind, forKey: .kind)
+            try c.encode(offsetMs, forKey: .offsetMs)
+            try c.encode(source, forKey: .source)
+            try c.encode(translation, forKey: .translation)
         }
     }
 

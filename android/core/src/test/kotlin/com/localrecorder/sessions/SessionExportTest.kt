@@ -38,6 +38,19 @@ class SessionExportTest {
     }
 
     @Test
+    fun mixedLanguagesAndDialogueSurviveSavingAndExport() {
+        val folder = File(fixtures, "dialogue")
+        val record = SessionRecord.fromJson(File(folder, "session.json").readText())
+        assertEquals("ja", record.rows[2].targetLanguage)
+        assertEquals("zh", record.rows[2].sourceLanguage)
+        assertEquals(record, SessionRecord.fromJson(record.toJson()))
+        for (content in ExportContent.entries) for (format in ExportFormat.entries) {
+            val expected = File(folder, "expected/${content.key}.${format.extension}").readBytes()
+            assertArrayEquals(expected, SessionExport.render(record, format, content, zone).toByteArray())
+        }
+    }
+
+    @Test
     fun fileNamesMatch() {
         val names = meta.getJSONObject("file_names")
         assertEquals(names.getString("txt"), SessionExport.fileName(session, ExportFormat.TXT, zone))
