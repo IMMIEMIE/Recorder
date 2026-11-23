@@ -43,6 +43,7 @@ data class UiState(
     val options: AppOptions = AppOptions(),
     val hasKey: Boolean = false,
     val testing: Boolean = false,
+    val testSucceeded: Boolean? = null,
     val settingsMessage: String = "",
     /** Saved sessions plus the one being recorded, most recently updated first. */
     val sessions: List<SessionSummary> = emptyList(),
@@ -203,7 +204,7 @@ class SessionController(private val context: Context) : SessionPlatform {
             config = saved
             options = draftOptions
             _ui.update {
-                it.copy(config = saved, options = draftOptions, hasKey = secrets.has(saved.keyAccount), settingsMessage = "已保存")
+                it.copy(config = saved, options = draftOptions, hasKey = secrets.has(saved.keyAccount), settingsMessage = "已保存", testSucceeded = null)
             }
             true
         } catch (e: LiveTranslateException) {
@@ -232,7 +233,7 @@ class SessionController(private val context: Context) : SessionPlatform {
         val draftConfig = try {
             draft.normalized(allowLocalhost)
         } catch (e: LiveTranslateException) {
-            _ui.update { it.copy(settingsMessage = e.message.orEmpty()) }
+            _ui.update { it.copy(testSucceeded = false, settingsMessage = e.message.orEmpty()) }
             return
         }
         val secret = key.trim().ifEmpty { secrets.get(draftConfig.keyAccount).orEmpty() }
@@ -243,17 +244,17 @@ class SessionController(private val context: Context) : SessionPlatform {
             override fun onEnd(error: String?, recoverable: Boolean, cause: EndCause) {
                 if (tester !== probe) return
                 tester = null
-                _ui.update { it.copy(testing = false, settingsMessage = error ?: "连接成功：会话已建立并确认配置，未发送音频") }
+                _ui.update { it.copy(testing = false, testSucceeded = error == null, settingsMessage = error ?: "连接成功：会话已建立并确认配置，未发送音频") }
             }
         }, mainExecutor, finishTimeoutMs = 10_000, allowLocalhost = allowLocalhost)
         try {
             probe.connect(draftConfig, secret)
         } catch (e: LiveTranslateException) {
-            _ui.update { it.copy(settingsMessage = e.message.orEmpty()) }
+            _ui.update { it.copy(testSucceeded = false, settingsMessage = e.message.orEmpty()) }
             return
         }
         tester = probe
-        _ui.update { it.copy(testing = true, settingsMessage = "正在测试连接…") }
+        _ui.update { it.copy(testing = true, testSucceeded = null, settingsMessage = "正在测试连接…") }
     }
 
     private fun recordingEnded(id: String, record: SessionRecord?) {
