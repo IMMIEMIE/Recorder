@@ -241,6 +241,7 @@ struct MainView: View {
                     }
                 }
                 VStack(spacing: 14) {
+                    if model.liveServiceSlow && model.recording { SlowLiveServiceView(model: model) }
                     if !model.error.isEmpty {
                         HStack(alignment: .top) {
                             Image(systemName: "exclamationmark.circle")

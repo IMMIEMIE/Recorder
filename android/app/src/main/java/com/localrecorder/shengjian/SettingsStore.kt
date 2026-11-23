@@ -1,6 +1,7 @@
 package com.localrecorder.shengjian
 
 import android.content.Context
+import com.localrecorder.live.LiveTranslateException
 import com.localrecorder.live.LiveTranslateConfig
 import org.json.JSONObject
 
@@ -21,7 +22,10 @@ class SettingsStore(context: Context) {
     /** Validates and normalizes before saving; throws LiveTranslateException on invalid input. */
     fun save(config: LiveTranslateConfig, allowLocalhost: Boolean = false): LiveTranslateConfig {
         val normalized = config.normalized(allowLocalhost)
-        prefs.edit().putString(KEY, normalized.toJson()).apply()
+        // A saved selection must survive an immediate app/process restart.
+        if (!prefs.edit().putString(KEY, normalized.toJson()).commit()) {
+            throw LiveTranslateException("服务配置未能写入本机，请检查存储空间")
+        }
         return normalized
     }
 

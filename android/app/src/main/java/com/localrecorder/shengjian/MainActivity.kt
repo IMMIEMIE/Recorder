@@ -484,7 +484,10 @@ private fun TranscriptScreen(
             }
             if (session.error.isNotEmpty()) Message(session.error, MaterialTheme.colorScheme.errorContainer, controller::dismissMessages)
             if (session.notice.isNotEmpty()) Message(session.notice, MaterialTheme.colorScheme.tertiaryContainer, controller::dismissMessages)
-            if (session.slowNetwork) Message("网络较慢，音频发送有积压，暂停上传期间的语音不会翻译。", MaterialTheme.colorScheme.tertiaryContainer) {}
+            if (session.slowService || session.slowNetwork) {
+                Message("「" + ui.config.profile.name + "」服务处理较慢，部分语音可能未翻译。", MaterialTheme.colorScheme.tertiaryContainer) {}
+                ProfileSwitchButtons(ui.config, controller::switchRecordingProfile)
+            }
             Subtitles(rows, trimmed = ui.viewingRecording && session.trimmed, emptyText = emptyText, modifier = Modifier.weight(1f))
         }
     }
@@ -668,7 +671,7 @@ private fun ExportDialog(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsScreen(controller: SessionController, ui: UiState, onBack: () -> Unit) {
-    var endpoint by rememberSaveable { mutableStateOf(ui.config.endpoint) }
+    var profile by rememberSaveable(ui.config.profile, stateSaver = profileSaver) { mutableStateOf(ui.config.profile) }
     var key by remember { mutableStateOf("") }
     var language by rememberSaveable { mutableStateOf(ui.config.language) }
     var audioOutput by rememberSaveable { mutableStateOf(ui.config.audioOutput) }
@@ -678,9 +681,9 @@ private fun SettingsScreen(controller: SessionController, ui: UiState, onBack: (
     var bluetoothMicrophone by rememberSaveable { mutableStateOf(ui.options.bluetoothMicrophone) }
     var saveSessions by rememberSaveable { mutableStateOf(ui.options.saveSessions) }
     var confirmClear by rememberSaveable { mutableStateOf(false) }
-    val draft = LiveTranslateConfig(endpoint, language, audioOutput, volume, timing)
+    val draft = LiveTranslateConfig(ui.config.catalog.using(profile), language, audioOutput, volume, timing)
     val draftOptions = AppOptions(autoReconnect, bluetoothMicrophone, saveSessions)
-    val keySaved = remember(endpoint, ui.hasKey) { controller.hasKey(endpoint.trim()) }
+    val keySaved = remember(profile.endpoint, ui.hasKey) { controller.hasKey(profile.endpoint.trim()) }
 
     Scaffold(
         topBar = {
@@ -694,17 +697,12 @@ private fun SettingsScreen(controller: SessionController, ui: UiState, onBack: (
             Modifier.padding(padding).imePadding().fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("由 Qwen3.8 LiveTranslate 同时生成原文和译文，所有识别与翻译都通过云端 API 完成。", style = MaterialTheme.typography.bodyMedium)
-            Text("模型：${LiveTranslateConfig.MODEL}", style = MaterialTheme.typography.bodySmall)
-            OutlinedTextField(
-                value = endpoint,
-                onValueChange = { endpoint = it; key = "" },
-                label = { Text("服务地址") },
-                placeholder = { Text("wss://…/api-ws/v1/realtime") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                modifier = Modifier.fillMaxWidth(),
-            )
+            LiveServiceProfileEditor(profile, ui.config, ui.testing, onEdit = {
+                if (profile.endpoint != it.endpoint || profile.id != it.id) key = ""
+                profile = it
+            }, onSelect = {
+                if (controller.selectProfile(it)) { key = ""; profile = it }
+            })
             OutlinedTextField(
                 value = key,
                 onValueChange = { key = it },
@@ -749,7 +747,7 @@ private fun SettingsScreen(controller: SessionController, ui: UiState, onBack: (
                 saveSessions,
             ) { saveSessions = it }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = { if (controller.saveSettings(draft, key, draftOptions)) key = "" }) { Text("保存") }
+                Button(enabled = !ui.testing, onClick = { if (controller.saveSettings(draft, key, draftOptions)) key = "" }) { Text("保存") }
                 OutlinedButton(onClick = { controller.testConnection(draft, key) }, enabled = !ui.testing) { Text("测试连接") }
                 if (ui.testing) CircularProgressIndicator(Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
             }

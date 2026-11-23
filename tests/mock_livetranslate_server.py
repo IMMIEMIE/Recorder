@@ -63,8 +63,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
-        assert parse_qs(route.query)['model'] == ['qwen3.8-livetranslate-flash-realtime']
-        assert self.headers.get('Authorization') == 'Bearer mock-only'
+        model, = parse_qs(route.query)['model']
+        profile_route = route.path.startswith('/profiles/')
+        if profile_route:
+            allowed = {'/profiles/ab': ('qwen3.8-livetranslate-flash-realtime', 'model-a', 'model+b'), '/profiles/c': ('model-c',)}
+            if model not in allowed.get(route.path, ()):
+                self.send_error(404)
+                return
+        else:
+            expected = 'model+b' if route.path.startswith('/drop-once/profile-') else 'qwen3.8-livetranslate-flash-realtime'
+            assert model == expected
+        credential = 'mock-c' if route.path == '/profiles/c' else 'mock-only'
+        if self.headers.get('Authorization') != 'Bearer ' + credential:
+            self.send_error(401)
+            return
         key = self.headers['Sec-WebSocket-Key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
         self.send_response(101)
         self.send_header('Upgrade', 'websocket')
@@ -83,6 +95,18 @@ class Handler(BaseHTTPRequestHandler):
             audio_output = 'audio' in config['session']['output_modalities']
             assert config['session']['output_modalities'] in (['text'], ['text', 'audio'])
             assert config['session']['audio']['input']['format']['sample_rate'] == 16000
+            if profile_route:
+                detection = config['session']['audio']['input']['turn_detection']
+                expected = ({'type': 'speaker_detection'} if model == 'model+b' else
+                            {'type': 'server_vad', 'threshold': 0.4, 'silence_duration_ms': 600})
+                if model == 'qwen3.8-livetranslate-flash-realtime':
+                    expected = {'type': 'server_vad', 'threshold': 0.5, 'silence_duration_ms': 1000}
+                assert detection == expected and config['session']['audio']['input']['format']['type'] == 'pcm'
+            if route.path == '/wrong-language':
+                config['session']['translation']['language'] = 'invalid'
+            if route.path == '/model-error':
+                self.frame({'type': 'error', 'error': {'code': 'ModelNotFound', 'message': 'mock-only'}})
+                return
             if route.path == '/error':
                 self.frame({'type': 'error', 'error': {'code': 'insufficient_quota', 'message': 'DO NOT DISPLAY mock-only'}})
                 return
@@ -126,7 +150,10 @@ class Handler(BaseHTTPRequestHandler):
                             self.frame(audio)
                             self.frame(audio)
                         self.frame({'type': 'conversation.item.created', 'previous_item_id': 'source', 'item': {'id': 'translation', 'role': 'assistant'}})
-                        self.frame({'type': 'input_audio_buffer.speech_started', 'item_id': 'source', 'audio_start_ms': 1200})
+                        self.frame({'type': 'input_audio_buffer.speech_started', 'item_id': 'source', 'audio_start_ms': 0 if profile_route or route.path == '/slow-reader' else 1200})
+                        if route.path == '/slow-reader':
+                            for offset in [100, 30000]:
+                                self.frame({'type': 'input_audio_buffer.speech_stopped', 'item_id': 'source', 'audio_end_ms': offset})
                         self.frame({'type': 'conversation.item.input_audio_transcription.delta', 'item_id': 'source', 'delta': 'Hello'})
                         sent = True
                 elif event['type'] == 'session.finish':
@@ -134,6 +161,8 @@ class Handler(BaseHTTPRequestHandler):
                         threading.Event().wait(2)
                         return
                     if sent:
+                        if profile_route:
+                            self.frame({'type': 'input_audio_buffer.speech_stopped', 'item_id': 'source', 'audio_end_ms': total // 32})
                         self.frame({'type': 'conversation.item.input_audio_transcription.completed', 'item_id': 'source', 'transcript': 'Hello world.'})
                         self.frame({'type': 'response.audio_transcript.done' if audio_output else 'response.text.done', 'item_id': 'translation', 'transcript' if audio_output else 'text': '你好，世界🌏。'})
                         if audio_output:

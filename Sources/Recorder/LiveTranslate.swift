@@ -18,12 +18,16 @@ struct LiveTranslatePreferences: Codable, Equatable {
 }
 
 struct LiveTranslateConfiguration: Codable, Equatable {
-    static let model = "qwen3.8-livetranslate-flash-realtime"
     static let languages = [("zh", "中文"), ("en", "English"), ("ja", "日本語"), ("ko", "한국어"),
                             ("fr", "Français"), ("de", "Deutsch"), ("es", "Español"), ("ru", "Русский")]
     var enabled = false
     var provider: LiveTranslateProvider = .qwenCloud
-    var endpoint = "wss://maas.qianwenaiapi.com/api-ws/v1/realtime"
+    var catalog = LiveServiceCatalog()
+    var profile: LiveServiceProfile { catalog.selected }
+    var endpoint: String {
+        get { profile.endpoint }
+        set { var edited = profile; edited.endpoint = newValue; catalog.use(edited) }
+    }
     var language = "zh"
     var audioOutput = false
     var volume: Float = 0.8
@@ -32,8 +36,8 @@ struct LiveTranslateConfiguration: Codable, Equatable {
     var localPreferences = LiveTranslatePreferences()
     var outputModalities: [String] { audioOutput ? ["text", "audio"] : ["text"] }
     var supportedLanguages: [(String, String)] { provider == .hyLocal ? [("zh", "中文"), ("en", "English")] : Self.languages }
-    var modelName: String { provider == .hyLocal ? "Hy-SimulMT Interleave Q4_K_M" : "Qwen3.8 LiveTranslate" }
-    enum CodingKeys: String, CodingKey { case enabled, provider, endpoint, language, audioOutput, volume, playbackTiming, cloudPreferences, localPreferences }
+    var modelName: String { provider == .hyLocal ? "Hy-SimulMT Interleave Q4_K_M" : profile.name }
+    enum CodingKeys: String, CodingKey { case enabled, provider, catalog, language, audioOutput, volume, playbackTiming, cloudPreferences, localPreferences }
     init(enabled: Bool = false, endpoint: String = "wss://maas.qianwenaiapi.com/api-ws/v1/realtime", language: String = "zh",
          audioOutput: Bool = false, volume: Float = 0.8, playbackTiming: LiveTranslatePlaybackTiming = .streaming,
          provider: LiveTranslateProvider = .qwenCloud) {
@@ -46,7 +50,13 @@ struct LiveTranslateConfiguration: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try c.decode(Bool.self, forKey: .enabled)
         provider = try c.decodeIfPresent(LiveTranslateProvider.self, forKey: .provider) ?? .qwenCloud
-        endpoint = try c.decode(String.self, forKey: .endpoint)
+        if let saved = try c.decodeIfPresent(LiveServiceCatalog.self, forKey: .catalog) {
+            catalog = saved
+        } else {
+            enum LegacyKeys: CodingKey { case endpoint }
+            let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+            endpoint = try legacy.decode(String.self, forKey: .endpoint)
+        }
         language = try c.decode(String.self, forKey: .language)
         audioOutput = try c.decodeIfPresent(Bool.self, forKey: .audioOutput) ?? false
         volume = try c.decodeIfPresent(Float.self, forKey: .volume) ?? 0.8
@@ -61,20 +71,24 @@ struct LiveTranslateConfiguration: Codable, Equatable {
 
     func url(allowLocalhost: Bool = false) throws -> URL {
         guard provider == .qwenCloud else { throw AIError.message("本地 Hy-SimulMT 不使用云端服务地址") }
+        try profile.validate()
         guard var parts = URLComponents(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
               let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil, parts.fragment == nil,
               parts.scheme == "wss" || (allowLocalhost && parts.scheme == "ws" && host == "127.0.0.1"),
+              (parts.port.map { (1...65535).contains($0) } ?? true),
               !parts.path.isEmpty, parts.path != "/",
               (parts.queryItems ?? []).allSatisfy({ $0.name == "model" }),
               volume.isFinite, (0...1).contains(volume),
               Self.languages.contains(where: { $0.0 == language }) else {
             throw AIError.message("请填写有效的 WSS 实时服务地址，并选择支持的目标语言")
         }
-        parts.queryItems = [URLQueryItem(name: "model", value: Self.model)]
+        parts.queryItems = [URLQueryItem(name: "model", value: profile.modelID)]
+        // Common server query decoders treat a literal plus as a space.
+        parts.percentEncodedQuery = parts.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         guard let url = parts.url else { throw AIError.message("LiveTranslate 地址无效") }
         return url
     }
-    func normalized() throws -> Self {
+    func normalized(allowLocalhost: Bool = false) throws -> Self {
         var result = self
         if provider == .hyLocal {
             guard supportedLanguages.contains(where: { $0.0 == language }), volume.isFinite, (0...1).contains(volume) else {
@@ -83,7 +97,7 @@ struct LiveTranslateConfiguration: Codable, Equatable {
             result.rememberActivePreferences()
             return result
         }
-        var parts = URLComponents(url: try url(), resolvingAgainstBaseURL: false)!
+        var parts = URLComponents(url: try url(allowLocalhost: allowLocalhost), resolvingAgainstBaseURL: false)!
         parts.query = nil; parts.host = parts.host?.lowercased()
         if parts.port == 443 { parts.port = nil }
         result.endpoint = parts.url!.absoluteString
@@ -107,12 +121,12 @@ struct LiveTranslateConfiguration: Codable, Equatable {
               let value = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
         return value
     }
-    func save(defaults: UserDefaults = .standard) throws {
-        defaults.set(try JSONEncoder().encode(try normalized()), forKey: "livetranslate.configuration.v1")
+    func save(defaults: UserDefaults = .standard, allowLocalhost: Bool = false) throws {
+        defaults.set(try JSONEncoder().encode(try normalized(allowLocalhost: allowLocalhost)), forKey: "livetranslate.configuration.v1")
     }
     var sessionUpdate: [String: Any] {
-        var audio: [String: Any] = ["input": ["format": ["type": "pcm", "sample_rate": 16000],
-            "turn_detection": ["type": "server_vad", "threshold": 0.5, "silence_duration_ms": 1000]]]
+        var audio: [String: Any] = ["input": ["format": ["type": profile.inputFormat, "sample_rate": 16000],
+            "turn_detection": profile.detectionParameters]]
         if audioOutput { audio["output"] = ["format": ["type": "pcm", "sample_rate": 24000]] }
         return ["type": "session.update", "session": [
             "output_modalities": outputModalities, "translation": ["language": language], "audio": audio]]
@@ -178,8 +192,37 @@ struct LiveTranslateEvents {
     var hasUnmatchedOutput: Bool { !unmatchedOutputs.isEmpty }
 }
 
+enum LiveCloudEndKind {
+    case other, rateLimited, noResult
+
+    static func classify(code: Int? = nil, detail: String) -> Self {
+        let value = detail.lowercased()
+        if value.contains("no semantic result") { return .noResult }
+        if code == 1007 || code == 429 || ["rate limit", "rate_limit", "ratelimit", "throttl"].contains(where: value.contains) {
+            return .rateLimited
+        }
+        return .other
+    }
+    var message: String? {
+        switch self {
+        case .rateLimited: return "LiveTranslate 服务限流，请稍后重试；已有文字已保留"
+        case .noResult: return "LiveTranslate 长时间没有识别结果，服务已结束会话；已有文字已保留"
+        case .other: return nil
+        }
+    }
+}
+
 /// All transport state lives on one serial queue; audio producers only enqueue bounded data.
 final class LiveTranslateClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private(set) var endKind = LiveCloudEndKind.other
+    var onSlowService: ((Bool) -> Void)?
+    private var windowStart: TimeInterval = 0
+    private var windowQueue = 0
+    private var windowBytes = 0
+    private var slow = false
+    private var uplinkSlow = false
+    private var serviceSlow = false
+    private var progressAnchor: (time: TimeInterval, offsetMS: Int)?
     var onReady: (() -> Void)?
     var onEvent: (([String: Any]) -> Void)?
     var onEnd: ((String?) -> Void)?
@@ -196,8 +239,11 @@ final class LiveTranslateClient: NSObject, URLSessionTaskDelegate, @unchecked Se
     private var deadline: DispatchWorkItem?
     private let finishTimeout: TimeInterval
     private let allowLocalhost: Bool
+    private let uptime: () -> TimeInterval
 
-    init(finishTimeout: TimeInterval = 30, allowLocalhost: Bool = false) {
+    init(finishTimeout: TimeInterval = 30, allowLocalhost: Bool = false,
+         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.uptime = uptime
         self.finishTimeout = finishTimeout; self.allowLocalhost = allowLocalhost
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
@@ -205,6 +251,7 @@ final class LiveTranslateClient: NSObject, URLSessionTaskDelegate, @unchecked Se
 
     func connect(configuration: LiveTranslateConfiguration, key: String, allowLocalhost: Bool = false) throws {
         guard !key.isEmpty else { throw AIError.message("请在 LiveTranslate 设置中保存专用 API Key") }
+        guard key.utf8.allSatisfy({ (33...126).contains($0) }) else { throw AIError.message("API Key 格式无效，请重新填写") }
         var request = URLRequest(url: try configuration.url(allowLocalhost: allowLocalhost || self.allowLocalhost))
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         let settings = URLSessionConfiguration.ephemeral
@@ -223,10 +270,38 @@ final class LiveTranslateClient: NSObject, URLSessionTaskDelegate, @unchecked Se
     }
     func append(_ data: Data) -> Bool {
         queue.sync {
-            guard ready, !finishing, !closed, buffered + data.count <= 320_000 else { return false }
+            guard ready, !finishing, !closed else { return false }
+            let now = uptime()
+            var nextSlow = uplinkSlow
+            if now - windowStart >= 15, windowBytes > 0 {
+                nextSlow = Double(windowQueue + windowBytes - buffered) < 0.8 * Double(windowBytes)
+                windowStart = now; windowQueue = buffered; windowBytes = 0
+            }
+            if buffered > 48_000 { nextSlow = true }
+            uplinkSlow = nextSlow
+            publishServiceSpeed()
+            guard buffered + data.count <= 320_000 else { return false }
+            windowBytes += data.count
             enqueue(["type": "input_audio_buffer.append", "audio": data.base64EncodedString()], bytes: data.count)
             return true
         }
+    }
+    // VAD timestamps also show a slow reader when the OS has already drained its local send queue.
+    private func observeProgress(_ offsetMS: Int) {
+        let now = uptime()
+        guard let anchor = progressAnchor else { progressAnchor = (now, offsetMS); return }
+        let elapsed = now - anchor.time
+        guard elapsed >= 15, offsetMS > anchor.offsetMS else { return }
+        serviceSlow = Double(offsetMS - anchor.offsetMS) < 800 * elapsed
+        progressAnchor = (now, offsetMS)
+        publishServiceSpeed()
+    }
+    private func publishServiceSpeed() {
+        let value = uplinkSlow || serviceSlow
+        guard slow != value else { return }
+        slow = value
+        let callback = onSlowService
+        DispatchQueue.main.async { callback?(value) }
     }
     func finish() {
         queue.async {
@@ -279,6 +354,9 @@ final class LiveTranslateClient: NSObject, URLSessionTaskDelegate, @unchecked Se
                     guard let event = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                           let type = event["type"] as? String else { self.end("LiveTranslate 返回无效数据"); return }
                     switch type {
+                    case "input_audio_buffer.speech_started", "input_audio_buffer.speech_stopped":
+                        let field = type.hasSuffix("started") ? "audio_start_ms" : "audio_end_ms"
+                        if self.ready, let offset = event[field] as? Int { self.observeProgress(offset) }
                     case "session.created":
                         if !self.configured { self.configured = true; self.enqueue(configuration.sessionUpdate) }
                     case "session.updated":
@@ -296,14 +374,16 @@ final class LiveTranslateClient: NSObject, URLSessionTaskDelegate, @unchecked Se
                             }
                         }
                         if !self.ready {
-                            self.ready = true; self.deadline?.cancel()
+                            self.ready = true; self.deadline?.cancel(); self.windowStart = self.uptime()
                             let callback = self.onReady; DispatchQueue.main.async { callback?() }
                         }
                     case "session.finished":
                         self.end(self.finishing ? nil : "LiveTranslate 会话意外结束，已保留收到的文字"); return
                     case "error", "conversation.item.input_audio_transcription.failed":
                         let code = (event["error"] as? [String: Any])?["code"] as? String ?? ""
-                        self.end(Self.serviceError(code)); return
+                        let message = (event["error"] as? [String: Any])?["message"] as? String ?? ""
+                        self.endKind = .classify(detail: code + " " + message)
+                        self.end(self.endKind.message ?? Self.serviceError(code)); return
                     case "response.done":
                         let status = (event["response"] as? [String: Any])?["status"] as? String
                         if status != "completed" { self.end("LiveTranslate 译文未完成，已保留收到的文字"); return }
@@ -316,7 +396,11 @@ final class LiveTranslateClient: NSObject, URLSessionTaskDelegate, @unchecked Se
         }
     }
     private func connectionError() -> String {
-        switch (socket?.response as? HTTPURLResponse)?.statusCode {
+        let status = (socket?.response as? HTTPURLResponse)?.statusCode
+        let reason = socket?.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        endKind = .classify(code: status == 429 ? status : socket?.closeCode.rawValue, detail: reason)
+        if let message = endKind.message { return message }
+        switch status {
         case 401, 403: return "LiveTranslate API Key 无效或无权访问，请核对密钥、区域和工作空间"
         case 429: return "LiveTranslate 请求受限或额度不足，请稍后重试"
         default: return "LiveTranslate 连接中断或无法连接，请检查网络、服务地址及 API Key；已有文字已保留"

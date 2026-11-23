@@ -1,6 +1,5 @@
 package com.localrecorder.live
 
-import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URI
 
@@ -17,12 +16,18 @@ enum class PlaybackTiming(val id: String, val title: String) {
 
 /** Mirrors the macOS LiveTranslateConfiguration; the persisted JSON uses the same keys. */
 data class LiveTranslateConfig(
-    val endpoint: String = DEFAULT_ENDPOINT,
+    val catalog: LiveServiceCatalog = LiveServiceCatalog(LiveServiceProfile()),
     val language: String = "zh",
     val audioOutput: Boolean = false,
     val volume: Float = 0.8f,
     val playbackTiming: PlaybackTiming = PlaybackTiming.STREAMING,
 ) {
+    constructor(endpoint: String, language: String = "zh", audioOutput: Boolean = false, volume: Float = 0.8f,
+                playbackTiming: PlaybackTiming = PlaybackTiming.STREAMING) :
+        this(LiveServiceCatalog(LiveServiceProfile(endpoint = endpoint)), language, audioOutput, volume, playbackTiming)
+
+    val profile get() = catalog.selected
+    val endpoint get() = profile.endpoint
     companion object {
         const val MODEL = "qwen3.8-livetranslate-flash-realtime"
         const val DEFAULT_ENDPOINT = "wss://maas.qianwenaiapi.com/api-ws/v1/realtime"
@@ -38,7 +43,8 @@ data class LiveTranslateConfig(
             return try {
                 val json = JSONObject(text)
                 LiveTranslateConfig(
-                    endpoint = json.getString("endpoint"),
+                    catalog = json.optJSONObject("catalog")?.let(LiveServiceCatalog::parse)
+                        ?: LiveServiceCatalog(LiveServiceProfile(endpoint = json.getString("endpoint"))),
                     language = json.getString("language"),
                     audioOutput = json.optBoolean("audioOutput", false),
                     volume = json.optDouble("volume", 0.8).toFloat(),
@@ -56,8 +62,9 @@ data class LiveTranslateConfig(
     /** Separate credential namespace per endpoint, as on macOS. */
     val keyAccount: String get() = "livetranslate:$endpoint"
 
-    /** Validated connection URL with the fixed model query. */
+    /** Validated connection URL with the selected model query. */
     fun url(allowLocalhost: Boolean = false): String {
+        profile.validate()
         val invalid = LiveTranslateException("请填写有效的 WSS 实时服务地址，并选择支持的目标语言")
         val uri = try {
             URI(endpoint.trim())
@@ -70,47 +77,30 @@ data class LiveTranslateConfig(
         val queryNames = uri.rawQuery?.split('&')?.map { it.substringBefore('=') } ?: emptyList()
         if (host.isNullOrEmpty() || uri.rawUserInfo != null || uri.rawFragment != null ||
             !(scheme == "wss" || (allowLocalhost && scheme == "ws" && host == "127.0.0.1")) ||
-            path.isNullOrEmpty() || path == "/" ||
+            path.isNullOrEmpty() || path == "/" || uri.port == 0 || uri.port > 65535 ||
             !queryNames.all { it == "model" } ||
             !volume.isFinite() || volume !in 0f..1f ||
             LANGUAGES.none { it.first == language }
         ) throw invalid
         val port = if (uri.port == -1) "" else ":${uri.port}"
-        return "$scheme://$host$port$path?model=$MODEL"
+        val model = java.net.URLEncoder.encode(profile.modelID, "UTF-8")
+        return "$scheme://$host$port$path?model=$model"
     }
 
     fun normalized(allowLocalhost: Boolean = false): LiveTranslateConfig {
         val uri = URI(url(allowLocalhost))
         val port = if (uri.port == -1 || (uri.port == 443 && uri.scheme == "wss")) "" else ":${uri.port}"
-        return copy(endpoint = "${uri.scheme}://${uri.host.lowercase()}$port${uri.rawPath}")
+        val address = "${uri.scheme}://${uri.host.lowercase()}$port${uri.rawPath}"
+        return copy(catalog = catalog.using(profile.copy(endpoint = address)))
     }
 
     fun toJson(): String = JSONObject()
         .put("enabled", true)
-        .put("endpoint", endpoint)
+        .put("catalog", catalog.json())
         .put("language", language)
         .put("audioOutput", audioOutput)
         .put("volume", volume.toDouble())
         .put("playbackTiming", playbackTiming.id)
         .toString()
 
-    fun sessionUpdate(): JSONObject {
-        val audio = JSONObject().put(
-            "input", JSONObject()
-                .put("format", JSONObject().put("type", "pcm").put("sample_rate", INPUT_SAMPLE_RATE))
-                .put(
-                    "turn_detection", JSONObject().put("type", "server_vad")
-                        .put("threshold", 0.5).put("silence_duration_ms", 1000)
-                )
-        )
-        if (audioOutput) {
-            audio.put("output", JSONObject().put("format", JSONObject().put("type", "pcm").put("sample_rate", OUTPUT_SAMPLE_RATE)))
-        }
-        return JSONObject().put("type", "session.update").put(
-            "session", JSONObject()
-                .put("output_modalities", JSONArray(outputModalities))
-                .put("translation", JSONObject().put("language", language))
-                .put("audio", audio)
-        )
-    }
 }

@@ -109,9 +109,10 @@ internal class LiveSessionProbe(
         return Cancellable { future.cancel(false) }
     }
 
-    override fun transport(listener: LiveTranslateClient.Listener): LiveTransport {
+    override fun transport(configuration: LiveTranslateConfig, listener: LiveTransport.Listener): LiveTransport {
         val link = synchronized(lock) { Link(links.size, now()).also(links::add) }
-        val client = LiveTranslateClient(Tap(link, listener), thread, allowLocalhost = allowLocalhost, diagnostic = { line ->
+        val tap = Tap(link, listener)
+        val client = LiveTranslateClient(tap, thread, allowLocalhost = allowLocalhost, wireObserver = tap::wire, diagnostic = { line ->
             synchronized(lock) { diagnostics += "${now()} ms #${link.index} $line" }
             println("  ! ${now()} ms connection #${link.index}: $line")
         })
@@ -174,7 +175,7 @@ internal class LiveSessionProbe(
     }
 
     /** Records each connection's events and forwards them to the session (on the session thread). */
-    private inner class Tap(private val link: Link, private val session: LiveTranslateClient.Listener) : LiveTranslateClient.Listener {
+    private inner class Tap(private val link: Link, private val session: LiveTransport.Listener) : LiveTransport.Listener {
         override fun onReady() {
             synchronized(lock) { link.readyAt = now() }
             if (link.index == 0 && holdReadyMs > 0) {
@@ -185,7 +186,9 @@ internal class LiveSessionProbe(
             }
         }
 
-        override fun onEvent(event: JSONObject) {
+        override fun onEvent(event: LiveSessionEvent) = session.onEvent(event)
+
+        fun wire(event: JSONObject) {
             val at = now()
             val item = event.optString("item_id")
             synchronized(lock) {
@@ -203,7 +206,6 @@ internal class LiveSessionProbe(
                     "response.text.done", "response.audio_transcript.done" -> link.outputDone.putIfAbsent(item, at)
                 }
             }
-            session.onEvent(event)
         }
 
         override fun onEnd(error: String?, recoverable: Boolean, cause: EndCause) {
@@ -277,6 +279,7 @@ internal class LiveSessionProbe(
             .put("handshake_ms", if (first != null && first.readyAt >= 0) first.readyAt - first.openedAt else JSONObject.NULL)
             .put("connections", links.size)
             .put("reconnects", (links.size - 1).coerceAtLeast(0))
+            .put("last_speech_end_ms", links.mapNotNull { it.speechEnd.values.maxOrNull() }.takeIf { it.isNotEmpty() }?.sum() ?: JSONObject.NULL)
             .put("captured_seconds", capturedBytes / (BYTES_PER_MS * 1000.0))
             .put("sent_seconds", sentBytes / (BYTES_PER_MS * 1000.0))
             .put("dropped_seconds", droppedSeconds)
