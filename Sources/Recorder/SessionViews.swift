@@ -60,14 +60,14 @@ struct SessionSidebar: View {
             }
             Spacer(minLength: 0)
             if item.id == model.recordingSessionID {
-                Image(systemName: "record.circle").foregroundStyle(.red).help("录制中").accessibilityLabel("录制中")
+                Image(systemName: "record.circle").foregroundStyle(DesignTokens.recording).help("录制中").accessibilityLabel("录制中")
             }
         }.padding(.vertical, 2)
     }
 
     @ViewBuilder private func menu(_ item: SessionSummary) -> some View {
         Button("重命名…") { renameText = item.title; renaming = item }
-        Button("导出…") { model.exportRequest = SessionExportRequest(sessionID: item.id) }
+        Button("导出会话…") { model.exportRequest = SessionExportRequest(sessionID: item.id) }
         Divider()
         Button("删除…", role: .destructive) { deleting = item }
             .disabled(!model.canDeleteSession(item.id))

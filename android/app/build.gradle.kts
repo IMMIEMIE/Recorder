@@ -1,4 +1,5 @@
 plugins {
+    id("com.android.compose.screenshot") version "0.0.1-alpha10"
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -11,6 +12,7 @@ val releaseVersionCode = Regex("""(\d+)\.(\d+)\.(\d+)""").matchEntire(releaseVer
     ?: throw GradleException("VERSION 必须是 x.y.z，当前内容：\"$releaseVersion\"")
 
 android {
+    experimentalProperties["android.experimental.enableScreenshotTest"] = true
     namespace = "com.localrecorder.shengjian"
     compileSdk = 35
 
@@ -75,6 +77,8 @@ kotlin {
 }
 
 dependencies {
+    screenshotTestImplementation("com.android.tools.screenshot:screenshot-validation-api:0.0.1-alpha10")
+    screenshotTestImplementation("androidx.compose.ui:ui-tooling")
     implementation(project(":core"))
     implementation(platform("androidx.compose:compose-bom:2025.04.00"))
     implementation("androidx.compose.ui:ui")

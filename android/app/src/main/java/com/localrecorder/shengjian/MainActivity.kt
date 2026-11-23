@@ -19,7 +19,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -67,8 +66,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -88,13 +85,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.localrecorder.shengjian.ui.theme.Design
+import com.localrecorder.shengjian.ui.theme.LocalStatusColors
+import com.localrecorder.shengjian.ui.theme.ShengjianTheme
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.live.PlaybackTiming
 import com.localrecorder.live.SessionState
@@ -112,11 +111,11 @@ import java.time.ZoneId
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.setBackgroundDrawableResource(R.color.background)
         enableEdgeToEdge()
         val controller = (application as ShengjianApp).controller
         setContent {
-            val dark = isSystemInDarkTheme()
-            MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme(primary = Color(0xFF1F4E79))) {
+            ShengjianTheme {
                 App(controller)
             }
         }
@@ -188,7 +187,7 @@ private fun MainScreen(controller: SessionController, ui: UiState, onSettings: (
         },
     )
 
-    if (LocalConfiguration.current.screenWidthDp >= 840) {
+    if (LocalConfiguration.current.screenWidthDp.dp >= Design.wide) {
         PermanentNavigationDrawer(
             drawerContent = {
                 PermanentDrawerSheet(Modifier.width(320.dp)) {
@@ -365,11 +364,11 @@ private fun RecordingBadge() {
     Text(
         "录制中",
         style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onError,
+        color = LocalStatusColors.current.recording,
         modifier = Modifier
             .padding(start = 8.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.error)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .padding(horizontal = 6.dp, vertical = 2.dp),
     )
 }
@@ -556,17 +555,17 @@ private fun Subtitles(rows: List<SubtitleRow>, trimmed: Boolean, emptyText: Stri
                     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
                         if (row.source.isNotEmpty()) {
                             Text(
-                                row.source, style = MaterialTheme.typography.bodyLarge,
+                                row.source, style = Design.source,
                                 color = if (row.sourceDone) MaterialTheme.colorScheme.onSurfaceVariant
-                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = Design.draftOpacity),
                             )
                         }
                         if (row.translation.isNotEmpty()) {
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                row.translation, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
+                                row.translation, style = Design.translation,
                                 color = if (row.translationDone) MaterialTheme.colorScheme.onSurface
-                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                else MaterialTheme.colorScheme.onSurface.copy(alpha = Design.draftOpacity),
                             )
                         }
                     }

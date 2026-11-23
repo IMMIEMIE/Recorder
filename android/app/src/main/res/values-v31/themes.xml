@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.Shengjian" parent="Base.Theme.Shengjian">
+        <item name="android:windowSplashScreenBackground">@color/launcher_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+    </style>
+</resources>

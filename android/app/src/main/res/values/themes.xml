@@ -1,6 +1,9 @@
-<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Shengjian" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Base.Theme.Shengjian" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/background</item>
+        <item name="android:colorAccent">@color/launcher_background</item>
+    </style>
+    <style name="Theme.Shengjian" parent="Base.Theme.Shengjian">
+        <item name="android:windowBackground">@drawable/launch_window</item>
     </style>
 </resources>
