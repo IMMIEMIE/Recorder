@@ -52,7 +52,7 @@ struct TranscriptList: View {
                 .onChange(of: model.partial) { _, _ in keepLatest(proxy) }
                 .onChange(of: model.finalText.count) { _, _ in keepLatest(proxy) }
                 .onChange(of: model.translationTick) { _, _ in keepLatest(proxy) }
-                .onChange(of: model.viewedSession?.id ?? model.activeSessionID) { _, _ in
+                .onChange(of: model.viewedSession?.id ?? model.activeSessionID, initial: true) { _, _ in
                     jumpToLatest(proxy)
                 }
                 .overlay(alignment: .bottomTrailing) {

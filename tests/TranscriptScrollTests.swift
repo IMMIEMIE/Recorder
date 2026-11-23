@@ -60,6 +60,7 @@ struct TranscriptScrollTests {
         guard let scroll = scrolls.max(by: { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) }),
               let document = scroll.documentView else { fatalError("Transcript scroll view missing") }
         let clip = scroll.contentView
+        precondition(document.frame.height - clip.bounds.maxY <= 48, "Opening the window on an active recording must show its latest rows")
         func scrollTo(_ y: CGFloat) {
             clip.scroll(to: NSPoint(x: 0, y: min(y, document.frame.height - clip.bounds.height)))
             scroll.reflectScrolledClipView(clip)
