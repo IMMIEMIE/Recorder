@@ -1,0 +1,19 @@
+# 周会：Q4 \*计划\* \#1 / 草稿?
+
+2026-11-23 14:05
+
+Good morning, everyone.
+
+\- Agenda: \[budget\] & \<hiring\>
+
+3\. Next steps follow up
+
+*【连接中断，此处内容可能有缺失】*
+
+We're back.
+
+*【继续录制 2026-11-24 09:30】*
+
+Second day\_test \| ok \~ done
+
+C:\\path \`code\`
