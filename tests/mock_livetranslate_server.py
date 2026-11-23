@@ -133,12 +133,14 @@ class Handler(BaseHTTPRequestHandler):
                         self.frame({'type': 'session.finished'})
                         return
                     # The service ends a session whose merged audio passed 60 s without a result (long silence).
-                    if route.path == '/no-semantic':
-                        self.frame({'type': 'error', 'error': {'code': 'InvalidParameter', 'message': 'no semantic result after merged audio exceeded 60s'}})
+                    if route.path in ('/no-semantic', '/no-semantic-close'):
+                        if route.path == '/no-semantic':
+                            self.frame({'type': 'error', 'error': {'code': 'InvalidParameter', 'message': 'no semantic result after merged audio exceeded 60s'}})
                         self.close(1007, 'no semantic result after merged audio exceeded 60s')
-                        return
-                    if route.path == '/no-semantic-close':
-                        self.close(1007, 'no semantic result after merged audio exceeded 60s')
+                        # Unread audio can reset the TCP connection before the client sees the close frame.
+                        self.connection.settimeout(2)
+                        while self.read_frame() is not None:
+                            pass
                         return
                     if drop:
                         self.frame({'type': 'conversation.item.input_audio_transcription.delta', 'item_id': 'lost', 'delta': 'Before the break'})
