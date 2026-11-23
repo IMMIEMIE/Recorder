@@ -63,7 +63,8 @@ interface SessionPlatform {
  * The session state machine behind the UI: one user session spans one or more LiveTranslate
  * connections. A dropped connection is replaced by a new one (rows received so far are kept and
  * the break is marked) while capture keeps running. All methods must be called on the session
- * thread; transcripts live only in memory.
+ * thread. Rows live in memory here; `SessionRecorder` persists the finalized ones from the snapshots
+ * (a row counts as final once `sourceDone`, its translation once `translationDone`).
  */
 class LiveSession(private val platform: SessionPlatform, private val onChange: (SessionSnapshot) -> Unit) {
     companion object {
@@ -497,8 +498,9 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         speech?.let { current ->
             current.finish { platform.post { if (speech === current) stopPlayback() } }
         }
-        update { it.copy(state = SessionState.IDLE, status = "", error = error.orEmpty(), slowNetwork = false) }
+        // Rows first: observers treat the IDLE snapshot as the end of the session's rows.
         publish()
+        update { it.copy(state = SessionState.IDLE, status = "", error = error.orEmpty(), slowNetwork = false) }
         try {
             platform.sessionActive(false)
         } catch (_: Exception) {
@@ -507,7 +509,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
 
     /** Moves the current connection's rows into the history; later connections append below them. */
     private fun freeze() {
-        history.addAll(currentRows())
+        history.addAll(currentRows(frozen = true))
         events = LiveTranslateEvents()
         epoch++
     }
@@ -518,11 +520,15 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         return SubtitleRow("$epoch:${row.id}", row.source.text, row.source.done, translation.text, translation.done)
     }
 
-    private fun currentRows(): List<SubtitleRow> {
+    /**
+     * [frozen]: the connection is gone, so a finished translation whose source never arrived is final too
+     * (its source is settled as empty); while live, that source may still arrive and re-key the row.
+     */
+    private fun currentRows(frozen: Boolean = false): List<SubtitleRow> {
         val rows = events.order.mapNotNull { id -> events.rows[id]?.let(::subtitle) }
         // Translations whose source association has not arrived yet.
         val pending = events.unmatchedOutputs.map { (id, part) ->
-            SubtitleRow("$epoch:out:$id", "", false, part.text, part.done)
+            SubtitleRow("$epoch:out:$id", "", frozen && part.done, part.text, part.done)
         }
         return rows + pending
     }

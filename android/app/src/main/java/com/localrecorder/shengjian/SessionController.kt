@@ -21,11 +21,19 @@ import com.localrecorder.live.SessionPlatform
 import com.localrecorder.live.SessionSnapshot
 import com.localrecorder.live.SessionState
 import com.localrecorder.live.SpeechOutput
+import com.localrecorder.live.SubtitleRow
+import com.localrecorder.sessions.SessionExport
+import com.localrecorder.sessions.SessionRecord
+import com.localrecorder.sessions.SessionRecorder
+import com.localrecorder.sessions.SessionSummary
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import org.json.JSONObject
+import java.io.File
+import java.time.ZoneId
+import java.util.UUID
 import java.util.concurrent.Executor
 
 data class UiState(
@@ -35,14 +43,26 @@ data class UiState(
     val hasKey: Boolean = false,
     val testing: Boolean = false,
     val settingsMessage: String = "",
+    /** Saved sessions plus the one being recorded, most recently updated first. */
+    val sessions: List<SessionSummary> = emptyList(),
+    /** The session on screen; null for a new, not yet started one. */
+    val selectedId: String? = null,
+    /** The selected session when it is not the one being recorded; null while it loads. */
+    val viewed: SessionRecord? = null,
+    val viewError: String = "",
+    val recordingId: String? = null,
+    /** Earlier segments of the session being recorded, shown above the live rows. */
+    val recordingPrefix: List<SubtitleRow> = emptyList(),
 ) {
     val status: String get() = session.status.ifEmpty { "就绪 · 目标语言 ${config.languageName}" }
+    val viewingRecording: Boolean get() = recordingId != null && selectedId == recordingId
+    val selectedTitle: String? get() = selectedId?.let { id -> sessions.firstOrNull { it.id == id }?.title ?: viewed?.title }
 }
 
 /**
  * The Android side of [LiveSession] (microphone, speech player, foreground service, network and
- * audio-routing callbacks) plus settings. Everything runs on the main thread; the session logic
- * itself lives in `:core` and is tested there.
+ * audio-routing callbacks) plus settings and saved sessions. Everything runs on the main thread; the
+ * session logic itself lives in `:core` and is tested there.
  */
 class SessionController(private val context: Context) : SessionPlatform {
     private val settings = SettingsStore(context)
@@ -62,6 +82,13 @@ class SessionController(private val context: Context) : SessionPlatform {
     private var config = settings.load()
     private var options = settings.loadOptions()
     private val engine = LiveSession(this, ::render)
+    private val zone: ZoneId get() = ZoneId.systemDefault()
+    private val library = SessionLibrary(File(context.filesDir, "sessions"), main) { message -> engine.notice(message) }
+    private val recorder = SessionRecorder({ System.currentTimeMillis() }, ::schedule, ZoneId.systemDefault(), object : SessionRecorder.Sink {
+        override fun save(record: SessionRecord) = library.save(record, options.saveSessions)
+        override fun ended(id: String, record: SessionRecord?) = recordingEnded(id, record)
+    })
+    private var recordingSummary: SessionSummary? = null
     private var microphone: MicrophoneSource? = null
     private var player: SpeechPlayer? = null
     private var tester: LiveTranslateClient? = null
@@ -79,14 +106,86 @@ class SessionController(private val context: Context) : SessionPlatform {
 
     init {
         _ui.update { it.copy(config = config, options = options, hasKey = secrets.has(config.keyAccount)) }
+        library.onChange = ::publishSessions
     }
 
-    /** Starts a session; the caller has already obtained RECORD_AUDIO. */
-    fun start() = engine.start(config, secrets.get(config.keyAccount).orEmpty(), options.autoReconnect)
+    /**
+     * Starts recording into the selected session (a new segment) or, with nothing selected, into a new
+     * session. The caller has already obtained RECORD_AUDIO.
+     */
+    fun start() {
+        if (engine.snapshot.state != SessionState.IDLE) return
+        val state = _ui.value
+        val base = state.selectedId?.let { id -> state.viewed?.takeIf { it.id == id } ?: return }
+        // The live list shows only this recording; earlier rows come from the saved session.
+        engine.clear()
+        val record = recorder.begin(base, UUID.randomUUID().toString(), config.language)
+        val prefix = base?.takeIf { it.rows.isNotEmpty() }?.let {
+            it.subtitleRows(zone) + SubtitleRow("seg:live", "", true, "", true, SessionExport.continuedMarker(record.segments.last().startedAtMs, zone))
+        }.orEmpty()
+        _ui.update { it.copy(selectedId = record.id, viewed = null, viewError = "", recordingId = record.id, recordingPrefix = prefix) }
+        publishSessions()
+        engine.start(config, secrets.get(config.keyAccount).orEmpty(), options.autoReconnect)
+        if (engine.snapshot.state == SessionState.IDLE) recorder.finish()
+    }
 
     fun stop() = engine.stop()
-    fun clear() = engine.clear()
-    fun exportText(): String = engine.exportText()
+
+    /** Writes pending rows now (the app goes to the background). */
+    fun flush() = recorder.flush()
+
+    /** Shows a session; null shows a new, empty one. Recording continues in its own session. */
+    fun select(id: String?) {
+        _ui.update { it.copy(selectedId = id, viewed = null, viewError = "") }
+        if (id == null || id == _ui.value.recordingId) return
+        library.load(id) { record ->
+            if (_ui.value.selectedId != id) return@load
+            _ui.update { it.copy(viewed = record, viewError = if (record == null) "无法读取该会话：文件可能已删除、损坏或来自更新的版本" else "") }
+        }
+    }
+
+    /** A blank title restores the automatic one. */
+    fun rename(id: String, title: String) {
+        if (id == _ui.value.recordingId) {
+            recorder.rename(title)
+            publishSessions()
+            return
+        }
+        library.rename(id, title, zone, options.saveSessions) { renamed ->
+            if (renamed != null && _ui.value.selectedId == id) _ui.update { it.copy(viewed = renamed) }
+        }
+    }
+
+    /** The session being recorded cannot be deleted. */
+    fun delete(id: String) {
+        if (id == _ui.value.recordingId) return
+        library.delete(id)
+        if (_ui.value.selectedId == id) select(null)
+    }
+
+    fun deleteAll() {
+        if (_ui.value.recordingId != null) return
+        library.deleteAll()
+        select(null)
+    }
+
+    /** The full session for export; [done] gets null when it cannot be read. */
+    fun exportRecord(id: String, done: (SessionRecord?) -> Unit) {
+        if (id == _ui.value.recordingId) done(recorder.record) else library.load(id, done)
+    }
+
+    /** Writes an export to a document the user picked; [done] runs on the main thread. */
+    fun writeDocument(uri: android.net.Uri, text: String, done: (Boolean) -> Unit) {
+        library.background {
+            val ok = try {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(text.toByteArray(Charsets.UTF_8)) } != null
+            } catch (_: Exception) {
+                false
+            }
+            main.post { done(ok) }
+        }
+    }
+
     fun stopPlayback() = engine.stopPlayback()
     fun dismissMessages() = engine.dismissMessages()
 
@@ -156,8 +255,33 @@ class SessionController(private val context: Context) : SessionPlatform {
         _ui.update { it.copy(testing = true, settingsMessage = "正在测试连接…") }
     }
 
+    private fun recordingEnded(id: String, record: SessionRecord?) {
+        if (record == null) library.delete(id)
+        recordingSummary = null
+        _ui.update {
+            val selected = it.selectedId == id
+            it.copy(
+                recordingId = null,
+                recordingPrefix = emptyList(),
+                selectedId = if (selected && record == null) null else it.selectedId,
+                viewed = if (selected) record else it.viewed,
+            )
+        }
+        publishSessions()
+    }
+
+    private fun publishSessions() {
+        val saved = library.summaries()
+        val current = recorder.record?.summary
+        recordingSummary = current
+        val sessions = if (current == null) saved else listOf(current) + saved.filter { it.id != current.id }
+        _ui.update { it.copy(sessions = sessions) }
+    }
+
     private fun render(snapshot: SessionSnapshot) {
+        recorder.observe(snapshot)
         _ui.update { it.copy(session = snapshot) }
+        if (recorder.record?.summary != recordingSummary) publishSessions()
         if (snapshot.state == SessionState.IDLE || notificationPending) return
         val wait = notifiedAt + 1_000 - SystemClock.elapsedRealtime()
         if (wait <= 0) {

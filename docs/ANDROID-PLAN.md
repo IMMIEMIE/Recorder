@@ -30,7 +30,8 @@
 - 原文和译文只按 ID 关联（`conversation.item.created` 的 `previous_item_id`），不按文本或到达顺序；重复的 `event_id` 忽略；不对重复说出的内容去重。
 - 停止时先停麦克风并等待最后一块音频入队，再发 `session.finish`，等待 `session.finished` 收尾（30 秒超时，已收到的文字保留）。
 - 发送队列上限约 320 KB 原始 PCM；等待播放的译音上限 30 秒。
-- 不保存录音和字幕历史（字幕只在内存中），API Key 按 `livetranslate:<endpoint>` 区分并加密保存；错误信息不回显服务端载荷和密钥。
+- 不保存录音、译音和未定稿的字幕；已定稿的原文和译文按 `docs/SESSIONS.md` 保存为会话（默认开启，可在设置中关闭），只存本机、不参与备份和设备迁移。API Key 按 `livetranslate:<endpoint>` 区分并加密保存；错误信息不回显服务端载荷和密钥。
+- 会话文件格式、默认标题、导出内容与文件名和 macOS 完全一致（`docs/SESSIONS.md`，夹具 `tests/fixtures/session_export/`）。
 - 设置 JSON 与 macOS 的 `livetranslate.configuration.v1` 字段一致。
 
 ## 阶段
@@ -68,12 +69,21 @@
 - **测试**：`:core` 共 22 项——`LiveSessionTest` 用假连接、假麦克风和虚拟时钟覆盖重连顺序与补发、退避与放弃、网络丢失/切换、积压、麦克风失败、译音跟随会话、字幕上限；`LiveTranslateClientTest` 新增经真实 WebSocket 的掉线重连（mock 路由 `/drop-once/<name>`、`/finished-early`）与各错误是否可重试。
 - **构建**：`gradle/gradle-daemon-jvm.properties` 把 Gradle 守护进程固定为 JDK 17（缺失时自动下载），因此用 Android Studio 自带的 JDK 25 也能直接构建。调试构建额外允许 `ws://127.0.0.1`，可通过 `adb reverse` 连接仓库里的 mock 服务器做端到端验证。
 
+### 会话管理与导出 ✅（issue #13，与 macOS 同一规范）
+
+- **会话记录**：每次「开始实时翻译」新建一个会话；在历史会话上「继续录制」追加新的一段，导出和查看时显示「继续录制 yyyy-MM-dd HH:mm」。只保存已定稿的行（原文定稿后保存，译文定稿后就地补上；断线分隔行保存为 `break` 行），写盘约 1 秒节流，停止录制和应用进入后台时立即写。文件为 `filesDir/sessions/<id>.json`（临时文件 + rename 原子写入），损坏或更高版本的文件跳过、不删除。
+- **「保存会话记录」开关**（`android.options.v1` 的 `saveSessions`，默认开）：关闭后不再写盘，新会话只保留到应用退出；已有会话仍可查看、导出、删除。
+- **界面**：手机用抽屉、宽度 ≥ 840dp 用常驻侧栏；顶部「新建会话」，按最后更新分组「今天 / 昨天 / 7 天内 / 更早」，录制中的会话有标记；长按或顶栏菜单可重命名（留空恢复自动标题）、导出、删除（需确认，录制中的会话不能删）；设置中「清空全部会话」（需确认）。录制时可以浏览其他会话，新内容仍写入正在录制的会话。
+- **导出**：TXT / Markdown，双语 / 仅原文 / 仅译文；系统分享（`ACTION_SEND` 文本）、「保存到文件」（`ACTION_CREATE_DOCUMENT`，不申请存储权限）或复制到剪贴板。只含定稿文字，不含服务地址和 API Key。
+- **代码**：`:core` 的 `com.localrecorder.sessions`（`SessionRecord`、`SessionStore`、`SessionExport`、`SessionRecorder`）；应用侧 `SessionLibrary` 在单独的 I/O 线程读写文件。
+- **测试**：`SessionExportTest` 逐字节对比夹具（导出、文件名、默认标题，时区 `Asia/Shanghai`）；`SessionStoreTest` 覆盖往返、重命名、删除、损坏/新版本文件跳过、原子写入；`LiveSessionTest.recorderKeepsOnlyFinalizedRows` 用虚拟时钟验证只存定稿行、节流写入、停止时立即写、继续录制与无内容会话的丢弃。
+
 ### 阶段 3 · 字幕与使用场景
 
 - 悬浮字幕窗（`SYSTEM_ALERT_WINDOW`），可在视频会议/其他应用上方显示译文。
 - 系统音频翻译：Android 10+ `AudioPlaybackCapture`（MediaProjection），用于翻译视频、直播、会议应用的声音（受应用捕获策略限制）。
 - 双向对话模式：两个目标语言快速切换，或分屏面对面显示。
-- 字号、深色模式、仅显示译文等显示选项；导出 TXT/SRT（仍不自动保存历史）。
+- 字号、深色模式、仅显示译文等显示选项；导出 SRT。
 
 ### 阶段 4 · 更多 API 组合（可选）
 

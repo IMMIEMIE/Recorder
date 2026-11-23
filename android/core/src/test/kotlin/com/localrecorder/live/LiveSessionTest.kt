@@ -1,5 +1,8 @@
 package com.localrecorder.live
 
+import com.localrecorder.sessions.SessionRecord
+import com.localrecorder.sessions.SessionRecorder
+import com.localrecorder.sessions.SessionRow
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -7,6 +10,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.ZoneId
 
 /** Drives the session state machine with fake transports, capture and a virtual clock (no threads, no network). */
 class LiveSessionTest {
@@ -52,7 +56,7 @@ class LiveSessionTest {
 
         private val posted = ArrayDeque<() -> Unit>()
         private val timers = mutableListOf<Timer>()
-        private var now = 0L
+        var now = 0L
         val transports = mutableListOf<FakeTransport>()
         val speeches = mutableListOf<FakeSpeech>()
         var onChunk: ((ByteArray) -> Unit)? = null
@@ -61,7 +65,8 @@ class LiveSessionTest {
         var captureFails = false
         var active = false
         val snapshots = mutableListOf<SessionSnapshot>()
-        val session = LiveSession(this) { snapshots.add(it) }
+        val observers = mutableListOf<(SessionSnapshot) -> Unit>()
+        val session = LiveSession(this) { snapshot -> snapshots.add(snapshot); observers.forEach { it(snapshot) } }
 
         val transport get() = transports.last()
         val state get() = session.snapshot.state
@@ -572,6 +577,111 @@ class LiveSessionTest {
         assertEquals(LiveSession.MAX_ROWS, device.session.snapshot.rows.size)
         device.session.clear()
         assertFalse(device.session.snapshot.trimmed)
+    }
+
+    @Test
+    fun recorderKeepsOnlyFinalizedRows() {
+        val device = Device()
+        val saved = mutableListOf<SessionRecord>()
+        val ended = mutableListOf<Pair<String, SessionRecord?>>()
+        val recorder = SessionRecorder({ device.now }, device::schedule, ZoneId.of("Asia/Shanghai"), object : SessionRecorder.Sink {
+            override fun save(record: SessionRecord) { saved += record }
+            override fun ended(id: String, record: SessionRecord?) { ended += id to record }
+        })
+        device.observers += recorder::observe
+        val id = "00000000-0000-4000-8000-000000000001"
+        recorder.begin(null, id, "zh")
+        device.record()
+        device.advance(500)
+        device.utter("a")
+        val listener = device.transport.listener
+        listener.onEvent(json("type" to "conversation.item.input_audio_transcription.delta", "item_id" to "b", "delta" to "Half a sent"))
+        assertTrue("writes are throttled", saved.isEmpty())
+        device.advance(SessionRecorder.SAVE_DELAY_MS - 1)
+        assertTrue(saved.isEmpty())
+        device.advance(1)
+        assertEquals(1, saved.size)
+        assertEquals(listOf(SessionRow(0, SessionRow.KIND_TEXT, 500, "Hello.", "你好。")), saved.last().rows)
+        assertEquals("08:00 is 1970-01-01 in Shanghai", "01-01 08:00 Hello.", saved.last().title)
+        assertNull("still recording", saved.last().segments.single().endedAtMs)
+
+        // The source is final before its translation: stored at once, the translation fills the same row later.
+        listener.onEvent(json("type" to "conversation.item.created", "previous_item_id" to "c", "item" to json("id" to "c-out", "role" to "assistant")))
+        listener.onEvent(json("type" to "conversation.item.input_audio_transcription.completed", "item_id" to "c", "transcript" to "Second."))
+        listener.onEvent(json("type" to "response.text.delta", "item_id" to "c-out", "delta" to "第二"))
+        device.advance(SessionRecorder.SAVE_DELAY_MS)
+        assertEquals(listOf("Hello.", "Second."), saved.last().rows.map { it.source })
+        assertEquals("a partial translation is not stored", "", saved.last().rows[1].translation)
+        listener.onEvent(json("type" to "response.text.done", "item_id" to "c-out", "text" to "第二句。"))
+        device.advance(SessionRecorder.SAVE_DELAY_MS)
+        assertEquals(listOf("你好。", "第二句。"), saved.last().rows.map { it.translation })
+
+        // A translation whose source never arrives is final once its connection is gone; the partial row is not.
+        listener.onEvent(json("type" to "response.text.done", "item_id" to "x-out", "text" to "孤立译文"))
+        device.advance(SessionRecorder.SAVE_DELAY_MS)
+        assertEquals(2, saved.last().rows.size)
+        listener.onEnd(LOST, true)
+        device.advance(LiveSession.RECONNECT_DELAYS_MS[0])
+        device.transport.listener.onReady()
+        device.utter("d", "Back.", "回来了。")
+        device.transport.listener.onEvent(json("type" to "response.text.done", "item_id" to "y-out", "text" to "尾部译文"))
+        val writes = saved.size
+        device.session.stop()
+        device.transport.listener.onEnd(null, false)
+        assertEquals(SessionState.IDLE, device.state)
+        assertEquals("stop writes at once", writes + 1, saved.size)
+        val first = saved.last()
+        assertEquals(id, ended.single().first)
+        assertEquals(first, ended.single().second)
+        assertEquals(
+            listOf(
+                SessionRow(0, SessionRow.KIND_TEXT, 500, "Hello.", "你好。"),
+                SessionRow(0, SessionRow.KIND_TEXT, 1500, "Second.", "第二句。"),
+                SessionRow(0, SessionRow.KIND_TEXT, 3500, "", "孤立译文"),
+                SessionRow(0, SessionRow.KIND_BREAK, 4500),
+                SessionRow(0, SessionRow.KIND_TEXT, 5000, "Back.", "回来了。"),
+                SessionRow(0, SessionRow.KIND_TEXT, 5000, "", "尾部译文"),
+            ),
+            first.rows,
+        )
+        assertEquals(device.now, first.segments.single().endedAtMs)
+        assertEquals(device.now, first.updatedAtMs)
+        assertEquals(0L, first.createdAtMs)
+
+        // Continue recording: a new segment; nothing is written for a continuation without speech.
+        device.advance(60_000)
+        recorder.begin(first, "unused", "ja")
+        device.session.clear()
+        device.record()
+        device.session.stop()
+        device.transport.listener.onEnd(null, false)
+        assertEquals(first, ended.last().second)
+        assertEquals(writes + 1, saved.size)
+
+        recorder.begin(first, "unused", "ja")
+        device.session.clear()
+        device.record()
+        device.utter("e", "Day two.", "二日目。")
+        device.session.stop()
+        device.transport.listener.onEnd(null, false)
+        val continued = saved.last()
+        assertEquals(id, continued.id)
+        assertEquals(listOf("zh", "ja"), continued.segments.map { it.targetLanguage })
+        assertEquals(SessionRow(1, SessionRow.KIND_TEXT, 0, "Day two.", "二日目。"), continued.rows.last())
+        assertEquals(first.rows, continued.rows.dropLast(1))
+        assertEquals("the automatic title keeps the first text", first.title, continued.title)
+
+        // A new session that never got text is dropped, never written.
+        val count = saved.size
+        recorder.begin(null, "00000000-0000-4000-8000-000000000002", "zh")
+        device.session.clear()
+        device.record()
+        recorder.rename("Renamed early")
+        device.session.stop()
+        device.transport.listener.onEnd(null, false)
+        assertEquals(count, saved.size)
+        assertEquals("00000000-0000-4000-8000-000000000002" to null, ended.last())
+        assertNull(recorder.record)
     }
 }
 

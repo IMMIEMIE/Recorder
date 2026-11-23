@@ -8,6 +8,8 @@ import org.json.JSONObject
 data class AppOptions(
     val autoReconnect: Boolean = true,
     val bluetoothMicrophone: Boolean = false,
+    /** Finalized transcripts are saved under filesDir/sessions (docs/SESSIONS.md); off = memory only. */
+    val saveSessions: Boolean = true,
 )
 
 /** Non-secret settings; the LiveTranslate JSON matches the macOS `livetranslate.configuration.v1` value. */
@@ -28,6 +30,7 @@ class SettingsStore(context: Context) {
         AppOptions(
             autoReconnect = json.optBoolean("autoReconnect", true),
             bluetoothMicrophone = json.optBoolean("bluetoothMicrophone", false),
+            saveSessions = json.optBoolean("saveSessions", true),
         )
     } catch (_: Exception) {
         AppOptions()
@@ -37,6 +40,7 @@ class SettingsStore(context: Context) {
         val json = JSONObject()
             .put("autoReconnect", options.autoReconnect)
             .put("bluetoothMicrophone", options.bluetoothMicrophone)
+            .put("saveSessions", options.saveSessions)
         prefs.edit().putString(OPTIONS_KEY, json.toString()).apply()
     }
 

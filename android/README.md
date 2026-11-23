@@ -50,12 +50,14 @@ gh secret set SHENGJIAN_KEY_PASSWORD
   - `LiveTranslateEvents` 按 item ID 关联原文和译文；
   - `LiveTranslateAudioDecoder` / `LiveTranslatePlaybackQueue` 拼接 PCM16、定稿后按句播放；
   - `LiveTranslateClient` OkHttp WebSocket 会话（单线程状态机、拒绝重定向、发送队列上限、收尾超时）；
-  - `LiveSession` 会话状态机：一次会话可跨多条连接（断线重连、网络切换、弱网积压、字幕上限），通过 `SessionPlatform` 接口使用麦克风、播放器和定时器，不依赖 Android。
+  - `LiveSession` 会话状态机：一次会话可跨多条连接（断线重连、网络切换、弱网积压、字幕上限），通过 `SessionPlatform` 接口使用麦克风、播放器和定时器，不依赖 Android；
+  - `sessions/`：会话记录（`SessionRecord` 文件格式、`SessionStore` 原子读写、`SessionRecorder` 只保留定稿行）与 TXT/Markdown 导出（`SessionExport`），规范见 [`docs/SESSIONS.md`](../docs/SESSIONS.md)，与 macOS 逐字节一致。
 - `app/` — 安卓应用：
   - `SessionController` 实现 `SessionPlatform`（主线程），并负责设置保存、测试连接、通知内容；
   - `MicrophoneSource`（AudioRecord 16 kHz，外放译音时走回声消除通路）、`SpeechPlayer`（AudioTrack 24 kHz，带音频焦点）、`AudioRouting`（耳机检测、蓝牙耳机麦克风）；
   - `SecretStore`（Android Keystore AES-GCM 加密 API Key）、`SettingsStore`（与 macOS 相同的配置 JSON，另存安卓专有选项）；
-  - `RecordingService` 麦克风类型前台服务，通知显示最新译文；`MainActivity` Compose 界面。
+  - `SessionLibrary` 会话列表与文件读写（单独的 I/O 线程）；
+  - `RecordingService` 麦克风类型前台服务，通知显示最新译文；`MainActivity` Compose 界面（会话抽屉 / 宽屏常驻侧栏、导出）。
 
 ## 使用
 
@@ -63,7 +65,14 @@ gh secret set SHENGJIAN_KEY_PASSWORD
 2. 回到主界面点「开始实时翻译」，授予麦克风（和通知）权限后即可说话：连接建立前说的话（最近 5 秒）会在连接就绪后先行发送。
 3. 点「停止」后会等待服务端返回最后一句。
 
-连接中断或切换网络时会自动建立新会话并在字幕中标出断点（可在设置中关闭）；开启译音但没戴耳机时会启用回声消除并提示。
+连接中断或切换网络时会自动重新连接并在字幕中标出断点（可在设置中关闭）；开启译音但没戴耳机时会启用回声消除并提示。
+
+### 会话
+
+- 点左上角「会话」打开会话列表（平板等宽屏上常驻左侧）。每次在「新建会话」里开始翻译都会生成一个会话，按最后更新时间分为「今天 / 昨天 / 7 天内 / 更早」，正在录制的会话标有「录制中」。
+- 打开历史会话可查看内容，点「继续录制」会在该会话末尾追加新的一段。录制时也可以翻看其他会话，新内容仍写入正在录制的会话。
+- 长按列表项或在会话顶栏的「更多」里可以重命名（留空恢复自动标题）和删除（需确认；录制中的会话不能删除）；设置里有「清空全部会话」。
+- 「导出」可选 TXT 或 Markdown、双语 / 仅原文 / 仅译文，然后通过系统分享发送、「保存到文件」（系统文件选择器，无需存储权限）或复制。导出只含已定稿的文字，不含服务地址和 API Key。
 
 ## 用 mock 服务器做端到端验证
 
@@ -77,4 +86,4 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 在应用设置里把服务地址填成 `ws://127.0.0.1:18080/ok`、API Key 填 `mock-only`。开始后会出现固定的示例字幕；中途结束 mock 进程再重启（并重新执行 `adb reverse`）可以观察自动重连。
 
-隐私：开始翻译后麦克风音频会持续发送到所配置的服务；应用不保存录音，字幕只在内存中。API Key 加密保存在本机，不参与备份。
+隐私：开始翻译后麦克风音频会持续发送到所配置的服务；应用不保存录音、译音和未定稿的字幕。已定稿的原文和译文默认保存在本机（`filesDir/sessions/`），不上传，不参与系统备份和设备迁移；在设置中关闭「保存会话记录」后不再写盘，新内容只保留到应用退出。API Key 加密保存在本机，不参与备份。
