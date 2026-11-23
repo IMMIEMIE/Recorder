@@ -566,15 +566,20 @@ final class AppModel: ObservableObject {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK { audioFileURL = panel.url }
     }
-    func start() {
+    func start() { start(continuingAfterProfileSwitch: false) }
+
+    private func start(continuingAfterProfileSwitch: Bool) {
         stopReplay()
         guard canStart, !pendingStart else {
             if state == "ready" { error = "识别服务设置已更改，请先点击「连接 / 切换」使其生效" }
             return
         }
         if audioSource == "file", audioFileURL == nil { error = "请先选择音频文件"; return }
-        // "继续录制" on a session opened while another one was recording.
-        if let viewed = viewedSession { selectSession(viewed.id) }
+        if !continuingAfterProfileSwitch {
+            resumeFileFrame = 0
+            // An explicit "继续录制" starts recording in the displayed conversation.
+            if let viewed = viewedSession { selectSession(viewed.id) }
+        }
         error = ""; pendingStart = true
         startAttempt = UUID()
         let attempt = startAttempt
@@ -1106,7 +1111,7 @@ extension AppModel {
                     self.stopLivePlayback()
                     self.state = "ready"
                     self.selectLiveProfile(replacement.id)
-                    if self.liveConfiguration.profile.id == replacement.id { self.start() }
+                    if self.liveConfiguration.profile.id == replacement.id { self.start(continuingAfterProfileSwitch: true) }
                     else { self.resumeFileFrame = 0 }
                     return
                 }

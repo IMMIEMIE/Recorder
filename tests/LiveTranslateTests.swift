@@ -283,11 +283,21 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             try await profileWait.wait { profileApp.finalText.count == index + 1 && profileApp.state == "ready" }
             try check(profileApp.finalText.last?.translation == "你好，世界🌏。", "profile recording drains tail")
         }
+        let recordingOwner = profileApp.activeSessionID
+        var browsed = profileApp.sessionLibrary.load(id: recordingOwner)!
+        browsed.id = SessionFile.newID()
+        try profileApp.sessionLibrary.save(browsed)
         profileApp.start()
         try await profileWait.wait { profileApp.state == "recording" && profileApp.finalText.count > 4 }
+        profileApp.selectSession(browsed.id)
+        try check(profileApp.viewedSession?.id == browsed.id, "can browse another conversation while recording")
         profileClients.last?.onSlowService?(true)
         profileApp.switchRecordingProfile(b)
-        try await profileWait.wait { profileApp.liveConfiguration.profile.id == b.id && profileApp.state == "ready" && profileApp.finalText.count == 6 }
+        try await profileWait.wait { profileApp.liveConfiguration.profile.id == b.id && profileApp.state == "ready" }
+        try check(profileApp.activeSessionID == recordingOwner && profileApp.viewedSession?.id == browsed.id,
+                  "automatic restart after switching service keeps recording in the original conversation")
+        try check(profileApp.sessionLibrary.load(id: browsed.id) == browsed && profileApp.finalText.count == 6,
+                  "read-only history is unchanged and both segments are saved to their owner")
         try check(profileApp.finalText.suffix(2).allSatisfy { $0.sourceDone && !$0.incomplete }, "switch drains both segments into history")
         profileApp.selectLiveProfile(a.id)
         profileApp.liveKeyInput = "mock-only"
