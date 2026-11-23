@@ -20,6 +20,8 @@ internal class DialogueProbe(
 ) {
     private inner class Lane(val language: String) : WebSocketListener(), AutoCloseable {
         val starts = JSONArray()
+        private var queuedBytes = 0L
+        val queuedAudioMs get() = queuedBytes / BYTES_PER_MS
         private val sourceByOutput = mutableMapOf<String, String>()
         private val finalByOutput = linkedMapOf<String, String>()
         private var terminal: JSONObject? = null
@@ -41,9 +43,16 @@ internal class DialogueProbe(
             webSocket.close(1000, null)
         }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            events.offer(JSONObject().put("type", "transport_failure").put("http_status", response?.code))
+            val type = if (response?.code == 429) "rate_limited" else "transport_failure"
+            events.offer(JSONObject().put("type", type).put("http_status", response?.code))
         }
         override fun close() = socket.cancel()
+
+        fun sendAudio(frame: String, bytes: Int): Boolean {
+            if (!socket.send(frame)) return false
+            queuedBytes += bytes
+            return true
+        }
 
         fun await(type: String, waitMs: Long = timeoutMs): JSONObject {
             terminal?.let { return it }
@@ -73,8 +82,13 @@ internal class DialogueProbe(
                     "session.finished" -> return JSONObject().put("type", "finished_early")
                     "error" -> {
                         val error = event.optJSONObject("error")
-                        val limited = LiveTranslateClient.isRateLimit(error?.toString().orEmpty())
-                        return JSONObject().put("type", if (limited) "rate_limited" else "server_error")
+                        val detail = error?.toString().orEmpty()
+                        val cause = when {
+                            LiveTranslateClient.isNoResult(detail) -> "no_result"
+                            LiveTranslateClient.isRateLimit(detail) -> "rate_limited"
+                            else -> "server_error"
+                        }
+                        return JSONObject().put("type", cause)
                     }
                 }
             }
@@ -88,9 +102,12 @@ internal class DialogueProbe(
             val update = config.copy(language = target, audioOutput = false).sessionUpdate()
             update.getJSONObject("session").getJSONObject("audio").getJSONObject("input")
                 .put("turn_detection", JSONObject().put("type", "speaker_detection"))
-            if (!socket.send(update.toString())) return JSONObject().put("type", "closed")
+            // A peer can close during playback. Its listener has the classified reason even
+            // when this send is rejected before the probe gets around to reading the queue.
+            val sent = socket.send(update.toString())
             val ack = await("session.updated")
             if (ack.optString("type") != "session.updated") return ack
+            if (!sent) return JSONObject().put("type", "closed")
             val session = ack.optJSONObject("session")
             val actual = session?.optJSONObject("translation")?.optString("language")
             val textOnly = session?.optJSONArray("output_modalities")?.let { it.length() == 1 && it.optString(0) == "text" } == true
@@ -103,7 +120,7 @@ internal class DialogueProbe(
             for ((output, text) in finalByOutput) {
                 finals.put(JSONObject().put("item_id", sourceByOutput[output]).put("output_id", output).put("translation", text))
             }
-            return JSONObject().put("starts", starts).put("final_translations", finals)
+            return JSONObject().put("starts", starts).put("final_translations", finals).put("queued_audio_ms", queuedAudioMs)
         }
     }
 
@@ -125,8 +142,8 @@ internal class DialogueProbe(
                         val end = minOf(offset + 3200, stream.size)
                         val frame = JSONObject().put("type", "input_audio_buffer.append")
                             .put("audio", Base64.getEncoder().encodeToString(stream.copyOfRange(offset, end))).toString()
-                        val sentA = a.socket.send(frame)
-                        val sentB = b.socket.send(frame)
+                        val sentA = a.sendAudio(frame, end - offset)
+                        val sentB = b.sendAudio(frame, end - offset)
                         if (!sentA && !sentB) break
                         if (pace) Thread.sleep(((end - offset) / BYTES_PER_MS).toLong())
                         offset = end
@@ -134,7 +151,7 @@ internal class DialogueProbe(
                 }
                 play()
                 val changed = a.configure(next, initial = false)
-                report.put("update_A", changed).put("switch_audio_ms", stream.size / BYTES_PER_MS)
+                report.put("update_A", changed).put("switch_audio_ms", a.queuedAudioMs)
                 if (changed.optString("type") == "confirmed") play()
                 for (lane in listOf(a, b)) lane.socket.send("""{"type":"session.finish"}""")
                 report.put("end_A", a.await("session.finished")).put("end_B", b.await("session.finished"))

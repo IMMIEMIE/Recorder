@@ -117,6 +117,7 @@ class LiveTranslateClientTest {
         assertEquals("confirmed", ok.getJSONObject("update_A").getString("type"))
         for ((lane, words) in mapOf("A" to listOf("Hello", "こんにちは"), "B" to listOf("你好", "你好"))) {
             assertEquals("session.finished", ok.getJSONObject("end_$lane").getString("type"))
+            assertEquals(2 * ok.getInt("switch_audio_ms"), ok.getJSONObject(lane).getInt("queued_audio_ms"))
             val rows = ok.getJSONObject(lane).getJSONArray("final_translations")
             assertEquals(words, (0 until rows.length()).map { rows.getJSONObject(it).getString("translation") })
             val starts = ok.getJSONObject(lane).getJSONArray("starts")
@@ -129,6 +130,11 @@ class LiveTranslateClientTest {
         val limited = probe("/rate-limited").getJSONObject("initial_A")
         assertEquals("rate_limited", limited.getString("type"))
         assertEquals(1007, limited.getInt("close_code"))
+        val httpLimited = probe("/dialogue/http-429").getJSONObject("initial_A")
+        assertEquals("rate_limited", httpLimited.getString("type"))
+        assertEquals(429, httpLimited.getInt("http_status"))
+        val silence = probe("/no-semantic")
+        assertEquals("no_result", silence.getJSONObject("update_A").getString("type"))
     }
 
     @Test

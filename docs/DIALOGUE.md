@@ -22,7 +22,7 @@ scripts/test_sessions.sh
 android/gradlew -p android -q -PcoreOnly=true :core:dialogueProbe --args='/absolute/path/test.wav'
 ```
 
-默认 A 译为 en，B 译为 zh。两路确认后按实时节奏发送同一份音频，加两秒静音，再在 A 上请求 ja。仅语言和输出方式都匹配才记录 `confirmed`，随后再播一次。报告提供切换时的送音位置、两路独立的 `audio_start_ms`、`item_id`、`speaker_id` 和定稿译文。用开始时间与关联 ID 找到切换后的句子，检查 A 的译文实际为日语、B 仍为中文。服务可能确认配置却保持原语言、合并两句或省略字段，应如实记录观察结果。探针只观察自然发生的限流，无自动重试。负载、积压和延迟仍用现有 `scripts/probe_livetranslate.sh`。
+默认 A 译为 en，B 译为 zh。两路确认后按实时节奏发送同一份音频，加两秒静音，再在 A 上请求 ja。仅语言和输出方式都匹配才记录 `confirmed`，随后再播一次。报告提供发起切换时 A 已入发送队列的音频毫秒数、每路各自的累计入队时长和服务返回的 `audio_start_ms`、`item_id`、`speaker_id` 和定稿译文。用开始时间与关联 ID 找到切换后的句子，检查 A 的译文实际为日语、B 仍为中文。服务可能确认配置却保持原语言、合并两句或省略字段，应如实记录观察结果。探针只观察自然发生的限流，无自动重试。负载、积压和延迟仍用现有 `scripts/probe_livetranslate.sh`。
 
 ## 对话路由和连接接入
 

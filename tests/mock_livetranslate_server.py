@@ -52,8 +52,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         route = urlsplit(self.path)
-        if route.path == '/unauthorized':
-            self.send_response(401)
+        if route.path in ('/unauthorized', '/dialogue/http-429'):
+            self.send_response(401 if route.path == '/unauthorized' else 429)
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
