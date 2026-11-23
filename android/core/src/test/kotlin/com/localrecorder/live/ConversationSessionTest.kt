@@ -33,6 +33,7 @@ class ConversationSessionTest {
         val sockets = mutableListOf<Connection>()
         val played = mutableListOf<Byte>()
         val service = mutableListOf<Boolean>()
+        var hardwareGate: Boolean? = null
         var onDrained: (() -> Unit)? = null
         var capture: ((ByteArray) -> Unit)? = null
         var starts = 0
@@ -60,6 +61,7 @@ class ConversationSessionTest {
         override fun startCapture(onChunk: (ByteArray) -> Unit, onError: (String) -> Unit) { starts++; capture = onChunk }
         override fun stopCapture() { stops++; capture = null }
         override fun speech() = object : SpeechOutput {
+            override val microphoneMayHearPlayback get() = hardwareGate
             override fun start(volume: Float) {}
             override fun append(pcm: ByteArray): Boolean { played += pcm.first(); return true }
             override fun finish(done: () -> Unit) { onDrained = done }
@@ -122,6 +124,9 @@ class ConversationSessionTest {
             assertEquals(listOf<Byte>(2), d.played)
             d.speak()
             assertEquals(if (gate) 0 else 7, a.chunks.last().first().toInt())
+            d.hardwareGate = !gate
+            d.speak()
+            assertEquals(if (gate) 7 else 0, b.chunks.last().first().toInt())
             d.onDrained!!.invoke()
             d.speak()
             assertEquals(7, a.chunks.last().first().toInt())
@@ -134,6 +139,59 @@ class ConversationSessionTest {
             assertEquals("unknown", conflicted.speaker)
             assertEquals("", conflicted.translation)
         }
+    }
+
+    @Test fun secondLaneInitialRateLimitRetriesWithoutStoppingHealthyPeer() {
+        val d = Device()
+        d.engine.configure(true, "zh", "en", "en")
+        d.engine.start(LiveTranslateConfig(language = "en"), "mock-only")
+        val (a, b) = d.sockets
+        a.listener.onReady()
+        b.listener.onEnd("限流", true, EndCause(EndCause.Kind.RATE_LIMITED, "1007"))
+        d.speak()
+        a.words("live", 0, "Hello", "你好")
+        assertEquals(SessionState.RECORDING, d.engine.snapshot.state)
+        assertEquals("你好", d.engine.snapshot.rows.single { it.speaker == "B" }.translation)
+        d.advance(19_999)
+        assertEquals(2, d.sockets.size)
+        d.advance(1)
+        assertEquals(3, d.sockets.size)
+        assertEquals("en", d.sockets.last().config.language)
+        assertFalse(a.finishing)
+        assertEquals(1, d.starts)
+    }
+
+    @Test fun changedDialogueLanguageMarksOnlyFirstAffectedTranslation() {
+        val d = Device()
+        d.begin()
+        d.engine.configure(true, "zh", "ja", "en")
+        d.advance(1000)
+        val (a, b) = d.sockets.takeLast(2)
+        a.listener.onReady()
+        b.listener.onReady()
+        d.sockets.take(2).forEach { it.listener.onEnd(null, false) }
+        d.speak()
+        a.words("a0", 0, "こんにちは", "你好")
+        b.words("b0", 0, "こんにちは", "こんにちは")
+        a.words("a1", 1000, "你说中文", "你说中文")
+        b.words("b1", 1000, "你说中文", "中国語")
+        // Pure Han is ambiguous in the pre-29 fallback; use an explicit system classification in practice.
+        assertNull(d.engine.snapshot.rows.first { it.source == "こんにちは" }.languageSwitch)
+        d.engine.configure(true, "en", "ja", "en")
+        d.advance(1000)
+        val (other, jp) = d.sockets.takeLast(2)
+        other.listener.onReady()
+        jp.listener.onReady()
+        a.listener.onEnd(null, false)
+        b.listener.onEnd(null, false)
+        d.speak()
+        repeat(2) { i ->
+            other.words("e$i", i * 500, "こんにちは", "hello")
+            jp.words("j$i", i * 500, "こんにちは", "こんにちは")
+        }
+        val final = d.engine.snapshot.rows.filter { it.translation == "hello" }
+        assertEquals(listOf("English", null), final.map { it.languageSwitch })
+        assertEquals(1, d.starts)
     }
 
     @Test fun oneLaneRecoveringLeavesOtherUsableAndModeSwitchKeepsMicAndOldTail() {

@@ -50,7 +50,7 @@ class ConversationSession(
 
         fun rows(): List<SubtitleRow> {
             val rows = transcript?.let { reconciled ->
-                (reconciled.rows() + markers.values).sortedBy { it.audioStartMs }
+                if (markers.isEmpty()) reconciled.rows() else (reconciled.rows() + markers.values).sortedBy { it.audioStartMs }
             } ?: lanes.firstOrNull()?.session?.snapshot?.rows.orEmpty()
             if (firstSwitchRow == null && changedLanguages.isNotEmpty())
                 firstSwitchRow = rows.firstOrNull { it.sourceDone && it.source.isNotEmpty() && it.targetLanguage in changedLanguages }?.key
