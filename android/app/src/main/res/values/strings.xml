@@ -88,4 +88,9 @@
     <string name="bilingual">Bilingual</string>
     <string name="source_only">Source Only</string>
     <string name="translation_only">Translation Only</string>
+    <string name="live_notification_channel">Live translation</string>
+    <string name="live_notification_description">Shown during live translation</string>
+    <string name="live_notification_recording">Shengjian is translating</string>
+    <string name="live_notification_audio">Microphone audio is being sent to the LiveTranslate service</string>
+    <string name="live_notification_reconnecting">Shengjian is reconnecting…</string>
 </resources>

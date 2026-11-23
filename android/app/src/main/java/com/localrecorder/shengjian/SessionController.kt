@@ -295,11 +295,11 @@ class SessionController(private val context: Context) : SessionPlatform {
     private fun pushNotification() {
         val snapshot = engine.snapshot
         if (snapshot.state == SessionState.IDLE) return
-        val title = if (snapshot.state == SessionState.RECONNECTING) "声笺正在重新连接…" else RecordingService.DEFAULT_TITLE
+        val title = context.getString(if (snapshot.state == SessionState.RECONNECTING) R.string.live_notification_reconnecting else R.string.live_notification_recording)
         val latest = snapshot.rows.asReversed().asSequence()
             .takeWhile { it.key != firstRowKey }
             .firstOrNull { it.translation.isNotEmpty() }
-        val text = latest?.translation ?: RecordingService.DEFAULT_TEXT
+        val text = latest?.translation ?: context.getString(R.string.live_notification_audio)
         val content = "$title\n$text"
         if (content == notified) return
         if (RecordingService.update(context, title, text)) {

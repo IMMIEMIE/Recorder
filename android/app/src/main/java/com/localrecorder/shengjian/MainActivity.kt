@@ -399,7 +399,7 @@ private fun TranscriptScreen(
         onDispose { }
     }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        if (result[Manifest.permission.RECORD_AUDIO] == true) controller.start()
+        if (result[Manifest.permission.RECORD_AUDIO] == true || context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) controller.start()
         else Toast.makeText(context, R.string.mic_permission_required, Toast.LENGTH_LONG).show()
     }
     fun requestStart() {

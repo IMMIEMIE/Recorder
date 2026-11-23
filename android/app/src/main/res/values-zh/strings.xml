@@ -88,4 +88,9 @@
     <string name="bilingual">双语</string>
     <string name="source_only">仅原文</string>
     <string name="translation_only">仅译文</string>
+    <string name="live_notification_channel">实时翻译</string>
+    <string name="live_notification_description">实时翻译进行中时显示</string>
+    <string name="live_notification_recording">声笺正在实时翻译</string>
+    <string name="live_notification_audio">麦克风音频正发送到 LiveTranslate 云端服务</string>
+    <string name="live_notification_reconnecting">声笺正在重新连接…</string>
 </resources>
