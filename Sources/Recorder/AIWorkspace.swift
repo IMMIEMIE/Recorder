@@ -127,7 +127,7 @@ struct AIWorkspaceView: View {
             }
 
             Picker("任务", selection: $ai.purpose) {
-                ForEach(AIPurpose.allCases) { Text($0.rawValue).tag($0) }
+                ForEach(AIPurpose.allCases) { Text(LocalizedStringKey($0.rawValue)).tag($0) }
             }
             .pickerStyle(.segmented).labelsHidden().disabled(ai.running)
             if ai.purpose == .translation {
@@ -164,7 +164,7 @@ struct AIWorkspaceView: View {
                         if !ai.result.isEmpty {
                             AIAnswerMarkdown(ai: ai)
                         } else {
-                            Text(ai.status.isEmpty ? "发送提问后，可在这里阅读回答。" : ai.status)
+                            Text(LocalizedStringKey(ai.status.isEmpty ? "发送提问后，可在这里阅读回答。" : ai.status))
                                 .foregroundStyle(.secondary)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
@@ -176,8 +176,9 @@ struct AIWorkspaceView: View {
             if !ai.error.isEmpty { Text(ai.error).font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("发送当前原文到 \(profiles.selected?.baseURL ?? "未配置的 AI 服务")")
-                    if !ai.status.isEmpty, !ai.result.isEmpty { Text(ai.status) }
+                    if let profile = profiles.selected { Text("发送当前原文到 \(profile.baseURL)") }
+                    else { Text("尚未配置 AI 服务") }
+                    if !ai.status.isEmpty, !ai.result.isEmpty { Text(LocalizedStringKey(ai.status)) }
                 }.font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 Spacer()
                 if ai.running {

@@ -55,7 +55,6 @@ data class UiState(
     /** Earlier segments of the session being recorded, shown above the live rows. */
     val recordingPrefix: List<SubtitleRow> = emptyList(),
 ) {
-    val status: String get() = session.status.ifEmpty { "就绪 · 目标语言 ${config.languageName}" }
     val viewingRecording: Boolean get() = recordingId != null && selectedId == recordingId
     val selectedTitle: String? get() = selectedId?.let { id -> sessions.firstOrNull { it.id == id }?.title ?: viewed?.title }
 }
@@ -296,11 +295,11 @@ class SessionController(private val context: Context) : SessionPlatform {
     private fun pushNotification() {
         val snapshot = engine.snapshot
         if (snapshot.state == SessionState.IDLE) return
-        val title = if (snapshot.state == SessionState.RECONNECTING) "声笺正在重新连接…" else RecordingService.DEFAULT_TITLE
+        val title = context.getString(if (snapshot.state == SessionState.RECONNECTING) R.string.live_notification_reconnecting else R.string.live_notification_recording)
         val latest = snapshot.rows.asReversed().asSequence()
             .takeWhile { it.key != firstRowKey }
             .firstOrNull { it.translation.isNotEmpty() }
-        val text = latest?.translation ?: RecordingService.DEFAULT_TEXT
+        val text = latest?.translation ?: context.getString(R.string.live_notification_audio)
         val content = "$title\n$text"
         if (content == notified) return
         if (RecordingService.update(context, title, text)) {

@@ -3,12 +3,14 @@ import SwiftUI
 @main
 struct RecorderApp: App {
     @StateObject private var model = AppModel()
+    @ObservedObject private var interface = InterfaceLanguageSettings.shared
     var body: some Scene {
-        WindowGroup("声笺 · 实时转写", id: "main") {
+        WindowGroup(Text(verbatim: interface.string("声笺 · 实时转写")), id: "main") {
             MainView(model: model)
                 .frame(minWidth: 1000, minHeight: 570)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.shutdown() }
         }
+        .environment(\.locale, interface.locale)
         .defaultSize(width: 1280, height: 720)
         Settings {
             TabView {
@@ -19,9 +21,11 @@ struct RecorderApp: App {
                 ScrollView { SessionSettingsView(model: model).padding(24) }.tabItem { Label("会话记录", systemImage: "clock.arrow.circlepath") }
             }.frame(width: 640, height: 600)
         }
-        MenuBarExtra("声笺", systemImage: model.recording ? "mic.fill" : "waveform") {
+        .environment(\.locale, interface.locale)
+        MenuBarExtra(interface.string("声笺"), systemImage: model.recording ? "mic.fill" : "waveform") {
             MenuContent(model: model)
         }
+        .environment(\.locale, interface.locale)
     }
 }
 
@@ -29,7 +33,7 @@ struct MenuContent: View {
     @ObservedObject var model: AppModel
     @Environment(\.openWindow) var openWindow
     var body: some View {
-        Text(model.statusTitle)
+        Text(LocalizedStringKey(model.statusTitle))
         Button(model.canStop ? "停止转写" : model.continuesSession ? "继续录制" : "开始转写") { model.toggle() }
             .disabled(!model.canStop && !model.canStart)
         Button("显示转写窗口") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
@@ -46,6 +50,7 @@ struct MenuContent: View {
 
 struct MainView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject private var interface = InterfaceLanguageSettings.shared
     @State private var floating = false
     @State private var showAI = false
     @StateObject private var ai = AIWorkspace()
@@ -84,10 +89,10 @@ struct MainView: View {
                         Text("系统默认麦克风").tag(UInt32(0))
                         ForEach(model.microphones) { Text($0.name).tag($0.id) }
                     }.labelsHidden().disabled(model.inputBusy)
-                    HStack { Circle().fill(model.permission == "已允许" ? accent : .orange).frame(width: 6, height: 6); Text("麦克风权限：\(model.permission)").font(.caption2).foregroundStyle(.secondary) }
+                    HStack { Circle().fill(model.permission == "已允许" ? accent : .orange).frame(width: 6, height: 6); Text("麦克风权限：\(interface.string(model.permission))").font(.caption2).foregroundStyle(.secondary) }
                     } else if model.audioSource == "file" {
                         Button("选择音频文件…") { model.chooseAudioFile() }.disabled(model.inputBusy)
-                        Text(model.audioFileURL?.lastPathComponent ?? "尚未选择文件").font(.caption).lineLimit(2)
+                        Text(model.audioFileURL?.lastPathComponent ?? interface.string("尚未选择文件")).font(.caption).lineLimit(2)
                         Text("按原始语速转写，不播放声音；文件结束后自动处理尾句。").font(.caption2).foregroundStyle(.secondary)
                     } else {
                         Text("采集其他应用播放的声音，不使用麦克风。首次使用需允许屏幕与系统音频录制权限。").font(.caption).foregroundStyle(.secondary)
@@ -112,8 +117,8 @@ struct MainView: View {
             Divider()
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center) {
-                    Text(model.displayedTitle).font(.system(size: 15, weight: .semibold)).lineLimit(1).truncationMode(.tail)
-                        .help(model.displayedTitle)
+                    displayedTitle.font(.system(size: 15, weight: .semibold)).lineLimit(1).truncationMode(.tail)
+                        .help(displayedTitle)
                     Spacer()
                     Button { model.setSubtitleMode(!model.subtitleMode) } label: { Image(systemName: model.subtitleMode ? "captions.bubble.fill" : "captions.bubble") }
                         .help(model.subtitleMode ? "关闭字幕模式" : "打开字幕模式").accessibilityLabel("字幕模式")
@@ -153,9 +158,9 @@ struct MainView: View {
                     HStack(spacing: 12) {
                         Circle().fill(model.recording ? .red : accent).frame(width: 8, height: 8)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(model.statusTitle).font(.system(size: 13, weight: .medium))
+                            Text(LocalizedStringKey(model.statusTitle)).font(.system(size: 13, weight: .medium))
                             if ["loading", "warming", "connecting", "finalizing"].contains(model.state) || (model.liveEnabled && model.state == "idle") {
-                                Text(model.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                                Text(LocalizedStringKey(model.detail)).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                             }
                         }
                         Spacer()
@@ -176,11 +181,15 @@ struct MainView: View {
                             }.buttonStyle(.borderedProminent).tint(model.recording ? .red : accent).disabled(!model.canStart && !model.canStop)
                         }
                     }
-                    Text("⌃ ⌥ \(model.shortcutKey)  ·  \(model.holdToTalk ? "按住说话，松开停止" : "开始 / 停止")").font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+                    Text("⌃ ⌥ \(model.shortcutKey)  ·  \(interface.string(model.holdToTalk ? "按住说话，松开停止" : "开始 / 停止"))").font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
                 }.padding(24).background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
             }.background(Color(nsColor: .textBackgroundColor))
         }.tint(accent).sheet(isPresented: $showAI) { AIWorkspaceView(ai: ai) }
             .onChange(of: model.liveEnabled) { _, enabled in if enabled { ai.cancel(); showAI = false } }
+    }
+
+    private var displayedTitle: Text {
+        model.selectedSessionID == nil ? Text("新会话") : Text(verbatim: model.displayedTitle)
     }
 }
 
@@ -189,6 +198,7 @@ struct SettingsView: View {
     @State private var advanced = false
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            InterfaceLanguagePicker(settings: .shared)
             if model.liveEnabled { Text("当前由 LiveTranslate 同时完成转写与翻译。请前往 LiveTranslate 页管理；关闭该模式后恢复此处设置。").font(.callout).foregroundStyle(.secondary) }
             Group {
             Text("设置").font(.title2.bold())
@@ -242,7 +252,7 @@ struct SettingsView: View {
                     Button("下载模型") { model.load(download: true) }.disabled(!model.localPath.isEmpty)
                 }
                 Spacer()
-                Text(model.statusTitle).font(.caption).foregroundStyle(.secondary)
+                Text(LocalizedStringKey(model.statusTitle)).font(.caption).foregroundStyle(.secondary)
             }.disabled(model.busy || model.asrTesting)
             if model.asrProvider == "local" {
                 Text("首次使用先下载，之后可离线切换。").font(.caption).foregroundStyle(.secondary)
@@ -253,7 +263,7 @@ struct SettingsView: View {
             }
             if !model.error.isEmpty { Text(model.error).font(.caption).foregroundStyle(.orange).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
             Divider()
-            Picker("语言", selection: $model.language) {
+            Picker("识别语言", selection: $model.language) {
                 Text("自动").tag("auto"); Text("中文").tag("Chinese"); Text("English").tag("English")
                 Text("粤语").tag("Cantonese"); Text("日本語").tag("Japanese"); Text("한국어").tag("Korean")
             }.disabled(model.busy)
@@ -334,7 +344,7 @@ struct TranslationSettingsView: View {
                     Button("加载 / 切换") { model.loadTranslator() }.buttonStyle(.borderedProminent)
                     Button("下载翻译模型") { model.loadTranslator(download: true) }
                     Spacer()
-                    Text(model.translatorStatusTitle).font(.caption).foregroundStyle(.secondary)
+                    Text(LocalizedStringKey(model.translatorStatusTitle)).font(.caption).foregroundStyle(.secondary)
                 }.disabled(model.translatorBusy)
                 if model.translatorState == "downloading" {
                     ProgressView(value: model.translatorProgress)

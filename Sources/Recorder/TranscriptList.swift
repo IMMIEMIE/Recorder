@@ -83,10 +83,10 @@ struct TranscriptList: View {
                 let item = row.item
                 VStack(alignment: .leading, spacing: 24) {
                     if row.startsSegment {
-                        SessionMarker(text: "继续录制" + (model.segmentStart(item.segment).map { " " + SessionExport.stamp($0, zone: .current) } ?? ""))
+                        SessionMarker(text: InterfaceLanguageSettings.shared.string("继续录制") + (model.segmentStart(item.segment).map { " " + SessionExport.stamp($0, zone: .current) } ?? ""))
                     }
                     if item.isBreak {
-                        SessionMarker(text: SessionExport.breakMarker)
+                        SessionMarker(text: InterfaceLanguageSettings.shared.string(SessionExport.breakMarker))
                     } else {
                         transcriptLine(item)
                     }

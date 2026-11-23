@@ -234,7 +234,7 @@ final class AppModel: ObservableObject {
         default: return activeTranslatorID.split(separator: "/").last.map(String.init) ?? activeTranslatorID
         }
     }
-    var translationSummary: String {
+    var translationSummary: LocalizedStringKey {
         if liveEnabled { return "\(liveConfiguration.modelName) → \(liveConfiguration.languageName)" }
         if translationProvider == "api" {
             guard translationEnabled else { return "已关闭" }
