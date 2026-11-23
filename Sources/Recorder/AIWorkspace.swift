@@ -91,7 +91,7 @@ struct AIWorkspaceView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-            Picker("任务", selection: $ai.purpose) { ForEach(AIPurpose.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).disabled(ai.running)
+            Picker("任务", selection: $ai.purpose) { ForEach(AIPurpose.allCases) { Text(LocalizedStringKey($0.rawValue)).tag($0) } }.pickerStyle(.segmented).disabled(ai.running)
             if ai.purpose == .translation { TextField("目标语言", text: $ai.targetLanguage).disabled(ai.running) }
             if ai.purpose == .question {
                 TextField("例如：这段内容的主要结论是什么？", text: $ai.question, axis: .vertical).lineLimit(2...4).disabled(ai.running)
@@ -103,15 +103,16 @@ struct AIWorkspaceView: View {
             }.frame(height: showSource ? 220 : ai.purpose == .question ? 160 : ai.purpose == .translation ? 130 : 95)
             Divider()
             ScrollView {
-                Text(ai.result.isEmpty ? "AI 回答会显示在这里" : ai.result)
+                (ai.result.isEmpty ? Text("AI 回答会显示在这里") : Text(verbatim: ai.result))
                     .foregroundStyle(ai.result.isEmpty ? .secondary : .primary)
                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(6)
             }.frame(minHeight: 150)
             if !ai.error.isEmpty { Text(ai.error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("发送当前原文到 \(profiles.selected?.baseURL ?? "未配置的 AI 服务")")
-                    if !ai.status.isEmpty { Text(ai.status) }
+                    if let profile = profiles.selected { Text("发送当前原文到 \(profile.baseURL)") }
+                    else { Text("尚未配置 AI 服务") }
+                    if !ai.status.isEmpty { Text(LocalizedStringKey(ai.status)) }
                 }.font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if ai.running { ProgressView().controlSize(.small); Button("停止") { ai.cancel() } }

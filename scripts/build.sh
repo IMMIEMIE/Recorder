@@ -21,6 +21,7 @@ app="$PWD/dist/声笺.app"
 # Start from an empty bundle, including any previously verified Hy helper.
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp -R assets/localization/*.lproj "$app/Contents/Resources/"
 cp assets/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 cp .build/release/Recorder "$app/Contents/MacOS/Recorder"
 # Metal kernels for mlx-swift; LocalBackend points MLX at this file.
@@ -39,6 +40,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>声笺</string>
 <key>CFBundleVersion</key><string>__BUILD__</string>
 <key>CFBundleShortVersionString</key><string>__VERSION__</string>
+<key>CFBundleDevelopmentRegion</key><string>en</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
