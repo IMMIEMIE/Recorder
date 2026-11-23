@@ -218,51 +218,51 @@ private fun Subtitles(rows: List<SubtitleRow>, trimmed: Boolean, modifier: Modif
     }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val last = rows.size - 1 + if (trimmed) 1 else 0
-    // Follow new text only while the reader is at the end; scrolling back to read stays put.
-    val following by remember {
-        derivedStateOf {
-            val info = list.layoutInfo
-            val visible = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
-            visible.index >= info.totalItemsCount - 2
-        }
-    }
-    LaunchedEffect(rows.size, rows.lastOrNull()) {
-        if (following) list.animateScrollToItem(last)
+    // Newest first in a bottom-anchored list (like a chat): text streaming into the newest row grows upward
+    // in place, so following live text needs no scroll calls and the end of a long sentence stays visible.
+    val newestFirst = remember(rows) { rows.asReversed() }
+    val following by remember { derivedStateOf { list.firstVisibleItemIndex == 0 } }
+    // Read during composition, i.e. before the new row is laid out: the list keeps its position by key, so
+    // after layout the reader appears one row "behind" even if they were following.
+    val wasFollowing = following
+    LaunchedEffect(rows.lastOrNull()?.key) {
+        if (wasFollowing) list.scrollToItem(0)
     }
     Box(modifier.fillMaxWidth()) {
-        LazyColumn(Modifier.fillMaxSize(), state = list) {
-            if (trimmed) {
-                item(key = "trimmed") { Marker("较早的字幕已移除（最多保留约 1000 条）") }
-            }
-            items(rows, key = { it.key }) { row ->
+        LazyColumn(Modifier.fillMaxSize(), state = list, reverseLayout = true) {
+            items(newestFirst, key = { it.key }, contentType = { if (it.marker.isEmpty()) 0 else 1 }) { row ->
                 if (row.marker.isNotEmpty()) {
                     Marker(row.marker)
                     return@items
                 }
-                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
-                    if (row.source.isNotEmpty()) {
-                        Text(
-                            row.source, style = MaterialTheme.typography.bodyLarge,
-                            color = if (row.sourceDone) MaterialTheme.colorScheme.onSurfaceVariant
-                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                        )
-                    }
-                    if (row.translation.isNotEmpty()) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            row.translation, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
-                            color = if (row.translationDone) MaterialTheme.colorScheme.onSurface
-                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                        )
+                Column(Modifier.fillMaxWidth()) {
+                    HorizontalDivider()
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+                        if (row.source.isNotEmpty()) {
+                            Text(
+                                row.source, style = MaterialTheme.typography.bodyLarge,
+                                color = if (row.sourceDone) MaterialTheme.colorScheme.onSurfaceVariant
+                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            )
+                        }
+                        if (row.translation.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                row.translation, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
+                                color = if (row.translationDone) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                            )
+                        }
                     }
                 }
-                HorizontalDivider()
+            }
+            if (trimmed) {
+                item(key = "trimmed", contentType = 1) { Marker("较早的字幕已移除（最多保留约 1000 条）") }
             }
         }
         if (!following) {
             FilledTonalButton(
-                onClick = { scope.launch { list.animateScrollToItem(last) } },
+                onClick = { scope.launch { list.animateScrollToItem(0) } },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
             ) { Text("回到最新") }
         }
@@ -271,12 +271,14 @@ private fun Subtitles(rows: List<SubtitleRow>, trimmed: Boolean, modifier: Modif
 
 @Composable
 private fun Marker(text: String) {
-    Text(
-        text, style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-    )
-    HorizontalDivider()
+    Column(Modifier.fillMaxWidth()) {
+        HorizontalDivider()
+        Text(
+            text, style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

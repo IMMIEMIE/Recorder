@@ -73,7 +73,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         /** A reconnected session that lasts this long resets the attempt counter. */
         const val STABLE_MS = 30_000L
 
-        /** Speech captured while reconnecting is kept (most recent 5 s) and sent first. */
+        /** Speech captured while connecting or reconnecting is kept (most recent 5 s) and sent first. */
         const val MAX_GAP_AUDIO_BYTES = LiveTranslateConfig.INPUT_SAMPLE_RATE * 2 * 5
         const val SLOW_AUDIO_BYTES = LiveTranslateConfig.INPUT_SAMPLE_RATE * 2 * 3
         const val RECOVERED_AUDIO_BYTES = LiveTranslateConfig.INPUT_SAMPLE_RATE * 2
@@ -135,12 +135,16 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             update { it.copy(error = failure) }
             return
         }
-        update { it.copy(state = SessionState.CONNECTING, status = "正在连接 LiveTranslate…", error = "", notice = "") }
+        update { it.copy(state = SessionState.CONNECTING, status = "正在连接，可以开始说话…", error = "", notice = "") }
         try {
             platform.sessionActive(true)
         } catch (_: Exception) {
             end("无法启动前台录音服务，请在应用位于前台时开始")
+            return
         }
+        // Capture starts now, not once the session is configured: people speak as soon as they press start,
+        // and the handshake takes 0.5–2 s on mobile networks. Speech up to then is sent first once ready.
+        beginCapture()
     }
 
     /** Stops capture; the server still delivers the tail before the session ends. */
@@ -265,43 +269,52 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         }
     }
 
+    /** Opens the microphone; until a connection is ready its chunks wait in the gap buffer. */
+    private fun beginCapture() {
+        val generation = synchronized(audioLock) {
+            live = null
+            buffering = true
+            gap.clear()
+            gapBytes = 0
+            slow = false
+            ++capture
+        }
+        try {
+            platform.startCapture(
+                { pcm -> chunk(generation, pcm) },
+                { message -> platform.post { if (generation == capture) captureInterrupted(message) } },
+            )
+        } catch (e: Exception) {
+            end((e as? LiveTranslateException)?.message ?: "无法打开麦克风")
+            return
+        }
+        capturing = true
+    }
+
+    /** Speech captured before this connection was ready goes first, in order; then chunks go straight to it. */
+    private fun attach(current: LiveTransport) {
+        synchronized(audioLock) {
+            while (gap.isNotEmpty()) {
+                if (current.append(gap.removeFirst()) != AppendResult.SENT) break
+            }
+            gap.clear()
+            gapBytes = 0
+            buffering = false
+            live = current
+        }
+    }
+
     private fun ready() {
         val current = transport ?: return
         when (snapshot.state) {
             SessionState.CONNECTING -> {
-                val generation = synchronized(audioLock) {
-                    live = current
-                    buffering = false
-                    gap.clear()
-                    gapBytes = 0
-                    slow = false
-                    ++capture
-                }
-                try {
-                    platform.startCapture(
-                        { pcm -> chunk(generation, pcm) },
-                        { message -> platform.post { if (generation == capture) captureInterrupted(message) } },
-                    )
-                } catch (e: Exception) {
-                    end((e as? LiveTranslateException)?.message ?: "无法打开麦克风")
-                    return
-                }
-                capturing = true
+                attach(current)
                 // After capture: the platform has settled its audio routing (e.g. a Bluetooth headset) by now.
                 if (config.audioOutput) startSpeech()
                 update { it.copy(state = SessionState.RECORDING, status = recordingStatus()) }
             }
             SessionState.RECONNECTING -> {
-                synchronized(audioLock) {
-                    // Speech captured during the gap goes first, in order.
-                    while (gap.isNotEmpty()) {
-                        if (current.append(gap.removeFirst()) != AppendResult.SENT) break
-                    }
-                    gap.clear()
-                    gapBytes = 0
-                    buffering = false
-                    live = current
-                }
+                attach(current)
                 stable = platform.schedule(STABLE_MS) { attempts = 0 }
                 update { it.copy(state = SessionState.RECORDING, status = recordingStatus(), notice = "已重新连接；中断期间的内容可能有缺失") }
             }

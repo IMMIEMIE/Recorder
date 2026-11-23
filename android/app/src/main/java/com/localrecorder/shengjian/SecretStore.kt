@@ -38,7 +38,12 @@ class SecretStore(context: Context) {
         prefs.edit().putString(account, Base64.getEncoder().encodeToString(sealed)).apply()
     }
 
-    fun has(account: String): Boolean = get(account)?.isNotEmpty() == true
+    /**
+     * Whether a key is stored, without decrypting it: this runs at app start and while drawing the settings
+     * screen, and Keystore operations can take tens of milliseconds. A key the Keystore can no longer open
+     * (rare) still counts here; starting a session then reports the missing key.
+     */
+    fun has(account: String): Boolean = !prefs.getString(account, null).isNullOrEmpty()
 
     private fun key(): SecretKey {
         val store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
