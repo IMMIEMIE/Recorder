@@ -13,10 +13,9 @@ struct TranslationMenu: View, Equatable {
         }
     }
 
-    // Snapshot the menu inputs so audio levels, partials and translation tokens can
-    // redraw MainView without rebuilding the menu while someone is choosing a language.
+    // MainView applies the tooltip outside the equatable menu. Interpolated localized
+    // Text can compare unequal on every audio tick even when the help reads the same.
     private let mode: Mode
-    private let summary: Text
     private let model: AppModel
 
     init(model: AppModel) {
@@ -24,11 +23,10 @@ struct TranslationMenu: View, Equatable {
         mode = model.liveEnabled
             ? .live(language: model.liveConfiguration.languageName)
             : .standard(target: model.translationTarget, enabled: model.translationEnabled, busy: model.translatorBusy)
-        summary = Text(model.translationSummary)
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.model === rhs.model && lhs.mode == rhs.mode && lhs.summary == rhs.summary
+        lhs.model === rhs.model && lhs.mode == rhs.mode
     }
 
     var body: some View {
@@ -53,6 +51,5 @@ struct TranslationMenu: View, Equatable {
             Label(mode.title, systemImage: "character.bubble")
         }
         .fixedSize()
-        .help(summary)
     }
 }

@@ -135,6 +135,7 @@ struct MainView: View {
                         .help(model.subtitleMode ? "关闭字幕模式" : "打开字幕模式").accessibilityLabel("字幕模式")
                     Button { floating.toggle(); NSApp.keyWindow?.level = floating ? .floating : .normal } label: { Image(systemName: floating ? "pin.fill" : "pin") }.help("窗口置顶")
                     TranslationMenu(model: model).equatable()
+                        .help(Text(model.translationSummary))
                     Button { ai.prepare(text: model.joinedText); showAI = true } label: { Label("AI 提问", systemImage: "sparkles") }
                         .disabled(!model.displayedHasText || model.liveEnabled)
                     if model.livePlaying { Button("停止译音", systemImage: "speaker.slash") { model.stopLivePlayback() } }

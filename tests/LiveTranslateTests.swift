@@ -155,6 +155,8 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         model.load(); model.loadTranslator()
         try check(model.state == "ready", "local model load routes disabled")
         let liveMenu = TranslationMenu(model: model)
+        model.partial = "live partial"
+        try check(liveMenu == TranslationMenu(model: model), "LiveTranslate transcription keeps the menu stable")
         let target = model.translationTarget
         model.setTranslation(enabled: true); model.setTranslationTarget("English")
         try check(!model.translationEnabled && model.translationTarget == target, "other translation route disabled")
@@ -182,7 +184,7 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         let warmingMenu = TranslationMenu(model: model)
         try check(menu != warmingMenu, "warming disables the ordinary translation toggle")
         model.translatorState = "downloading"
-        try check(warmingMenu != TranslationMenu(model: model), "a changed tooltip refreshes an otherwise identical menu")
+        try check(warmingMenu == TranslationMenu(model: model), "a tooltip-only change leaves the open menu alone")
         model.translatorState = "idle"
 
         var events = LiveTranslateEvents()
