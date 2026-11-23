@@ -43,6 +43,7 @@ data class UiState(
     val options: AppOptions = AppOptions(),
     val hasKey: Boolean = false,
     val testing: Boolean = false,
+    val testSucceeded: Boolean? = null,
     val settingsMessage: String = "",
     /** Saved sessions plus the one being recorded, most recently updated first. */
     val sessions: List<SessionSummary> = emptyList(),
@@ -186,6 +187,12 @@ class SessionController(private val context: Context) : SessionPlatform {
         }
     }
 
+    fun subtitleStartMs(key: String): Long? {
+        val state = _ui.value
+        return if (state.viewingRecording) recorder.firstSeenAtMs(key) ?: recorder.base?.subtitleStartMs(key)
+        else state.viewed?.subtitleStartMs(key)
+    }
+
     fun stopPlayback() = engine.stopPlayback()
     fun dismissMessages() = engine.dismissMessages()
 
@@ -203,7 +210,7 @@ class SessionController(private val context: Context) : SessionPlatform {
             config = saved
             options = draftOptions
             _ui.update {
-                it.copy(config = saved, options = draftOptions, hasKey = secrets.has(saved.keyAccount), settingsMessage = "已保存")
+                it.copy(config = saved, options = draftOptions, hasKey = secrets.has(saved.keyAccount), settingsMessage = context.getString(R.string.saved), testSucceeded = null)
             }
             true
         } catch (e: LiveTranslateException) {
@@ -242,13 +249,17 @@ class SessionController(private val context: Context) : SessionPlatform {
         return secrets.has(account)
     }
 
+    fun clearSettingsFeedback() {
+        _ui.update { it.copy(settingsMessage = "", testSucceeded = null) }
+    }
+
     /** Establishes a session without capturing or sending audio. */
     fun testConnection(draft: LiveTranslateConfig, key: String) {
         if (_ui.value.testing || engine.snapshot.state != SessionState.IDLE) return
         val draftConfig = try {
             draft.normalized(allowLocalhost)
         } catch (e: LiveTranslateException) {
-            _ui.update { it.copy(settingsMessage = e.message.orEmpty()) }
+            _ui.update { it.copy(testSucceeded = false, settingsMessage = e.message.orEmpty()) }
             return
         }
         val secret = key.trim().ifEmpty { secrets.get(draftConfig.keyAccount).orEmpty() }
@@ -259,17 +270,17 @@ class SessionController(private val context: Context) : SessionPlatform {
             override fun onEnd(error: String?, recoverable: Boolean, cause: EndCause) {
                 if (tester !== probe) return
                 tester = null
-                _ui.update { it.copy(testing = false, settingsMessage = error ?: "连接成功：会话已建立并确认配置，未发送音频") }
+                _ui.update { it.copy(testing = false, testSucceeded = error == null, settingsMessage = error ?: context.getString(R.string.test_succeeded)) }
             }
         })
         try {
             probe.connect(draftConfig, secret)
         } catch (e: LiveTranslateException) {
-            _ui.update { it.copy(settingsMessage = e.message.orEmpty()) }
+            _ui.update { it.copy(testSucceeded = false, settingsMessage = e.message.orEmpty()) }
             return
         }
         tester = probe
-        _ui.update { it.copy(testing = true, settingsMessage = "正在测试连接…") }
+        _ui.update { it.copy(testing = true, testSucceeded = null, settingsMessage = context.getString(R.string.test_in_progress)) }
     }
 
     private fun recordingEnded(id: String, record: SessionRecord?) {

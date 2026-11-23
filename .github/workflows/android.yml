@@ -2,9 +2,9 @@ name: Android
 
 on:
   push:
-    paths: ["android/**", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", "scripts/check_version.sh", "scripts/version.sh", "VERSION", "README.md", ".github/workflows/android.yml"]
+    paths: ["android/**", "design/**", "Sources/Recorder/DesignTokens.swift", "scripts/design_tokens.py", "scripts/make_icon.py", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", "scripts/check_version.sh", "scripts/version.sh", "VERSION", "README.md", ".github/workflows/android.yml"]
   pull_request:
-    paths: ["android/**", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", "scripts/check_version.sh", "scripts/version.sh", "VERSION", "README.md", ".github/workflows/android.yml"]
+    paths: ["android/**", "design/**", "Sources/Recorder/DesignTokens.swift", "scripts/design_tokens.py", "scripts/make_icon.py", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", "scripts/check_version.sh", "scripts/version.sh", "VERSION", "README.md", ".github/workflows/android.yml"]
   workflow_dispatch:
 
 jobs:
@@ -19,6 +19,11 @@ jobs:
       - name: Check version consistency
         working-directory: .
         run: scripts/check_version.sh
+      - name: Check native themes, contrast and Android icon layers
+        working-directory: .
+        run: |
+          python3 scripts/design_tokens.py --check
+          python3 scripts/make_icon.py --check-android
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -26,6 +31,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Core tests (protocol + mock WebSocket server)
         run: ./gradlew :core:test
+      - name: Compile Compose review previews
+        run: ./gradlew :app:compileDebugScreenshotTestKotlin
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug
       # Unsigned here (no keystore on PRs): checks that R8 and resource shrinking succeed and the size budget holds.

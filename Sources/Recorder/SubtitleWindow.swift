@@ -291,7 +291,7 @@ struct SubtitleView: View {
                 line(interface.string(model.recording ? "正在聆听…" : "开始转写后，字幕将显示在这里"), size: fontSize * 0.75, color: .white.opacity(0.75))
             }
             ForEach(Array(source.enumerated()), id: \.offset) { line($0.element, size: fontSize, color: .white) }
-            ForEach(Array(translation.enumerated()), id: \.offset) { line($0.element, size: translationSize, color: Color(red: 0.65, green: 0.88, blue: 1)) }
+            ForEach(Array(translation.enumerated()), id: \.offset) { line($0.element, size: translationSize, color: DesignTokens.primary) }
         }
         .padding(8)
         // Nearly invisible fill: keeps the gaps between lines draggable instead of clicking through.

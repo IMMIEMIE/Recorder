@@ -95,7 +95,7 @@ struct TranscriptList: View {
             if !model.partial.isEmpty && model.viewedSession == nil {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("识别中").font(.caption2).foregroundStyle(accent)
-                    Text(model.partial).font(.system(size: 17)).lineSpacing(7).foregroundStyle(.secondary)
+                    Text(model.partial).modifier(DesignType(.source)).lineSpacing(7).foregroundStyle(DesignTokens.onSurfaceVariant.opacity(DesignTokens.draftOpacity))
                 }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
             }
             Color.clear.frame(height: 1).id(TranscriptTarget.end)
@@ -106,16 +106,16 @@ struct TranscriptList: View {
         HStack(alignment: .top, spacing: 18) {
             Text(String(format: "%02d:%02d", Int(item.seconds) / 60, Int(item.seconds) % 60)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).frame(width: 38).padding(.top, 6)
             VStack(alignment: .leading, spacing: 6) {
-                if item.incomplete { Text("此段内容可能不完整").font(.caption2).foregroundStyle(.orange) }
+                if item.incomplete { Text("此段内容可能不完整").font(.caption2).foregroundStyle(DesignTokens.slow) }
                 else if !item.sourceDone { Text("识别中…").font(.caption2).foregroundStyle(.secondary) }
                 // Refresh the selectable AppKit text when a revision replaces its contents.
                 // The surrounding transcript row retains its ID and scroll position.
                 if !item.text.isEmpty {
-                    Text(item.text).font(.system(size: 17)).lineSpacing(7).textSelection(.enabled).id(item.text)
+                    Text(item.text).modifier(DesignType(item.translation.isEmpty ? .translation : .source)).foregroundStyle(item.translation.isEmpty ? DesignTokens.onSurface : DesignTokens.onSurfaceVariant).lineSpacing(7).textSelection(.enabled).id(item.text)
                 }
                 let translation = item.translation
                 if !translation.isEmpty {
-                    Text(translation).font(.system(size: 15)).lineSpacing(5).foregroundStyle(.secondary).textSelection(.enabled).id(translation)
+                    Text(translation).modifier(DesignType(.translation)).lineSpacing(5).foregroundStyle(DesignTokens.onSurface).textSelection(.enabled).id(translation)
                 } else if item.translating {
                     Text("翻译中…").font(.caption).foregroundStyle(.tertiary)
                 }

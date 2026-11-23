@@ -19,7 +19,7 @@ struct RecorderApp: App {
                 ScrollView { LiveTranslateSettingsView(model: model).padding(24) }.tabItem { Label("LiveTranslate", systemImage: "globe") }
                 AISettingsView().tabItem { Label("AI 服务", systemImage: "sparkles") }
                 ScrollView { SessionSettingsView(model: model).padding(24) }.tabItem { Label("会话记录", systemImage: "clock.arrow.circlepath") }
-            }.frame(width: 640, height: 600)
+            }.frame(width: 640, height: 600).tint(DesignTokens.primary)
         }
         .environment(\.locale, interface.locale)
         MenuBarExtra(interface.string("声笺"), systemImage: model.recording ? "mic.fill" : "waveform") {
@@ -54,10 +54,11 @@ struct MainView: View {
     @State private var floating = false
     @State private var showAI = false
     @StateObject private var ai = AIWorkspace()
-    private let accent = Color(red: 0.14, green: 0.43, blue: 0.38)
+    private let accent = DesignTokens.primary
     var body: some View {
         NavigationSplitView {
             SessionSidebar(model: model)
+                .tint(accent)
                 .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 320)
         } detail: {
             workspace
@@ -89,7 +90,7 @@ struct MainView: View {
                         Text("系统默认麦克风").tag(UInt32(0))
                         ForEach(model.microphones) { Text($0.name).tag($0.id) }
                     }.labelsHidden().disabled(model.inputBusy)
-                    HStack { Circle().fill(model.permission == "已允许" ? accent : .orange).frame(width: 6, height: 6); Text("麦克风权限：\(interface.string(model.permission))").font(.caption2).foregroundStyle(.secondary) }
+                    HStack { Circle().fill(model.permission == "已允许" ? accent : DesignTokens.slow).frame(width: 6, height: 6); Text("麦克风权限：\(interface.string(model.permission))").font(.caption2).foregroundStyle(.secondary) }
                     } else if model.audioSource == "file" {
                         Button("选择音频文件…") { model.chooseAudioFile() }.disabled(model.inputBusy)
                         Text(model.audioFileURL?.lastPathComponent ?? interface.string("尚未选择文件")).font(.caption).lineLimit(2)
@@ -108,12 +109,12 @@ struct MainView: View {
                     Text(model.activeModelName).font(.system(size: 13, weight: .medium)).lineLimit(2)
                     Text("实时翻译").font(.caption).foregroundStyle(.secondary).padding(.top, 6)
                     Text(model.translationSummary).font(.system(size: 13, weight: .medium)).lineLimit(2)
-                        .foregroundStyle(model.translatorState == "error" ? Color.orange : Color.primary)
+                        .foregroundStyle(model.translatorState == "error" ? DesignTokens.error : DesignTokens.onSurface)
                     SettingsLink { Label("设置", systemImage: "slider.horizontal.3") }.buttonStyle(.link).font(.caption)
                 }
                 Spacer()
 
-            }.padding(24).frame(width: 255).frame(maxHeight: .infinity).background(Color(nsColor: .controlBackgroundColor))
+            }.padding(24).frame(width: 255).frame(maxHeight: .infinity).background(DesignTokens.surfaceContainerLow)
             Divider()
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center) {
@@ -122,23 +123,24 @@ struct MainView: View {
                     Spacer()
                     Button { model.setSubtitleMode(!model.subtitleMode) } label: { Image(systemName: model.subtitleMode ? "captions.bubble.fill" : "captions.bubble") }
                         .help(model.subtitleMode ? "关闭字幕模式" : "打开字幕模式").accessibilityLabel("字幕模式")
-                    Button { floating.toggle(); NSApp.keyWindow?.level = floating ? .floating : .normal } label: { Image(systemName: floating ? "pin.fill" : "pin") }.help("窗口置顶")
+                    Button { floating.toggle(); NSApp.keyWindow?.level = floating ? .floating : .normal } label: { Image(systemName: floating ? "pin.fill" : "pin") }.help("窗口置顶").accessibilityLabel("窗口置顶")
                     TranslationMenu(model: model).equatable()
                         .help(Text(model.translationSummary))
                     Button { ai.prepare(text: model.joinedText, recordingID: model.viewedSession?.id ?? model.activeSessionID); showAI = true } label: { Label("AI 提问", systemImage: "sparkles") }
                         .disabled(!model.displayedHasText || model.liveEnabled)
                     if model.livePlaying { Button("停止译音", systemImage: "speaker.slash") { model.stopLivePlayback() } }
-                    Button { model.exportRequest = SessionExportRequest(sessionID: nil) } label: { Label("导出…", systemImage: "square.and.arrow.up") }
+                    Button { model.exportRequest = SessionExportRequest(sessionID: nil) } label: { Label("导出会话…", systemImage: "square.and.arrow.up") }
                         .disabled(!model.displayedHasText).help("将此会话的已定稿文字导出为 TXT 或 Markdown")
                     Button { model.copyText() } label: { Label("复制", systemImage: "doc.on.doc") }.disabled(!model.displayedHasText)
-                }.padding(.horizontal, 24).padding(.vertical, 14)
+                }.buttonStyle(ToolbarActionStyle()).menuStyle(.borderedButton)
+                .padding(.horizontal, 24).padding(.vertical, 14)
                 if let viewed = model.viewedSession, model.recordingSessionID != nil {
                     HStack(spacing: 10) {
-                        Image(systemName: "record.circle").foregroundStyle(.red)
+                        Image(systemName: "record.circle").foregroundStyle(DesignTokens.recording)
                         Text("正在查看「\(viewed.title)」；新内容仍写入正在录制的会话。").font(.caption).lineLimit(2)
                         Spacer()
                         Button("回到录制中的会话") { model.selectSession(model.activeSessionID) }.font(.caption)
-                    }.padding(.horizontal, 24).padding(.vertical, 8).background(Color.red.opacity(0.06))
+                    }.padding(.horizontal, 24).padding(.vertical, 8).background(DesignTokens.recording.opacity(0.06))
                 }
                 Divider().padding(.horizontal, 30)
                 TranscriptList(model: model, accent: accent)
@@ -150,14 +152,14 @@ struct MainView: View {
                             Text(model.error).font(.caption).textSelection(.enabled)
                             Spacer()
                             Button { model.error = "" } label: { Image(systemName:"xmark") }.buttonStyle(.plain)
-                        }.foregroundStyle(.orange).padding(12).background(.orange.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+                        }.foregroundStyle(DesignTokens.onErrorContainer).padding(12).background(DesignTokens.errorContainer, in: RoundedRectangle(cornerRadius: 8))
                     }
                     if model.state == "downloading" {
                         ProgressView(value: model.progress)
                         HStack { Text(model.progressLabel).lineLimit(1); Spacer(); Button("取消下载") { model.cancelDownload() } }.font(.caption)
                     }
                     HStack(spacing: 12) {
-                        Circle().fill(model.recording ? .red : accent).frame(width: 8, height: 8)
+                        Circle().fill(statusColor).frame(width: 8, height: 8)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(LocalizedStringKey(model.statusTitle)).font(.system(size: 13, weight: .medium))
                             if ["loading", "warming", "connecting", "finalizing"].contains(model.state) || (model.liveEnabled && model.state == "idle") {
@@ -168,8 +170,8 @@ struct MainView: View {
                         if model.liveEnabled {
                             if model.canLoadHyModel { Button("加载模型") { model.loadHyModel() } }
                             Button { model.toggle() } label: {
-                                Label(model.canStop ? "停止转写" : model.continuesSession ? "继续录制" : "开始转写", systemImage: model.canStop ? "stop.fill" : "mic.fill")
-                            }.buttonStyle(.borderedProminent).tint(model.canStop ? .red : accent).disabled(!model.canStart && !model.canStop)
+                                Label(model.canStop ? "停止实时翻译" : model.continuesSession ? "继续录制" : "开始实时翻译", systemImage: model.canStop ? "stop.fill" : "mic.fill")
+                            }.buttonStyle(.borderedProminent).tint(model.canStop ? DesignTokens.recording : accent).disabled(!model.canStart && !model.canStop)
                         } else if ["idle", "error"].contains(model.state) {
                             Button("重新连接") { model.launch() }
                             Button(model.asrProvider == "api" ? "连接 API" : "加载模型") { model.load() }
@@ -179,18 +181,26 @@ struct MainView: View {
                         } else {
                             Button { model.toggle() } label: {
                                 Label(model.canStop ? "停止转写" : model.continuesSession ? "继续录制" : "开始转写", systemImage: model.recording ? "stop.fill" : "mic.fill").padding(.horizontal, 14).padding(.vertical, 5)
-                            }.buttonStyle(.borderedProminent).tint(model.recording ? .red : accent).disabled(!model.canStart && !model.canStop)
+                            }.buttonStyle(.borderedProminent).tint(model.recording ? DesignTokens.recording : accent).disabled(!model.canStart && !model.canStop)
                         }
                     }
                     Text("⌃ ⌥ \(model.shortcutKey)  ·  \(interface.string(model.holdToTalk ? "按住说话，松开停止" : "开始 / 停止"))").font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
-                }.padding(24).background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-            }.background(Color(nsColor: .textBackgroundColor))
+                }.padding(24).background(DesignTokens.surfaceContainerLow.opacity(0.5))
+            }.background(DesignTokens.surface)
         }.tint(accent).sheet(isPresented: $showAI) { AIWorkspaceView(ai: ai) }
             .onChange(of: model.liveEnabled) { _, enabled in if enabled { ai.cancel(); showAI = false } }
     }
 
     private var displayedTitle: Text {
         model.selectedSessionID == nil ? Text("新会话") : Text(verbatim: model.displayedTitle)
+    }
+
+    private var statusColor: Color {
+        switch model.state {
+        case "error": DesignTokens.error
+        case "connecting", "reconnecting", "loading", "warming", "finalizing": DesignTokens.connecting
+        default: model.recording ? DesignTokens.recording : DesignTokens.complete
+        }
     }
 }
 
@@ -262,7 +272,7 @@ struct SettingsView: View {
                 ProgressView(value: model.progress)
                 HStack { Text(model.progressLabel).font(.caption).lineLimit(1); Spacer(); Button("取消") { model.cancelDownload() } }
             }
-            if !model.error.isEmpty { Text(model.error).font(.caption).foregroundStyle(.orange).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+            if !model.error.isEmpty { Text(model.error).font(.caption).foregroundStyle(DesignTokens.error).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
             Divider()
             Picker("识别语言", selection: $model.language) {
                 Text("自动").tag("auto"); Text("中文").tag("Chinese"); Text("English").tag("English")
@@ -328,7 +338,7 @@ struct TranslationSettingsView: View {
                     ForEach(profiles.profiles) { Text("\($0.baseURL) · \($0.modelID)").tag($0.id) }
                 }
                 if !profiles.profiles.contains(where: { $0.id == model.translationAPIProfile }) {
-                    Text("请先在「AI 服务」页保存地址、模型和 API Key，再在这里选择。").font(.caption).foregroundStyle(.orange)
+                    Text("请先在「AI 服务」页保存地址、模型和 API Key，再在这里选择。").font(.caption).foregroundStyle(DesignTokens.slow)
                 }
                 Text("开启后，定稿文本会发送到所选 API 服务并流式显示译文，可能产生服务商费用。录音和预览文字不会发送。选择与开关会自动保存。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
@@ -352,13 +362,13 @@ struct TranslationSettingsView: View {
                     HStack { Text(model.translatorProgressLabel).font(.caption).lineLimit(1); Spacer(); Button("取消") { model.cancelDownload() } }
                 }
                 if !model.translatorDetail.isEmpty {
-                    Text(model.translatorDetail).font(.caption).foregroundStyle(model.translatorState == "error" ? Color.orange : Color.secondary)
+                    Text(model.translatorDetail).font(.caption).foregroundStyle(model.translatorState == "error" ? DesignTokens.error : DesignTokens.onSurfaceVariant)
                         .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
                 Text("下载大小约：Qwen3 4B 2.3 GB，Hunyuan-MT 7B 4.2 GB。识别和翻译模型同时加载时，Qwen3 4B 需约 8 GB 以上可用内存，Hunyuan-MT 7B 需约 10 GB 以上。只有下载模型时联网。Hunyuan-MT 使用腾讯混元社区许可协议，使用前请确认其条款。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if !model.error.isEmpty { Text(model.error).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
+            if !model.error.isEmpty { Text(model.error).font(.caption).foregroundStyle(DesignTokens.error).textSelection(.enabled) }
             }.disabled(model.liveEnabled)
         }
     }

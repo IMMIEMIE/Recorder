@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 100 100">
+  <title>声笺 · 纸笺声波</title>
+  <defs>
+    <linearGradient id="jade" x2=".8" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#719b78"/><stop offset=".32" stop-color="#446e55"/><stop offset="1" stop-color="#284a3c"/>
+    </linearGradient>
+    <linearGradient id="ivory" x2=".7" y2="1">
+      <stop stop-color="#fffdf5"/><stop offset="1" stop-color="#eae9dd"/>
+    </linearGradient>
+    <linearGradient id="crease" x1="0" y1="1" x2=".6" y2=".3">
+      <stop stop-color="#cfcebd"/><stop offset=".46" stop-color="#e9e9dc"/><stop offset="1" stop-color="#fffef6"/>
+    </linearGradient>
+    <filter id="lift" x="-16%" y="-12%" width="132%" height="135%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0.3" dy="1.3" stdDeviation="1.05" flood-color="#112e20" flood-opacity=".55"/>
+    </filter>
+    <linearGradient id="rim" x1="0" y1="0" x2=".85" y2="1">
+      <stop stop-color="#b0caa4"/><stop offset=".3" stop-color="#63886e"/><stop offset="1" stop-color="#234237"/>
+    </linearGradient>
+  </defs>
+  <rect id="tile" x="7" y="7" width="86" height="86" rx="20" fill="url(#jade)" stroke="url(#rim)" stroke-width=".55"/>
+  <g id="mark" filter="url(#lift)">
+    <path id="paper" fill="url(#ivory)" fill-rule="evenodd" d="M35 20.5H57.5Q59.6 20.5 61.1 22.1L72.4 34.4Q74 36.1 74 38.6V70.8Q74 79 65.8 79H35Q27 79 27 70.8V28.5Q27 20.5 35 20.5Z M33.1 59.4a2.35 2.35 0 0 1 4.7 0v4a2.35 2.35 0 0 1-4.7 0Z M40 54.7a2.45 2.45 0 0 1 4.9 0v12.1a2.45 2.45 0 0 1-4.9 0Z M47.2 49.6a2.8 2.8 0 0 1 5.6 0v20.5a2.8 2.8 0 0 1-5.6 0Z M55.2 54.9a2.45 2.45 0 0 1 4.9 0v11.9a2.45 2.45 0 0 1-4.9 0Z M62.4 59.4a2.35 2.35 0 0 1 4.7 0v4a2.35 2.35 0 0 1-4.7 0Z"/>
+    <path id="fold" fill="url(#crease)" d="M58.4 20.6Q59.8 20.9 61.1 22.2L72.4 34.4Q73.3 35.4 73.7 36.5Q73 35.6 71.6 35.6H63.3Q59.5 35.6 59.5 31.6V23Q59.5 21.5 58.4 20.6Z"/>
+  </g>
+</svg>

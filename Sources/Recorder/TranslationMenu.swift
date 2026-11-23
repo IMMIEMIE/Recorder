@@ -50,6 +50,7 @@ struct TranslationMenu: View, Equatable {
         } label: {
             Label(mode.title, systemImage: "character.bubble")
         }
+        .menuStyle(.borderedButton)
         .fixedSize()
     }
 }
