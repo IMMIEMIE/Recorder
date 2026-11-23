@@ -216,12 +216,15 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         let mockConfig = LiveTranslateConfiguration(enabled: true, endpoint: base + "/ok")
         defaults.set(try JSONEncoder().encode(mockConfig), forKey: "livetranslate.configuration.v1")
         var clients: [LiveTranslateClient] = []
+        let sessionDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("live-sessions-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: sessionDirectory) }
+        let sessionStore = SessionStore(directory: sessionDirectory)
         let app = AppModel(defaults: defaults, integrateSystem: false, liveClientFactory: {
             let client = LiveTranslateClient(allowLocalhost: true); clients.append(client); return client
         }, liveKeyReader: { account in
             try check(account == mockConfig.keyAccount, "app requests only dedicated credential")
             return "mock-only"
-        })
+        }, sessionStore: sessionStore)
         defer { app.shutdown() }
         app.audioSource = "file"; app.audioFileURL = audioURL
         let waiter = Probe()
@@ -241,8 +244,38 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         app.start(); app.stop()
         try await Task.sleep(nanoseconds: 100_000_000)
         try check(app.state == "ready" && app.exportText == previousRows, "stop during handshake does not start capture")
+        // Both recordings went into one conversation session, finalized rows only, segments closed.
+        let stored = sessionStore.list()
+        try check(stored.count == 1 && stored[0].segments.count == 2 && stored[0].rows.map(\.segment) == [0, 1], "one session, one segment per recording")
+        try check(stored[0].rows.allSatisfy { $0.kind == .text && $0.source == "Hello world." && $0.translation == "你好，世界🌏。" }, "finalized rows saved")
+        try check(stored[0].segments.allSatisfy { $0.endedAtMs != nil && $0.mode == "live_translate" && $0.targetLanguage == "zh" }, "segments closed with mode and language")
+        try check(stored[0].title.hasSuffix(" Hello world.") && !stored[0].titleEdited, "default title")
+        try check(app.sessionSummaries.map(\.id) == [stored[0].id] && app.recordingSessionID == nil && app.continuesSession, "listed, not recording")
         app.clear()
         try check(app.finalText.isEmpty && app.exportText.isEmpty, "clear removes both languages")
+        try check(app.activeSessionID != stored[0].id && sessionStore.list().count == 1 && !app.continuesSession, "clear starts a new session and keeps the old one")
+        // Selecting a past session while idle makes it the one the next recording continues.
+        app.selectSession(stored[0].id)
+        try check(app.activeSessionID == stored[0].id && app.finalText.count == 2 && app.exportText == previousRows, "past session reopened")
+        app.start()
+        try await waiter.wait { app.finalText.count == 3 && app.state == "ready" }
+        let continued = sessionStore.load(id: stored[0].id)!
+        try check(continued.segments.count == 3 && continued.rows.map(\.segment) == [0, 1, 2] && continued.createdAtMs == stored[0].createdAtMs, "continue recording appends a segment")
+        try check(SessionExport.render(continued, format: .txt, content: .bilingual).contains("【继续录制 "), "export marks the continued recording")
+        // Persistence off: nothing new is written, but the session stays listed for this run; deleting still works.
+        app.persistSessions = false
+        try check(defaults.object(forKey: AppModel.persistSessionsKey) as? Bool == false, "switch persisted")
+        app.clear(); app.start()
+        try await waiter.wait { app.finalText.count == 1 && app.state == "ready" }
+        try check(sessionStore.list().map(\.id) == [stored[0].id] && app.sessionSummaries.count == 2, "no writes while persistence is off")
+        app.renameSession(stored[0].id, to: "  改名  ")
+        try check(sessionStore.load(id: stored[0].id)?.title == continued.title && app.sessionSummaries.contains { $0.title == "改名" }, "rename stays in memory")
+        app.deleteSession(stored[0].id)
+        try check(sessionStore.list().isEmpty && app.sessionSummaries.count == 1, "delete removes the file even with persistence off")
+        app.persistSessions = true
+        try check(sessionStore.list().map(\.id) == [app.activeSessionID], "turning persistence back on saves the active session")
+        app.deleteAllSessions()
+        try check(sessionStore.list().isEmpty && app.sessionSummaries.isEmpty && app.finalText.isEmpty, "delete all")
 
         print("PASS: previous text-only and app file-input regressions")
         let spoken = Probe()
