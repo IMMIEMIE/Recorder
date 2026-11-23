@@ -14,7 +14,6 @@ import android.os.SystemClock
 import com.localrecorder.live.Cancellable
 import com.localrecorder.live.EndCause
 import com.localrecorder.live.LiveSession
-import com.localrecorder.live.LiveTranslateClient
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.live.LiveTranslateException
 import com.localrecorder.live.LiveTransport
@@ -31,7 +30,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import org.json.JSONObject
+import com.localrecorder.live.LiveSessionEvent
+import com.localrecorder.live.LiveServiceProfile
 import java.io.File
 import java.time.ZoneId
 import java.util.UUID
@@ -91,7 +91,7 @@ class SessionController(private val context: Context) : SessionPlatform {
     private var recordingSummary: SessionSummary? = null
     private var microphone: MicrophoneSource? = null
     private var player: SpeechPlayer? = null
-    private var tester: LiveTranslateClient? = null
+    private var tester: LiveTransport? = null
     private var monitoringNetwork = false
 
     // Ongoing notification: the latest translation of this session, at most one update per second.
@@ -196,9 +196,10 @@ class SessionController(private val context: Context) : SessionPlatform {
             return false
         }
         return try {
-            val saved = settings.save(draft, allowLocalhost)
-            settings.saveOptions(draftOptions)
+            val saved = draft.normalized(allowLocalhost)
             if (key.isNotBlank()) secrets.put(saved.keyAccount, key.trim())
+            settings.save(saved, allowLocalhost)
+            settings.saveOptions(draftOptions)
             config = saved
             options = draftOptions
             _ui.update {
@@ -212,6 +213,22 @@ class SessionController(private val context: Context) : SessionPlatform {
             _ui.update { it.copy(settingsMessage = "保存失败：${e.javaClass.simpleName}") }
             false
         }
+    }
+
+    fun selectProfile(profile: LiveServiceProfile): Boolean {
+        return saveSettings(config.copy(catalog = config.catalog.using(profile)), "", options)
+    }
+
+    fun switchRecordingProfile(profile: LiveServiceProfile) {
+        if (engine.snapshot.state != SessionState.RECORDING || profile.id == config.profile.id) return
+        try {
+            val next = config.copy(catalog = config.catalog.using(profile)).normalized(allowLocalhost)
+            val key = secrets.get(next.keyAccount)
+            if (key.isNullOrBlank()) { engine.notice("请先保存「" + profile.name + "」对应的密钥"); return }
+            config = settings.save(next, allowLocalhost)
+            engine.switchProfile(config, key)
+            _ui.update { it.copy(config = config, hasKey = true) }
+        } catch (e: LiveTranslateException) { engine.notice(e.message.orEmpty()) }
     }
 
     /** Keys are stored under the normalized address. */
@@ -235,16 +252,16 @@ class SessionController(private val context: Context) : SessionPlatform {
             return
         }
         val secret = key.trim().ifEmpty { secrets.get(draftConfig.keyAccount).orEmpty() }
-        lateinit var probe: LiveTranslateClient
-        probe = LiveTranslateClient(object : LiveTranslateClient.Listener {
+        lateinit var probe: LiveTransport
+        probe = transport(draftConfig, object : LiveTransport.Listener {
             override fun onReady() = probe.finish()
-            override fun onEvent(event: JSONObject) = Unit
+            override fun onEvent(event: LiveSessionEvent) = Unit
             override fun onEnd(error: String?, recoverable: Boolean, cause: EndCause) {
                 if (tester !== probe) return
                 tester = null
                 _ui.update { it.copy(testing = false, settingsMessage = error ?: "连接成功：会话已建立并确认配置，未发送音频") }
             }
-        }, mainExecutor, finishTimeoutMs = 10_000, allowLocalhost = allowLocalhost)
+        })
         try {
             probe.connect(draftConfig, secret)
         } catch (e: LiveTranslateException) {
@@ -320,8 +337,8 @@ class SessionController(private val context: Context) : SessionPlatform {
         return Cancellable { main.removeCallbacks(task) }
     }
 
-    override fun transport(listener: LiveTranslateClient.Listener): LiveTransport =
-        LiveTranslateClient(listener, mainExecutor, allowLocalhost = allowLocalhost)
+    override fun transport(configuration: LiveTranslateConfig, listener: LiveTransport.Listener): LiveTransport =
+        configuration.profile.transport(listener, mainExecutor, allowLocalhost)
 
     override fun startCapture(onChunk: (ByteArray) -> Unit, onError: (String) -> Unit) {
         val notices = mutableListOf<String>()

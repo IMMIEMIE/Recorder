@@ -63,10 +63,14 @@ final class AdditionalAudioInput: NSObject, SCStreamOutput, SCStreamDelegate {
         super.init()
         converter.onPCM = { [weak self] data, level in self?.onPCM?(data, level) }
     }
-    func startFile(_ url: URL) throws {
+    private var lastFileFrame: AVAudioFramePosition = 0
+
+    func startFile(_ url: URL, atFrame: AVAudioFramePosition = 0) throws {
         let input = try AVAudioFile(forReading: url)
         guard input.length > 0, input.processingFormat.sampleRate > 0 else { throw AIError.message("音频文件为空或格式不受支持") }
+        input.framePosition = min(atFrame, input.length)
         queue.sync {
+            lastFileFrame = atFrame
             file = input
             converter.reset()
             let frames = AVAudioFrameCount(input.processingFormat.sampleRate / 10)
@@ -77,6 +81,7 @@ final class AdditionalAudioInput: NSObject, SCStreamOutput, SCStreamDelegate {
                 do {
                     let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames)!
                     try file.read(into: buffer, frameCount: frames)
+                    self.lastFileFrame = file.framePosition
                     if buffer.frameLength > 0 { try self.converter.feed(buffer) }
                     if file.framePosition >= file.length || buffer.frameLength == 0 {
                         self.converter.finish()
@@ -116,15 +121,17 @@ final class AdditionalAudioInput: NSObject, SCStreamOutput, SCStreamDelegate {
             throw CancellationError()
         }
     }
-    func stop() {
-        let old = queue.sync { () -> SCStream? in
+    @discardableResult
+    func stop() -> AVAudioFramePosition {
+        let (old, frame) = queue.sync { () -> (SCStream?, AVAudioFramePosition) in
             generation = UUID()
             timer?.cancel(); timer = nil; file = nil
             converter.finish()
             let old = stream; stream = nil
-            return old
+            return (old, lastFileFrame)
         }
         if let old { Task { try? await old.stopCapture() } }
+        return frame
     }
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard self.stream === stream, type == .audio, sampleBuffer.isValid,

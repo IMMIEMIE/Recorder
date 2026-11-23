@@ -37,39 +37,30 @@ class LiveTranslateEvents {
         }
     }
 
-    fun apply(event: JSONObject) {
-        val eventId = event.optStringOrNull("event_id")
-        if (eventId != null && !seenEvents.add(eventId)) return
-        val type = event.optString("type")
-        if (event.optStringOrNull("item_id") in retired) return
-        if (type == "conversation.item.created") {
-            val item = event.optJSONObject("item")
-            val output = item?.optStringOrNull("id")
-            val source = event.optStringOrNull("previous_item_id")
-            if (item?.optString("role") == "assistant" && output != null && source != null && source !in retired) {
-                val row = ensure(source)
-                if (output !in row.outputs) row.outputs.add(output)
+    fun apply(event: LiveSessionEvent) {
+        if (event.eventID?.let { !seenEvents.add(it) } == true) return
+        when (event) {
+            is LiveSessionEvent.Link -> if (event.source !in retired && event.output !in retired) {
+                val row = ensure(event.source)
+                if (event.output !in row.outputs) row.outputs.add(event.output)
             }
+            is LiveSessionEvent.SpeechStart -> if (event.source !in retired) ensure(event.source).seconds = event.milliseconds / 1000.0
+            is LiveSessionEvent.Text -> if (event.item !in retired) {
+                if (event.source) {
+                    val row = ensure(event.item)
+                    row.source = row.source.updated(event)
+                } else {
+                    outputMap[event.item] = (outputMap[event.item] ?: Part()).updated(event)
+                }
+            }
+            is LiveSessionEvent.Audio, is LiveSessionEvent.SpeechEnd -> Unit
         }
-        val id = event.optStringOrNull("item_id") ?: return
-        when (type) {
-            "input_audio_buffer.speech_started" ->
-                ensure(id).seconds = event.optInt("audio_start_ms", 0) / 1000.0
-            "conversation.item.input_audio_transcription.delta" -> {
-                val row = ensure(id)
-                if (!row.source.done) row.source = Part(row.source.text + event.optString("delta"))
-            }
-            "conversation.item.input_audio_transcription.completed" ->
-                ensure(id).source = Part(event.optString("transcript"), done = true)
-            "response.text.delta", "response.audio_transcript.delta" -> {
-                val part = outputMap[id] ?: Part()
-                outputMap[id] = if (part.done) part else Part(part.text + event.optString("delta"))
-            }
-            "response.text.done", "response.audio_transcript.done" -> {
-                val text = event.optStringOrNull("text") ?: event.optStringOrNull("transcript") ?: ""
-                outputMap[id] = Part(text, done = true)
-            }
-        }
+    }
+
+    private fun Part.updated(event: LiveSessionEvent.Text) = when {
+        event.final -> Part(event.value, done = true)
+        done -> this
+        else -> Part(text + event.value)
     }
 
     fun translation(row: Row): Part = Part(

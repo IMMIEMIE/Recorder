@@ -140,13 +140,15 @@ Targets are Simplified Chinese, Traditional Chinese, English, Japanese, Korean, 
 
 ### LiveTranslate 独立实时翻译
 
-顶部的**使用 LiveTranslate 独立转写与翻译**开关启用该模式；下方的**使用本地模型 Hy-SimulMT**开关选择本地模型，关闭时使用云端 Qwen。旧版本设置继续使用云端，两种方式的设置分别保留。
+顶部的**使用 LiveTranslate 独立转写与翻译**开关启用该模式；下方的**使用本地模型 Hy-SimulMT**开关选择本地模型，关闭时使用云端 Qwen。升级后恢复原来的本地或云端选择，两种方式的设置分别保留。
 
 #### 云端 Qwen
 
 在**设置 → LiveTranslate**关闭本地模型开关，填写专用 API Key，选择目标语言，点击**保存**和**测试连接**，然后开启主开关。返回主窗口选择音源并开始转写，无需下载识别或翻译模型。
 
-- 固定模型：`qwen3.8-livetranslate-flash-realtime`；默认地址为 `wss://maas.qianwenaiapi.com/api-ws/v1/realtime`。也可填写账户对应的工作空间 WSS 地址，例如 `wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime`；密钥须与地址所属区域和工作空间匹配。
+- Qwen 预设模型为 `qwen3.8-livetranslate-flash-realtime`；默认地址为 `wss://maas.qianwenaiapi.com/api-ws/v1/realtime`。也可填写账户对应的工作空间 WSS 地址，例如 `wss://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime`；密钥须与地址所属区域和工作空间匹配。
+- 点「新建」填写名称、WSS 地址和模型 ID。服务需兼容 Qwen LiveTranslate 3.8。可在同一地址保存多个模型，共用该地址的密钥。点击「保存」后可在「服务配置」中直接切换。测试草稿会等待服务确认语言、输出方式和译音格式。
+- 「断句和上行音频」可选静音检测或说话人检测。默认使用 PCM16 单声道 16 kHz，静音阈值 0.5、时长 1000 毫秒。运行 `PROBE_PROFILE="配置名称" PROBE_SESSION=1 scripts/probe_livetranslate.sh` 可以用该配置测量握手和字幕延迟。也可从此处复制配置到 JSON 文件，使用 `PROBE_CONFIG=文件路径` 运行同一探针。
 - 麦克风、系统声音和音频文件均支持；原文和译文边生成边显示，可使用悬浮字幕、复制和 TXT/Markdown 导出。默认仅输出文字；可在设置中开启「播放译音」并设置音量，保存后在下次会话生效，使用系统当前输出设备。播放时机可选「边说边播放」（默认，收到译音即播放）或「定稿后播放」（等待该句原文、译文及译音完整，按句序播放，不必等整场录音结束）。
 - 有完整译音的定稿文本块右下角显示「播放译音」，可重复点击重播；播放中再次点击可停止，点击其他段可切换。重播会停止本次自动译音，字幕继续更新。译音仅缓存在内存，不写入磁盘；清空文本或退出应用后释放。缓存最多 128 MB，超出后移除最早的译音；单段上限 30 秒，与播放器队列限制一致。未开启音频输出或译音未完整接收的文本块没有重播按钮。
 - 译音使用同一 LiveTranslate 会话生成，不调用其他模型。停止转写后会播完已收到的尾句，也可点击「停止译音」立即停止本次播放；字幕继续保留。输出设备变化或音频播放异常时暂停本次播放，字幕继续更新。麦克风模式建议使用耳机以避免回录；系统声音采集排除声笺自身的播放声音。译音可能增加云端音频输出费用。

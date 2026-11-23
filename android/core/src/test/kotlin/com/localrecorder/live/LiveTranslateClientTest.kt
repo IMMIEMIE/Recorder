@@ -44,7 +44,7 @@ class LiveTranslateClientTest {
     // Single callback thread, like the app's main thread.
     private val callbacks = Executors.newSingleThreadExecutor()
 
-    private inner class Probe(timeoutMs: Long = 30_000) : LiveTranslateClient.Listener {
+    private inner class Probe(timeoutMs: Long = 30_000) : LiveTransport.Listener {
         @Volatile var ready = false
         @Volatile var ended = false
         @Volatile var error: String? = null
@@ -55,14 +55,16 @@ class LiveTranslateClientTest {
         @Volatile var callbackCount = 0
         val events = LiveTranslateEvents()
         private val decoder = LiveTranslateAudioDecoder()
-        val client = LiveTranslateClient(this, callbacks, finishTimeoutMs = timeoutMs, allowLocalhost = true)
+        val client = LiveTranslateClient(this, callbacks, finishTimeoutMs = timeoutMs, allowLocalhost = true, wireObserver = { event ->
+            if (event.optString("type") == "fixture.audio_bytes") bytes = event.getInt("count")
+        })
 
         override fun onReady() { ready = true; callbackCount++ }
-        override fun onEvent(event: JSONObject) {
+        override fun onEvent(event: LiveSessionEvent) {
             callbackCount++
             events.apply(event)
             runCatching { decoder.consume(event) }.getOrNull()?.let { audioBytes += it.size }
-            if (event.optString("type") == "fixture.audio_bytes") bytes = event.getInt("count")
+
         }
         override fun onEnd(error: String?, recoverable: Boolean, cause: EndCause) {
             this.error = error
@@ -143,7 +145,7 @@ class LiveTranslateClientTest {
         // Only a lost connection or a session the server closed by itself is worth a new session.
         val routes = mapOf(
             "/unauthorized" to false, "/redirect" to false, "/error" to false, "/wrong-mode" to false,
-            "/disconnect" to true, "/finished-early" to true, "/timeout" to false,
+            "/model-error" to false, "/wrong-language" to false, "/disconnect" to true, "/finished-early" to true, "/timeout" to false,
         )
         for ((route, recoverable) in routes) {
             val probe = Probe(timeoutMs = 100)
@@ -208,6 +210,7 @@ class LiveTranslateClientTest {
     private inner class Device : SessionPlatform {
         private val thread = Executors.newSingleThreadScheduledExecutor()
         @Volatile var snapshot = SessionSnapshot()
+        @Volatile var spokenBytes = 0
         @Volatile var onChunk: ((ByteArray) -> Unit)? = null
         val session = LiveSession(this) { snapshot = it }
 
@@ -216,11 +219,16 @@ class LiveTranslateClientTest {
             val future = thread.schedule(block, delayMs, TimeUnit.MILLISECONDS)
             return Cancellable { future.cancel(false) }
         }
-        override fun transport(listener: LiveTranslateClient.Listener): LiveTransport =
+        override fun transport(configuration: LiveTranslateConfig, listener: LiveTransport.Listener): LiveTransport =
             LiveTranslateClient(listener, thread, allowLocalhost = true)
         override fun startCapture(onChunk: (ByteArray) -> Unit, onError: (String) -> Unit) { this.onChunk = onChunk }
         override fun stopCapture() { onChunk = null }
-        override fun speech(): SpeechOutput = error("text only")
+        override fun speech() = object : SpeechOutput {
+            override fun start(volume: Float) = Unit
+            override fun append(pcm: ByteArray): Boolean { spokenBytes += pcm.size; return true }
+            override fun finish(done: () -> Unit) = done()
+            override fun stop() = Unit
+        }
         override fun sessionActive(active: Boolean) = Unit
 
         fun waitFor(what: String, condition: (SessionSnapshot) -> Boolean) {
@@ -235,7 +243,8 @@ class LiveTranslateClientTest {
     @Test
     fun sessionSurvivesADroppedConnection() {
         val device = Device()
-        val config = LiveTranslateConfig(endpoint = "$base/drop-once/${System.nanoTime()}")
+        val profile = LiveServiceProfile(modelID = "model+b", endpoint = "$base/drop-once/profile-${System.nanoTime()}")
+        val config = LiveTranslateConfig(catalog = LiveServiceCatalog(profile))
         device.post { device.session.start(config, "mock-only") }
         device.waitFor("first connection") { it.state == SessionState.RECORDING }
         // The fixture answers the first audio with a partial transcript and cuts the connection.
@@ -251,6 +260,43 @@ class LiveTranslateClientTest {
         assertEquals(LiveSession.BREAK_MARKER, rows[1].marker)
         assertEquals("你好，世界🌏。", rows[2].translation)
         assertTrue(rows[2].sourceDone && rows[2].translationDone && !rows[0].sourceDone)
+    }
+
+    @Test
+    fun savedProfileSelectionDrivesSilentAndRecordingSessions() {
+        val a = LiveServiceProfile(id = "a", name = "A", endpoint = "$base/profiles/ab", modelID = "model-a", threshold = 0.4, silenceMS = 600)
+        val b = a.copy(id = "b", name = "B", modelID = "model+b", turnDetection = "speaker_detection")
+        val c = a.copy(id = "c", name = "C", endpoint = "$base/profiles/c", modelID = "model-c")
+        var config = LiveTranslateConfig(catalog = LiveServiceCatalog(a).using(b).using(c))
+        val sharedAudio = readWav(File(System.getProperty("livetranslate.mock")).resolveSibling("fixtures/livetranslate-16k.wav"))
+        val keys = mapOf("livetranslate:" + a.endpoint to "mock-only", "livetranslate:" + c.endpoint to "mock-c")
+        for (profile in listOf(a, b, c, a)) {
+            config = LiveTranslateConfig.fromJson(config.copy(catalog = config.catalog.using(profile), audioOutput = profile.id == "b").toJson())
+            assertEquals(profile, config.profile)
+            assertEquals(3, config.catalog.profiles.size)
+            assertFalse(config.toJson().contains("mock-only"))
+            val key = keys.getValue(config.keyAccount)
+            val probe = Probe()
+            probe.client.connect(config, key)
+            probe.waitFor { probe.ready || probe.ended }
+            assertTrue(probe.ready)
+            probe.client.finish()
+            probe.waitFor { probe.ended }
+            assertNull(probe.error)
+            assertEquals(0, probe.bytes)
+
+            val device = Device()
+            device.post { device.session.start(config, key) }
+            device.waitFor("ready") { it.state == SessionState.RECORDING }
+            device.onChunk!!(sharedAudio)
+            device.waitFor("partial") { it.rows.any { row -> row.source == "Hello" && !row.sourceDone } }
+            device.post { device.session.stop() }
+            device.waitFor("final") { it.state == SessionState.IDLE }
+            assertEquals(if (config.audioOutput) 4800 else 0, device.spokenBytes)
+            val final = device.snapshot.rows.single()
+            assertEquals("你好，世界🌏。", final.translation)
+            assertTrue(final.sourceDone && final.translationDone)
+        }
     }
 
     @Test

@@ -143,6 +143,7 @@ struct MainView: View {
                 Divider().padding(.horizontal, 30)
                 TranscriptList(model: model, accent: accent)
                 VStack(spacing: 14) {
+                    if model.liveServiceSlow && model.recording { SlowLiveServiceView(model: model) }
                     if !model.error.isEmpty {
                         HStack(alignment: .top) {
                             Image(systemName: "exclamationmark.circle")

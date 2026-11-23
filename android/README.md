@@ -1,6 +1,6 @@
 # 声笺安卓版
 
-只保留实时翻译：麦克风音频通过 WebSocket 发送到 Qwen3.8 LiveTranslate（`qwen3.8-livetranslate-flash-realtime`），实时显示原文与译文，可选播放译音。没有本地模型，所有识别与翻译都由云端 API 完成。
+只保留实时翻译：麦克风音频通过 WebSocket 发送到所选的 Qwen 3.8 兼容服务，预设为 Qwen LiveTranslate（`qwen3.8-livetranslate-flash-realtime`），实时显示原文与译文，可选播放译音。没有本地模型，所有识别与翻译都由云端 API 完成。
 
 分阶段计划见 [`docs/ANDROID-PLAN.md`](../docs/ANDROID-PLAN.md)。
 
@@ -46,7 +46,7 @@ gh secret set SHENGJIAN_KEY_PASSWORD
 ## 结构
 
 - `core/` — 纯 Kotlin/JVM，从 macOS 版 `LiveTranslate*.swift` 移植：
-  - `LiveTranslateConfig` 地址校验、固定模型、`session.update`、与 macOS 相同的设置 JSON；
+  - `LiveTranslateConfig` 具名配置、按地址隔离密钥、按模型建连、`session.update`、与 macOS 相同的设置 JSON；
   - `LiveTranslateEvents` 按 item ID 关联原文和译文；
   - `LiveTranslateAudioDecoder` / `LiveTranslatePlaybackQueue` 拼接 PCM16、定稿后按句播放；
   - `LiveTranslateClient` OkHttp WebSocket 会话（单线程状态机、拒绝重定向、发送队列上限、收尾超时）；
@@ -61,7 +61,8 @@ gh secret set SHENGJIAN_KEY_PASSWORD
 
 ## 使用
 
-1. 打开「设置」，填写 LiveTranslate 服务地址（默认 `wss://maas.qianwenaiapi.com/api-ws/v1/realtime`）和专用 API Key，选择目标语言，点「保存」，可先「测试连接」。
+1. 打开「设置」，选择 Qwen 预设或新建具名配置，填写模型 ID、LiveTranslate 服务地址（默认 `wss://maas.qianwenaiapi.com/api-ws/v1/realtime`）和专用 API Key，选择目标语言，点「保存」，可先「测试连接」。
+   「断句和上行音频」可调整静音检测或选择说话人检测。点「复制已保存的探针配置」，将内容存为 JSON 后可在 Mac 运行 `PROBE_CONFIG=settings.json PROBE_PROFILE="配置名称" PROBE_SESSION=1 scripts/probe_livetranslate.sh`。探针会提示输入该地址的密钥。
 2. 回到主界面点「开始实时翻译」，授予麦克风（和通知）权限，看到「正在转写」后开始说话（连接通常不到 1 秒；连接建立前说的话只补发最后 1 秒）。
 3. 点「停止」后会等待服务端返回最后一句。
 

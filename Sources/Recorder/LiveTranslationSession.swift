@@ -20,11 +20,13 @@ enum LiveTranslationSessionEvent {
     case audioPending
     case replayClip(segmentID: String, pcm: Data)
     case playbackWarning(String)
+    case slowService(Bool)
     case untranslatedAudio(startSample: Int, endSample: Int)
 }
 
 /// Control and callbacks are main-thread-owned; audio append is safe on the capture queue.
 protocol LiveTranslationSession: AnyObject {
+    var endKind: LiveCloudEndKind { get }
     var onReady: (() -> Void)? { get set }
     var onEvent: ((LiveTranslationSessionEvent) -> Void)? { get set }
     var onEnd: ((String?) -> Void)? { get set }
@@ -35,13 +37,17 @@ protocol LiveTranslationSession: AnyObject {
     func stopAutomaticPlayback()
 }
 
-extension LiveTranslationSession { func stopAutomaticPlayback() {} }
+extension LiveTranslationSession {
+    var endKind: LiveCloudEndKind { .other }
+    func stopAutomaticPlayback() {}
+}
 
 /// Keeps the cloud wire protocol and its source/output association rules out of AppModel.
 final class QwenLiveTranslationSession: LiveTranslationSession {
     var onReady: (() -> Void)?
     var onEvent: ((LiveTranslationSessionEvent) -> Void)?
     var onEnd: ((String?) -> Void)?
+    var endKind: LiveCloudEndKind { client.endKind }
     private let client: LiveTranslateClient
     private var events = LiveTranslateEvents()
     private var playback = LiveTranslatePlaybackQueue(timing: .streaming)
@@ -61,6 +67,7 @@ final class QwenLiveTranslationSession: LiveTranslationSession {
         events = LiveTranslateEvents(); replay = LiveTranslateReplayCache(); replayed.removeAll()
         playback = LiveTranslatePlaybackQueue(timing: configuration.playbackTiming)
         playbackFailed = false; revision = 0; previousUpdates.removeAll()
+        client.onSlowService = { [weak self] slow in self?.onEvent?(.slowService(slow)) }
         client.onReady = { [weak self] in guard let self, self.active else { return }; self.onReady?() }
         client.onEvent = { [weak self] event in self?.consume(event) }
         client.onEnd = { [weak self] message in

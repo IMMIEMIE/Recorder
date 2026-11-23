@@ -49,10 +49,7 @@ struct LiveTranslateSettingsView: View {
                         Text("本机内存较小，打开开关时不会自动加载；手动加载可能严重变慢。").font(.caption).foregroundStyle(.orange)
                     }
                 } else {
-                    Text("启用后，由 Qwen3.8 LiveTranslate 同时生成原文和译文，无需加载其他识别或翻译模型。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    LabeledContent("模型") { Text(LiveTranslateConfiguration.model).font(.caption).textSelection(.enabled) }
-                    LabeledContent("服务地址") { TextField("wss://…/api-ws/v1/realtime", text: $model.liveEndpoint) }
+                    LiveServiceProfileEditor(model: model)
                     LabeledContent("专用 API Key") { SecureField("留空保留此地址已保存的密钥", text: $model.liveKeyInput) }
                 }
                 Picker("目标语言", selection: $model.liveLanguage) {
@@ -104,7 +101,6 @@ struct LiveTranslateSettingsView: View {
             }
             Toggle("按住说话", isOn: $model.holdToTalk)
         }.textFieldStyle(.roundedBorder)
-            .onChange(of: model.liveEndpoint) { _, _ in model.liveKeyInput = "" }
             .onChange(of: LocalChoices(language: model.liveLanguage, audioOutput: model.liveAudioOutput,
                                        volume: model.liveVolume, timing: model.livePlaybackTiming)) { _, _ in
                 if local { model.saveLiveSettings() }
