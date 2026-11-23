@@ -134,21 +134,8 @@ struct MainView: View {
                     Button { model.setSubtitleMode(!model.subtitleMode) } label: { Image(systemName: model.subtitleMode ? "captions.bubble.fill" : "captions.bubble") }
                         .help(model.subtitleMode ? "关闭字幕模式" : "打开字幕模式").accessibilityLabel("字幕模式")
                     Button { floating.toggle(); NSApp.keyWindow?.level = floating ? .floating : .normal } label: { Image(systemName: floating ? "pin.fill" : "pin") }.help("窗口置顶")
-                    Menu {
-                        if model.liveEnabled {
-                            Text("LiveTranslate → \(model.liveConfiguration.languageName)")
-                        } else {
-                        Toggle("实时翻译", isOn: Binding(get: { model.translationEnabled }, set: { model.setTranslation(enabled: $0) }))
-                            .disabled(model.translatorBusy)
-                        Picker("翻译为", selection: Binding(get: { model.translationTarget }, set: { model.setTranslationTarget($0) })) {
-                            ForEach(AppModel.translationTargets, id: \.self) { Text($0).tag($0) }
-                        }
-                        }
-                        Divider()
-                        SettingsLink { Text("翻译设置…") }
-                    } label: {
-                        Label(model.liveEnabled ? "译为\(model.liveConfiguration.languageName)" : (model.translationEnabled ? "译为\(model.translationTarget)" : "翻译"), systemImage: "character.bubble")
-                    }.fixedSize().help(model.translationSummary)
+                    TranslationMenu(model: model).equatable()
+                        .help(Text(model.translationSummary))
                     Button { ai.prepare(text: model.joinedText, recordingID: model.viewedSession?.id ?? model.activeSessionID); showAI = true } label: { Label("AI 提问", systemImage: "sparkles") }
                         .disabled(!model.displayedHasText || model.liveEnabled)
                     if model.livePlaying { Button("停止译音", systemImage: "speaker.slash") { model.stopLivePlayback() } }
