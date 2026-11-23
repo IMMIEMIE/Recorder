@@ -30,8 +30,15 @@ fun main(args: Array<String>) {
     // Only for checking the probe itself against tests/mock_livetranslate_server.py.
     val allowLocalhost = options["allow-localhost"] == "on"
     require(key.isNotBlank()) { "LIVETRANSLATE_API_KEY is not set" }
+    val profileJson = System.getenv("LIVETRANSLATE_PROBE_PROFILE_JSON")
+    val profile = if (profileJson.isNullOrBlank()) {
+        LiveServiceProfile(endpoint = options["endpoint"]?.takeIf { it.isNotBlank() } ?: LiveTranslateConfig.DEFAULT_ENDPOINT)
+    } else {
+        require("endpoint" !in options) { "A saved profile already specifies the endpoint" }
+        LiveServiceProfile.parse(JSONObject(profileJson))
+    }
     val config = LiveTranslateConfig(
-        endpoint = options["endpoint"]?.takeIf { it.isNotBlank() } ?: LiveTranslateConfig.DEFAULT_ENDPOINT,
+        catalog = LiveServiceCatalog(profile),
         language = options["language"]?.takeIf { it.isNotBlank() } ?: "en",
         audioOutput = options["speech"] == "on",
     ).normalized(allowLocalhost)
@@ -42,6 +49,7 @@ fun main(args: Array<String>) {
     } else {
         LiveProbe(config, key, readWav(audio), label, allowLocalhost, burstMs).run()
     }
+    result.put("profile", config.profile.json())
     options["json"]?.takeIf { it.isNotBlank() }?.let { File(it).writeText(result.toString(2)) }
 }
 
@@ -99,7 +107,8 @@ private class LiveProbe(
     fun run(): JSONObject {
         val audioSeconds = pcm.size / (LiveTranslateConfig.INPUT_SAMPLE_RATE * 2.0)
         println("[$label] ${"%.1f".format(audioSeconds)} s of speech + 3 s room tone → ${config.language}, speech output ${if (config.audioOutput) "on" else "off"}")
-        val client = LiveTranslateClient(Listener(), callbacks, allowLocalhost = allowLocalhost, diagnostic = { line ->
+        val listener = Listener()
+        val client = LiveTranslateClient(listener, callbacks, allowLocalhost = allowLocalhost, wireObserver = listener::wire, diagnostic = { line ->
             synchronized(lock) { diagnostics += "${now()} ms $line" }
             println("  ! ${now()} ms transport: $line")
         })
@@ -164,13 +173,15 @@ private class LiveProbe(
         println(line)
     }
 
-    private inner class Listener : LiveTranslateClient.Listener {
+    private inner class Listener : LiveTransport.Listener {
         override fun onReady() {
             synchronized(lock) { readyAt = now() }
             ready.countDown()
         }
 
-        override fun onEvent(event: JSONObject) {
+        override fun onEvent(event: LiveSessionEvent) = Unit
+
+        fun wire(event: JSONObject) {
             val at = now()
             val size = event.toString().length
             val type = event.optString("type")
@@ -231,6 +242,7 @@ private class LiveProbe(
             .put("audio_seconds", audioSeconds)
             .put("handshake_ms", if (readyAt >= 0) readyAt - connectAt else JSONObject.NULL)
             .put("chunks_sent", chunksSent)
+            .put("last_speech_end_ms", speechEnd.values.maxOrNull() ?: JSONObject.NULL)
             .put("max_send_lateness_ms", maxLateness)
             .put("max_queue_seconds", queueSeconds)
             .put("chunks_over_slow_threshold", slowChunks)

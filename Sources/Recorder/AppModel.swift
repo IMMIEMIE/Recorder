@@ -123,7 +123,15 @@ final class AppModel: ObservableObject {
     @Published private var pendingStart = false
     private var generation = UUID()
     @Published private(set) var liveConfiguration = LiveTranslateConfiguration()
-    @Published var liveEndpoint = LiveTranslateConfiguration().endpoint
+    @Published var liveProfile = LiveServiceProfile() {
+        didSet {
+            if oldValue.endpoint != liveProfile.endpoint || oldValue.id != liveProfile.id { liveKeyInput = "" }
+        }
+    }
+    var liveEndpoint: String {
+        get { liveProfile.endpoint }
+        set { liveProfile.endpoint = newValue }
+    }
     @Published var liveLanguage = "zh"
     @Published var liveAudioOutput = false
     @Published var liveVolume: Float = 0.8
@@ -139,10 +147,14 @@ final class AppModel: ObservableObject {
     private var livePlaybackSession = UUID()
     @Published var liveKeyInput = ""
     @Published var liveMessage = ""
+    @Published private(set) var liveServiceSlow = false
+    private var switchAfterDrain: LiveServiceProfile?
+    private var resumeFileFrame: AVAudioFramePosition = 0
     @Published private(set) var liveTesting = false
     private let liveClientFactory: () -> LiveTranslateClient
     private let liveSessionFactory: ((LiveTranslateProvider) -> any LiveTranslationSession)?
     private let liveKeyReader: (String) throws -> String?
+    private let liveAllowLocalhost: Bool
     private let liveDefaults: UserDefaults
     private var liveSession: (any LiveTranslationSession)?
     private var liveRowRevisions: [String: Int] = [:]
@@ -176,7 +188,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeSessionID = ""
     @Published private(set) var activeSessionSaved = false
     /// A different session opened read-only (while the active one is recording).
-    @Published private(set) var viewedSession: SessionFile?
+    @Published private(set) var viewedSession: SessionFile? {
+        didSet { viewedTranscripts = viewedSession.map(Self.transcripts(from:)) }
+    }
+    // Keep the read-only session projection while the active recording publishes meter and text updates.
+    private var viewedTranscripts: [Transcript]?
     @Published var exportRequest: SessionExportRequest?
     @Published var persistSessions = true {
         didSet {
@@ -231,7 +247,7 @@ final class AppModel: ObservableObject {
         default: return activeTranslatorID.split(separator: "/").last.map(String.init) ?? activeTranslatorID
         }
     }
-    var translationSummary: String {
+    var translationSummary: LocalizedStringKey {
         if liveEnabled { return "\(liveConfiguration.modelName) → \(liveConfiguration.languageName)" }
         if translationProvider == "api" {
             guard translationEnabled else { return "已关闭" }
@@ -250,6 +266,7 @@ final class AppModel: ObservableObject {
     }
 
     init(defaults: UserDefaults = .standard, integrateSystem: Bool = true,
+         liveAllowLocalhost: Bool = false,
          liveClientFactory: @escaping () -> LiveTranslateClient = { LiveTranslateClient() },
          liveKeyReader: @escaping (String) throws -> String? = { try APIKeyStore.read(endpoint: $0) },
          liveSessionFactory: ((LiveTranslateProvider) -> any LiveTranslationSession)? = nil,
@@ -265,6 +282,7 @@ final class AppModel: ObservableObject {
         self.runtimeVerified = runtimeVerified; self.runtimeExecutable = runtimeExecutable
         self.localSpeech = localSpeech ?? LocalSpeechOutput()
         self.replaySpeech = replaySpeech ?? LocalSpeechOutput()
+        self.liveAllowLocalhost = liveAllowLocalhost
         liveDefaults = defaults
         let persist = defaults.object(forKey: Self.persistSessionsKey) as? Bool ?? true
         // Tests (integrateSystem: false) never touch the real sessions directory unless they pass a store.
@@ -272,7 +290,7 @@ final class AppModel: ObservableObject {
         persistSessions = persist
         liveConfiguration = LiveTranslateConfiguration.load(defaults: defaults)
         liveProvider = liveConfiguration.provider
-        liveEndpoint = liveConfiguration.endpoint; liveLanguage = liveConfiguration.language
+        liveProfile = liveConfiguration.profile; liveLanguage = liveConfiguration.language
         liveAudioOutput = liveConfiguration.audioOutput; liveVolume = liveConfiguration.volume
         livePlaybackTiming = liveConfiguration.playbackTiming
         hyObservation = self.hyModelStore.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
@@ -356,6 +374,7 @@ final class AppModel: ObservableObject {
     }
 
     func shutdown() {
+        switchAfterDrain = nil; resumeFileFrame = 0; liveServiceSlow = false
         audioLock.lock(); accepting = false; let previousLiveSession = liveSession; liveSession = nil; audioLock.unlock()
         stopReplay()
         stopLivePlayback()
@@ -552,15 +571,20 @@ final class AppModel: ObservableObject {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK { audioFileURL = panel.url }
     }
-    func start() {
+    func start() { start(continuingAfterProfileSwitch: false) }
+
+    private func start(continuingAfterProfileSwitch: Bool) {
         stopReplay()
         guard canStart, !pendingStart else {
             if state == "ready" { error = "识别服务设置已更改，请先点击「连接 / 切换」使其生效" }
             return
         }
         if audioSource == "file", audioFileURL == nil { error = "请先选择音频文件"; return }
-        // "继续录制" on a session opened while another one was recording.
-        if let viewed = viewedSession { selectSession(viewed.id) }
+        if !continuingAfterProfileSwitch {
+            resumeFileFrame = 0
+            // An explicit "继续录制" starts recording in the displayed conversation.
+            if let viewed = viewedSession { selectSession(viewed.id) }
+        }
         error = ""; pendingStart = true
         startAttempt = UUID()
         let attempt = startAttempt
@@ -640,7 +664,8 @@ final class AppModel: ObservableObject {
             switch audioSource {
             case "file":
                 guard let url = audioFileURL else { throw AIError.message("请先选择音频文件") }
-                try additionalInput.startFile(url)
+                try additionalInput.startFile(url, atFrame: resumeFileFrame)
+                resumeFileFrame = 0
             case "system":
                 Task { @MainActor [weak self] in
                     guard let self, self.session == currentSession, self.recording else { return }
@@ -658,7 +683,8 @@ final class AppModel: ObservableObject {
 
     private func stopInputs() {
         capture.stop()
-        additionalInput.stop()
+        let frame = additionalInput.stop()
+        if switchAfterDrain != nil, audioSource == "file" { resumeFileFrame = frame }
     }
 
     private func audio(_ pcm: Data, rms: Float) {
@@ -837,25 +863,60 @@ final class AppModel: ObservableObject {
 
 
 extension AppModel {
+    private func liveDraft(enabled: Bool? = nil) throws -> LiveTranslateConfiguration {
+        var next = liveConfiguration
+        next.enabled = enabled ?? liveEnabled
+        next.provider = liveProvider
+        if liveProvider == .qwenCloud { next.catalog.use(liveProfile) }
+        next.language = liveLanguage
+        next.audioOutput = liveAudioOutput
+        next.volume = liveVolume
+        next.playbackTiming = livePlaybackTiming
+        if next.enabled && next.provider == .hyLocal && !hyRuntimeVerified {
+            throw AIError.message(hyRuntimeUnavailableReason)
+        }
+        return try next.normalized(allowLocalhost: liveAllowLocalhost)
+    }
+
+    func switchRecordingProfile(_ profile: LiveServiceProfile) {
+        guard recording, liveServiceSlow, liveConfiguration.provider == .qwenCloud,
+              liveConfiguration.catalog.profiles.contains(profile), profile.id != liveConfiguration.profile.id else { return }
+        do {
+            var candidate = liveConfiguration
+            candidate.catalog.use(profile)
+            candidate = try candidate.normalized(allowLocalhost: liveAllowLocalhost)
+            guard try !(liveKeyReader(candidate.keyAccount) ?? "").isEmpty else {
+                error = "请先保存「\(profile.name)」对应的密钥"; return
+            }
+            switchAfterDrain = profile
+            stop()
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func selectLiveProfile(_ id: String) {
+        guard !liveSettingsBusy, let profile = liveConfiguration.catalog.profiles.first(where: { $0.id == id }) else { return }
+        do {
+            var next = liveConfiguration
+            next.catalog.use(profile)
+            try next.save(defaults: liveDefaults, allowLocalhost: liveAllowLocalhost)
+            liveConfiguration = next
+            liveProfile = profile
+            liveKeyInput = ""
+            liveMessage = "已切换到「\(profile.name)」"
+        } catch { liveMessage = error.localizedDescription }
+    }
+
     @discardableResult
     func saveLiveSettings(enabled: Bool? = nil) -> Bool {
         guard !liveSettingsBusy else { return false }
         do {
-            var next = liveConfiguration
-            next.enabled = enabled ?? liveEnabled; next.provider = liveProvider; next.endpoint = liveEndpoint
-            next.language = liveLanguage; next.audioOutput = liveAudioOutput; next.volume = liveVolume
-            next.playbackTiming = livePlaybackTiming
-            if next.enabled && next.provider == .hyLocal && !hyRuntimeVerified {
-                liveMessage = hyRuntimeUnavailableReason
-                return false
-            }
-            next = try next.normalized()
+            let next = try liveDraft(enabled: enabled)
             let key = liveKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
             if next.provider == .qwenCloud, !key.isEmpty { try APIKeyStore.save(key, endpoint: next.keyAccount) }
-            try next.save(defaults: liveDefaults)
+            try next.save(defaults: liveDefaults, allowLocalhost: liveAllowLocalhost)
             let changedMode = next.enabled != liveEnabled || next.provider != liveConfiguration.provider
             if changedMode { shutdown() }
-            liveConfiguration = next; liveEndpoint = next.endpoint; liveLanguage = next.language; liveKeyInput = ""
+            liveConfiguration = next; liveProfile = next.profile; liveLanguage = next.language; liveKeyInput = ""
             liveMessage = next.provider == .hyLocal ? "本地设置已保存，下次会话生效" : (key.isEmpty ? "设置已保存；保留此地址已有的密钥" : "设置已保存；专用 API Key 已存入钥匙串")
             if changedMode { launch(); loadChosenHyModel() }
             return true
@@ -871,7 +932,7 @@ extension AppModel {
         else {
             // Leaving the mode must work even if its settings editor contains an invalid draft.
             do {
-                var next = liveConfiguration; next.enabled = false; try next.save(defaults: liveDefaults)
+                var next = liveConfiguration; next.enabled = false; try next.save(defaults: liveDefaults, allowLocalhost: liveAllowLocalhost)
                 shutdown(); liveConfiguration = next; launch()
             } catch { liveMessage = error.localizedDescription }
         }
@@ -886,9 +947,9 @@ extension AppModel {
             // A provider switch restores its saved choices. Unsaved drafts (including a broken
             // cloud address) must not block leaving a provider or silently change its saved state.
             let next = liveConfiguration.selecting(provider)
-            try next.save(defaults: liveDefaults)
+            try next.save(defaults: liveDefaults, allowLocalhost: liveAllowLocalhost)
             shutdown(); liveConfiguration = next; liveProvider = provider
-            liveEndpoint = next.endpoint; liveLanguage = next.language; liveAudioOutput = next.audioOutput
+            liveProfile = next.profile; liveLanguage = next.language; liveAudioOutput = next.audioOutput
             liveVolume = next.volume; livePlaybackTiming = next.playbackTiming; liveKeyInput = ""
             liveMessage = "已切换翻译方式，并恢复该方式已保存的设置"
             launch(); loadChosenHyModel()
@@ -945,24 +1006,35 @@ extension AppModel {
         if liveEnabled && liveConfiguration.provider == .hyLocal { state = "idle"; detail = hyRuntimeDetail }
     }
     func testLiveConnection() {
-        guard !inputBusy, !liveSettingsBusy, saveLiveSettings() else { return }
+        guard !inputBusy, !liveSettingsBusy else { return }
         if liveConfiguration.provider == .hyLocal && (!hyRuntimeVerified || hyRuntimeState != "ready") {
             liveMessage = hyRuntimeVerified ? "请先加载本地 Hy-SimulMT 模型" : hyRuntimeUnavailableReason
             return
         }
-        connectLive(test: true)
+        do {
+            let draft = try liveDraft()
+            connectLive(test: true, configuration: draft, draftKey: liveKeyInput.trimmingCharacters(in: .whitespacesAndNewlines))
+        } catch { liveMessage = error.localizedDescription }
     }
-    private func connectLive(test: Bool) {
+    private func connectLive(test: Bool, configuration draft: LiveTranslateConfiguration? = nil, draftKey: String = "") {
         let attempt = UUID(); liveAttempt = attempt
         let currentSession = test ? UUID().uuidString : session
-        let configuration = liveConfiguration
+        let configuration = draft ?? liveConfiguration
         let client: any LiveTranslationSession
         if let factory = liveSessionFactory { client = factory(configuration.provider) }
-        else if configuration.provider == .qwenCloud { client = QwenLiveTranslationSession(client: liveClientFactory()) }
+        else if configuration.provider == .qwenCloud {
+            do { client = try configuration.profile.makeSession(clientFactory: liveClientFactory) }
+            catch {
+                pendingStart = false; liveMessage = error.localizedDescription
+                if !test { self.error = liveMessage }
+                return
+            }
+        }
         else { client = hyRuntime }
         audioLock.lock(); liveSession = client; audioLock.unlock()
         liveTesting = test
         if !test {
+            liveServiceSlow = false
             liveAudioPlayer.stop(); localSpeech.stop(); livePlaying = false; liveAudioMuted = false
             liveRowRevisions.removeAll(); liveRowRanges.removeAll(); liveUntranslatedRanges.removeAll(); livePlaybackSession = UUID()
             liveSentenceRows = LiveSentenceRows()
@@ -1013,6 +1085,8 @@ extension AppModel {
                 guard configuration.audioOutput, !self.liveAudioMuted else { return }
                 do { try self.liveAudioPlayer.append(pcm); self.livePlaying = true }
                 catch { self.error = error.localizedDescription; self.stopLivePlayback() }
+            case .slowService(let slow):
+                self.liveServiceSlow = slow
             case .audioPending:
                 if configuration.audioOutput && !self.liveAudioMuted { self.livePlaying = true }
             case .replayClip(let segmentID, let pcm):
@@ -1038,6 +1112,16 @@ extension AppModel {
             if !test {
                 self.stopInputs(); self.pendingStart = false; self.level = 0
                 self.settleLiveRows()
+                self.liveServiceSlow = false
+                if let replacement = self.switchAfterDrain {
+                    self.switchAfterDrain = nil
+                    self.stopLivePlayback()
+                    self.state = "ready"
+                    self.selectLiveProfile(replacement.id)
+                    if self.liveConfiguration.profile.id == replacement.id { self.start(continuingAfterProfileSwitch: true) }
+                    else { self.resumeFileFrame = 0 }
+                    return
+                }
                 if let message { self.error = message }
                 // Local speech can hold an unfinished phrase without playing yet. A successful
                 // session must flush that tail; cancellation and failures must only discard it.
@@ -1056,7 +1140,7 @@ extension AppModel {
             self.liveMessage = message ?? (test ? testPassed : "本次会话已结束")
         }
         do {
-            let key = configuration.provider == .qwenCloud ? (try liveKeyReader(configuration.keyAccount) ?? "") : ""
+            let key = configuration.provider == .qwenCloud ? (draftKey.isEmpty ? (try liveKeyReader(configuration.keyAccount) ?? "") : draftKey) : ""
             try client.start(configuration: configuration, key: key, sessionID: currentSession)
         } catch {
             client.cancel()
@@ -1174,7 +1258,7 @@ extension AppModel {
     var recordingSessionID: String? { sessionLocked ? activeSessionID : nil }
     /// Sidebar selection: the session on screen, or nil for a new session that has not been saved yet.
     var selectedSessionID: String? { viewedSession?.id ?? (activeSessionSaved ? activeSessionID : nil) }
-    var displayedTranscripts: [Transcript] { viewedSession.map(Self.transcripts(from:)) ?? finalText }
+    var displayedTranscripts: [Transcript] { viewedTranscripts ?? finalText }
     var displayedHasText: Bool { displayedTranscripts.contains { !$0.isBreak && (!$0.text.isEmpty || !$0.translation.isEmpty) } }
     var displayedTitle: String {
         if let viewedSession { return viewedSession.title }

@@ -14,7 +14,8 @@ import java.time.ZoneId
 
 /** Drives the session state machine with fake transports, capture and a virtual clock (no threads, no network). */
 class LiveSessionTest {
-    private class FakeTransport(val listener: LiveTranslateClient.Listener) : LiveTransport {
+    private class FakeTransport(val listener: LiveTransport.Listener) : LiveTransport {
+        var config: LiveTranslateConfig? = null
         var connected = false
         var finished = false
         var cancelled = false
@@ -24,6 +25,7 @@ class LiveSessionTest {
 
         override fun connect(configuration: LiveTranslateConfig, key: String) {
             if (key.isEmpty()) throw LiveTranslateException("请在 LiveTranslate 设置中保存专用 API Key")
+            config = configuration
             connected = true
         }
 
@@ -78,7 +80,7 @@ class LiveSessionTest {
             timers.add(timer)
             return Cancellable { timer.cancelled = true }
         }
-        override fun transport(listener: LiveTranslateClient.Listener): FakeTransport {
+        override fun transport(configuration: LiveTranslateConfig, listener: LiveTransport.Listener): FakeTransport {
             openedAt += now
             return FakeTransport(listener).also(transports::add)
         }
@@ -138,6 +140,51 @@ class LiveSessionTest {
 
         /** 100 ms of 16 kHz PCM16, the microphone's chunk size. */
         const val CHUNK = 3200
+    }
+
+    @Test
+    fun serviceOffsetsDetectSlownessWithAnEmptySocketQueue() {
+        val device = Device()
+        device.record()
+        val listener = device.transport.listener
+        listener.onEvent(LiveSessionEvent.SpeechStart("s", 0, null))
+        device.advance(16_000)
+        listener.onEvent(LiveSessionEvent.SpeechEnd(10_000, null))
+        assertTrue(device.session.snapshot.slowService)
+        device.advance(16_000)
+        listener.onEvent(LiveSessionEvent.SpeechEnd(30_000, null))
+        assertFalse(device.session.snapshot.slowService)
+    }
+
+    @Test
+    fun slowServiceSwitchRetainsFinalsAndReconnectsWithReplacement() {
+        val device = Device()
+        val a = LiveServiceProfile(id = "a", modelID = "alpha")
+        val b = a.copy(id = "b", modelID = "beta")
+        val catalog = LiveServiceCatalog(b).using(a)
+        device.record(LiveTranslateConfig(catalog = catalog))
+        device.utter("first")
+        val previous = device.transport
+        // A queue still draining avoids the 8 s stall path, but discards captured audio for 15 s.
+        repeat(151) { step ->
+            previous.queuedAudioBytes = 80_000 - 50 * step
+            device.speak()
+            device.advance(100)
+        }
+        assertTrue(device.session.snapshot.slowService)
+        val next = LiveTranslateConfig(catalog = catalog.using(b))
+        assertTrue(device.session.switchProfile(next, "mock-only"))
+        device.advance(0)
+        device.transport.listener.onReady()
+        previous.listener.onEvent(json("type" to "conversation.item.input_audio_transcription.completed", "item_id" to "first", "transcript" to "stale"))
+        assertEquals(b, device.transport.config?.profile)
+        assertFalse(device.session.snapshot.slowService)
+        device.utter("second")
+        assertEquals(listOf("Hello.", "Hello."), device.session.snapshot.rows.filter { it.sourceDone && it.marker.isEmpty() }.map { it.source })
+        device.transport.listener.onEnd("断开", true)
+        device.advance(500)
+        assertEquals(b, device.transport.config?.profile)
+        assertEquals(1, device.captureStarts)
     }
 
     @Test

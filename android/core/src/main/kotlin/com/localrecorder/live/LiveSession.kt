@@ -1,6 +1,5 @@
 package com.localrecorder.live
 
-import org.json.JSONObject
 
 enum class SessionState { IDLE, CONNECTING, RECORDING, RECONNECTING, FINISHING }
 
@@ -23,6 +22,7 @@ data class SessionSnapshot(
     val playing: Boolean = false,
     /** Audio is waiting to be sent; subtitles lag behind. */
     val slowNetwork: Boolean = false,
+    val slowService: Boolean = false,
     /** Older rows were dropped to keep a long session bounded. */
     val trimmed: Boolean = false,
 )
@@ -46,7 +46,7 @@ interface SpeechOutput {
 interface SessionPlatform {
     fun post(block: () -> Unit)
     fun schedule(delayMs: Long, block: () -> Unit): Cancellable
-    fun transport(listener: LiveTranslateClient.Listener): LiveTransport
+    fun transport(configuration: LiveTranslateConfig, listener: LiveTransport.Listener): LiveTransport
 
     /** Starts 16 kHz mono PCM16 capture; both callbacks may run on a capture thread. Throws when unavailable. */
     fun startCapture(onChunk: (ByteArray) -> Unit, onError: (String) -> Unit)
@@ -172,6 +172,15 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     private var lowestQueued = 0
     private var lowestAt = 0L
     private var stallReported = false
+    // The session thread combines local uplink throughput with the service's speech offsets.
+    private var uplinkSlow = false
+    private var serverSlow = false
+    private var progressAt = 0L
+    private var progressOffset = -1
+    private var windowStartMs = 0L
+    private var windowStartQueue = 0
+    private var windowSent = 0L
+    private var windowCaptured = 0L
 
     /** Starts a session; the caller has already obtained the microphone permission. */
     fun start(config: LiveTranslateConfig, key: String, autoReconnect: Boolean = true) {
@@ -208,6 +217,21 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         // Capture starts now, not once the session is configured: people speak as soon as they press start,
         // and the handshake usually takes under 1 s. Its last second is sent first once ready.
         beginCapture()
+    }
+
+    /** Explicit switch: keep the existing capture and history, and apply the same connection budget as reconnect. */
+    fun switchProfile(next: LiveTranslateConfig, credential: String): Boolean {
+        if (snapshot.state != SessionState.RECORDING || credential.isBlank() || next.profile.id == config.profile.id) return false
+        detach()
+        config = next
+        key = credential
+        quiet = false
+        lastCause = "切换到「" + next.profile.name + "」"
+        history += SubtitleRow("profile:$epoch", "", true, "", true, lastCause)
+        update { it.copy(state = SessionState.RECONNECTING, slowNetwork = false, slowService = false, notice = "") }
+        publish()
+        attempt(immediately = true, counted = false)
+        return true
     }
 
     /** Stops capture; the server still delivers the tail before the session ends. */
@@ -298,12 +322,16 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
 
     /** Opens a new connection for the current session; returns an error for an invalid configuration. */
     private fun open(): String? {
+        uplinkSlow = false
+        serverSlow = false
+        progressOffset = -1
         val token = ++connection
         opens.addLast(platform.elapsedMs())
         events = LiveTranslateEvents()
         markers.clear()
-        val next = platform.transport(Listener(token))
+        val next: LiveTransport
         try {
+            next = platform.transport(config, Listener(token))
             next.connect(config, key)
         } catch (e: LiveTranslateException) {
             return e.message.orEmpty()
@@ -331,12 +359,12 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         connection++
     }
 
-    private inner class Listener(private val token: Int) : LiveTranslateClient.Listener {
+    private inner class Listener(private val token: Int) : LiveTransport.Listener {
         override fun onReady() {
             if (token == connection) ready()
         }
 
-        override fun onEvent(event: JSONObject) {
+        override fun onEvent(event: LiveSessionEvent) {
             if (token == connection) received(event)
         }
 
@@ -380,6 +408,10 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             resetShedding()
             buffering = false
             live = current
+            windowStartMs = platform.elapsedMs()
+            windowStartQueue = current.queuedAudioBytes
+            windowSent = 0
+            windowCaptured = 0
         }
     }
 
@@ -431,10 +463,24 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
                 return
             }
             val queued = target.queuedAudioBytes
+            val now = platform.elapsedMs()
+            if (now - windowStartMs >= 15_000 && windowCaptured > 0) {
+                val slow = windowStartQueue + windowSent - queued < windowCaptured * 0.8
+                notify += {
+                    if (current(generation, target)) {
+                        uplinkSlow = slow
+                        update { it.copy(slowService = uplinkSlow || serverSlow) }
+                    }
+                }
+                windowStartMs = now
+                windowStartQueue = queued
+                windowSent = 0
+                windowCaptured = 0
+            }
+            windowCaptured += pcm.size
             if (shedding) {
                 if (queued >= RESUME_AUDIO_BYTES) {
                     droppedBytes += pcm.size
-                    val now = platform.elapsedMs()
                     if (queued < lowestQueued) {
                         lowestQueued = queued
                         lowestAt = now
@@ -454,7 +500,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             }
             if (!shedding) {
                 when (target.append(pcm)) {
-                    AppendResult.SENT -> Unit
+                    AppendResult.SENT -> windowSent += pcm.size
                     // Only a chunk larger than the transport's whole queue gets here: drop it like the others.
                     AppendResult.FULL -> {
                         startShedding(pcm, queued)
@@ -510,7 +556,12 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         }
     }
 
-    private fun received(event: JSONObject) {
+    private fun received(event: LiveSessionEvent) {
+        when (event) {
+            is LiveSessionEvent.SpeechStart -> observeProgress(event.milliseconds)
+            is LiveSessionEvent.SpeechEnd -> observeProgress(event.milliseconds)
+            else -> Unit
+        }
         events.apply(event)
         playback?.let { queue ->
             try {
@@ -534,6 +585,19 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             events.retire(id)
         }
         publish()
+    }
+
+    /** Compares service-reported audio positions, even when the local socket is sending at full speed. */
+    private fun observeProgress(offset: Int) {
+        val now = platform.elapsedMs()
+        if (progressOffset >= 0) {
+            val elapsed = now - progressAt
+            if (elapsed < 15_000 || offset <= progressOffset) return
+            serverSlow = offset - progressOffset < elapsed * 0.8
+            update { it.copy(slowService = uplinkSlow || serverSlow) }
+        }
+        progressOffset = offset
+        progressAt = now
     }
 
     /** Removes and returns the congestion markers anchored after [id]. */
@@ -601,7 +665,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         quiet = false
         lastError = reason
         lastCause = cause
-        update { it.copy(state = SessionState.RECONNECTING, slowNetwork = false, notice = "") }
+        update { it.copy(state = SessionState.RECONNECTING, slowNetwork = false, slowService = false, notice = "") }
         publish()
         attempt(counted = counted)
     }
@@ -614,7 +678,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         detach()
         quiet = true
         lastCause = cause
-        update { it.copy(state = SessionState.RECONNECTING, slowNetwork = false) }
+        update { it.copy(state = SessionState.RECONNECTING, slowNetwork = false, slowService = false) }
         publish()
         attempt(counted = false)
     }
@@ -714,7 +778,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         }
         // Rows first: observers treat the IDLE snapshot as the end of the session's rows.
         publish()
-        update { it.copy(state = SessionState.IDLE, status = "", error = error.orEmpty(), slowNetwork = false) }
+        update { it.copy(state = SessionState.IDLE, status = "", error = error.orEmpty(), slowNetwork = false, slowService = false) }
         try {
             platform.sessionActive(false)
         } catch (_: Exception) {

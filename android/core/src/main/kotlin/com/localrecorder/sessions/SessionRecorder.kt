@@ -75,6 +75,9 @@ class SessionRecorder(
         return started
     }
 
+    /** Arrival time already tracked for subtitle offsets, including an unfinished row. */
+    fun firstSeenAtMs(key: String): Long? = seen[key]?.atMs
+
     fun observe(snapshot: SessionSnapshot) {
         if (record == null) return
         if (snapshot.state != SessionState.IDLE) sawActive = true

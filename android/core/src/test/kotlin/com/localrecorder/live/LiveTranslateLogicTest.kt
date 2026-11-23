@@ -57,6 +57,9 @@ class LiveTranslateLogicTest {
         assertRejected("localhost only with explicit opt-in") { LiveTranslateConfig(endpoint = "ws://127.0.0.1:1/ok").url() }
         assertEquals("ws://127.0.0.1:1/ok?model=${LiveTranslateConfig.MODEL}", LiveTranslateConfig(endpoint = "ws://127.0.0.1:1/ok").url(allowLocalhost = true))
 
+        for (unsupported in listOf(config.profile.copy(version = "3.5"), config.profile.copy(protocolID = "unknown"), config.profile.copy(inputFormat = "opus"))) {
+            assertRejected("unsupported adapter rejected") { config.copy(catalog = config.catalog.using(unsupported)).url() }
+        }
         val update = LiveTranslateConfig(audioOutput = true, language = "en").sessionUpdate()
         val session = update.getJSONObject("session")
         assertEquals("session.update", update.getString("type"))

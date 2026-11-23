@@ -14,16 +14,30 @@
 # PROBE_SESSION=1 runs the app's session logic (send only the last second of buffered speech, drop audio while
 # the uplink is backed up, reconnect only when it stalls) and reports reconnects, dropped audio and markers.
 #
+#   PROBE_PROFILE="配置名称" PROBE_SESSION=1 scripts/probe_livetranslate.sh
+#   PROBE_CONFIG=settings.json PROBE_PROFILE="B" PROBE_WAV=audio.wav scripts/probe_livetranslate.sh
+# With a named profile and a key in the environment, set LIVETRANSLATE_KEY_ENDPOINT to its saved address.
+# For a device, PROBE_CONFIG also accepts Android settings.xml from an authorized debug build.
+# PROBE_ALLOW_LOCALHOST=1 explicitly enables ws://127.0.0.1 fixtures. Only use synthetic keys there.
+#
 # Needs your LiveTranslate API key: set LIVETRANSLATE_API_KEY, or type it at the prompt (not echoed, not
 # saved). LIVETRANSLATE_ENDPOINT overrides the default service address. Uses about 5 minutes of audio on the
 # service, which is billed like normal use. Results: .build/livetranslate-probe/*.json
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# PROBE_PROFILE accepts a saved ID or unique name (macOS), or PROBE_CONFIG can point
+# to a saved configuration JSON / Android settings.xml. Keys are supplied for each run.
 source_lang="${PROBE_SOURCE:-zh}"
 target="${PROBE_TARGET:-en}"
 out=".build/livetranslate-probe"
 mkdir -p "$out"
+
+if [ -n "${PROBE_PROFILE:-}${PROBE_CONFIG:-}" ]; then
+  [ -z "${LIVETRANSLATE_ENDPOINT:-}" ] || { echo "已保存配置自带服务地址" >&2; exit 1; }
+  LIVETRANSLATE_PROBE_PROFILE_JSON=$(python3 scripts/probe_profile.py)
+  export LIVETRANSLATE_PROBE_PROFILE_JSON
+fi
 
 if [ -z "${LIVETRANSLATE_API_KEY:-}" ]; then
   read -rsp "LiveTranslate API Key（输入时不显示，不会保存）：" LIVETRANSLATE_API_KEY
@@ -33,7 +47,9 @@ export LIVETRANSLATE_API_KEY
 
 zh_text="今天我们来讨论下个季度的产品计划。首先是安卓版本的发布时间，我们希望在月底之前完成真机测试，然后同时发布苹果电脑和安卓两个版本。其次是会话记录功能，用户可以在侧栏里看到每一次对话，也可以继续录制或者导出成文本。第三点是网络稳定性，我们需要确认在移动网络下，实时翻译的延迟是否可以接受，以及断线以后能不能自动恢复。最后请大家在周五之前把各自负责的部分整理好，我们下周一再开一次会，确认最终的发布清单。"
 en_text="Today we are going to talk about the product plan for next quarter. First, the Android release date: we want to finish testing on real phones before the end of the month, and then ship the Mac and Android versions together. Second, the session history feature: people can see every conversation in the sidebar, keep recording, or export it as text. Third, network stability: we need to check whether the real-time translation delay is acceptable on mobile networks, and whether it recovers by itself after a dropped connection. Finally, please get your parts ready by Friday, and we will meet again next Monday to confirm the final release checklist."
-if [ "$source_lang" = "zh" ]; then
+if [ -n "${PROBE_WAV:-}" ]; then
+  cp "$PROBE_WAV" "$out/input.wav"
+elif [ "$source_lang" = "zh" ]; then
   text="$zh_text $zh_text"
   voice=$(say -v '?' | awk -F'  +' '/zh_CN/ { print $1; exit }')
   normal_rate=200; fast_rate=330
@@ -42,7 +58,7 @@ else
   voice="Samantha"
   normal_rate=170; fast_rate=280
 fi
-[ -n "$voice" ] || { echo "没有找到 $source_lang 的系统语音（系统设置 → 辅助功能 → 朗读内容 → 系统声音）" >&2; exit 1; }
+[ -n "${PROBE_WAV:-}${voice:-}" ] || { echo "没有找到 $source_lang 的系统语音（系统设置 → 辅助功能 → 朗读内容 → 系统声音）" >&2; exit 1; }
 
 make_wav() { # <rate> <out.wav>
   local aiff="$out/speech.aiff"
@@ -50,13 +66,16 @@ make_wav() { # <rate> <out.wav>
   afconvert -f WAVE -d LEI16@16000 -c 1 "$aiff" "$2"
   rm -f "$aiff"
 }
-make_wav "$normal_rate" "$out/normal.wav"
-make_wav "$fast_rate" "$out/fast.wav"
+if [ -z "${PROBE_WAV:-}" ]; then
+  make_wav "$normal_rate" "$out/normal.wav"
+  make_wav "$fast_rate" "$out/fast.wav"
+fi
 
 endpoint_arg=()
 [ -n "${LIVETRANSLATE_ENDPOINT:-}" ] && endpoint_arg=("--endpoint=$LIVETRANSLATE_ENDPOINT")
 
 extra_args=()
+[ "${PROBE_ALLOW_LOCALHOST:-}" = "1" ] && extra_args+=("--allow-localhost=on")
 # Plain mode: buffered speech sent at once, then real time (the 0.5.0 app after connecting or reconnecting).
 # Session mode: the first connection is held back this long, so the session's own catch-up rule applies.
 [ -n "${PROBE_BURST_MS:-}" ] && extra_args+=("--burst-ms=$PROBE_BURST_MS")
@@ -65,14 +84,21 @@ extra_args=()
 probe() { # <label> <wav> <speech on|off>
   (cd android && ./gradlew -q -PcoreOnly=true :core:liveProbe --args="--audio=$PWD/../$2 --language=$target --speech=$3 --label=$1 --json=$PWD/../$out/$1.json ${endpoint_arg[*]:-} ${extra_args[*]:-}")
 }
+if [ -n "${PROBE_WAV:-}" ]; then
+  probe input "$out/input.wav" "${PROBE_SPEECH:-off}"
+  python3 scripts/probe_profile.py --table "$out/input.json"
+  exit 0
+fi
 if [ -n "${PROBE_SESSION:-}" ] || [ -n "${PROBE_BURST_MS:-}" ]; then
   label="burst-${PROBE_BURST_MS:-0}"
   [ -n "${PROBE_SESSION:-}" ] && label="session${PROBE_BURST_MS:+-burst-$PROBE_BURST_MS}"
   probe "$label" "$out/normal.wav" off
+  python3 scripts/probe_profile.py --table "$out/$label.json"
   echo "结果已保存到 $out/$label.json"
   exit 0
 fi
 probe normal "$out/normal.wav" off
 probe fast "$out/fast.wav" off
 probe fast-speech "$out/fast.wav" on
+python3 scripts/probe_profile.py --table "$out/normal.json" "$out/fast.json" "$out/fast-speech.json"
 echo "结果已保存到 $out/{normal,fast,fast-speech}.json"

@@ -3,6 +3,7 @@ import SwiftUI
 /// Session list: "新建会话" on top, groups by last update, newest first.
 struct SessionSidebar: View {
     @ObservedObject var model: AppModel
+    @Environment(\.locale) private var locale
     @State private var renaming: SessionSummary?
     @State private var renameText = ""
     @State private var deleting: SessionSummary?
@@ -16,7 +17,7 @@ struct SessionSidebar: View {
     var body: some View {
         List(selection: Binding(get: { model.selectedSessionID }, set: { model.selectSession($0) })) {
             ForEach(groups, id: \.0) { group, items in
-                Section(group.title) {
+                Section(LocalizedStringKey(group.title)) {
                     ForEach(items) { item in
                         row(item).tag(item.id).contextMenu { menu(item) }
                     }
@@ -56,29 +57,29 @@ struct SessionSidebar: View {
         HStack(spacing: 6) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title).lineLimit(1).truncationMode(.tail)
-                Text(Self.time(item.updatedAtMs)).font(.caption2).foregroundStyle(.secondary)
+                Text(Self.time(item.updatedAtMs, locale: locale)).font(.caption2).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
             if item.id == model.recordingSessionID {
-                Image(systemName: "record.circle").foregroundStyle(.red).help("录制中").accessibilityLabel("录制中")
+                Image(systemName: "record.circle").foregroundStyle(DesignTokens.recording).help("录制中").accessibilityLabel("录制中")
             }
         }.padding(.vertical, 2)
     }
 
     @ViewBuilder private func menu(_ item: SessionSummary) -> some View {
         Button("重命名…") { renameText = item.title; renaming = item }
-        Button("导出…") { model.exportRequest = SessionExportRequest(sessionID: item.id) }
+        Button("导出会话…") { model.exportRequest = SessionExportRequest(sessionID: item.id) }
         Divider()
         Button("删除…", role: .destructive) { deleting = item }
             .disabled(!model.canDeleteSession(item.id))
     }
 
-    static func time(_ ms: Int64) -> String {
+    static func time(_ ms: Int64, locale: Locale) -> String {
         let date = Date(timeIntervalSince1970: Double(ms) / 1000)
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm"
-            : Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year) ? "M月d日 HH:mm" : "yyyy年M月d日"
+        formatter.locale = locale
+        formatter.setLocalizedDateFormatFromTemplate(Calendar.current.isDateInToday(date) ? "jm"
+            : Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year) ? "MMMdjm" : "yMMMd")
         return formatter.string(from: date)
     }
 }
@@ -108,10 +109,10 @@ struct SessionExportSheet: View {
             Text("导出会话").font(.title3.bold())
             Text(title).foregroundStyle(.secondary).lineLimit(2)
             Picker("格式", selection: $format) {
-                ForEach(SessionExportFormat.allCases) { Text($0.title).tag($0.rawValue) }
+                ForEach(SessionExportFormat.allCases) { Text(LocalizedStringKey($0.title)).tag($0.rawValue) }
             }.pickerStyle(.radioGroup)
             Picker("内容", selection: $content) {
-                ForEach(SessionExportContent.allCases) { Text($0.title).tag($0.rawValue) }
+                ForEach(SessionExportContent.allCases) { Text(LocalizedStringKey($0.title)).tag($0.rawValue) }
             }.pickerStyle(.radioGroup)
             Text("只导出已定稿的文字，不含识别中的文字、录音以及服务地址、API Key 等配置。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

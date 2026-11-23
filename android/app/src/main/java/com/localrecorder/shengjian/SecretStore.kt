@@ -35,7 +35,9 @@ class SecretStore(context: Context) {
         val iv = cipher.iv
         check(iv.size == IV_SIZE)
         val sealed = iv + cipher.doFinal(value.toByteArray(Charsets.UTF_8))
-        prefs.edit().putString(account, Base64.getEncoder().encodeToString(sealed)).apply()
+        check(prefs.edit().putString(account, Base64.getEncoder().encodeToString(sealed)).commit()) {
+            "专用 API Key 未能写入本机"
+        }
     }
 
     /**

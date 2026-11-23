@@ -16,8 +16,8 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
     var audioDecoder = LiveTranslateAudioDecoder()
     var callbacks = 0
     let client: LiveTranslateClient
-    init(timeout: TimeInterval = 30) {
-        client = LiveTranslateClient(finishTimeout: timeout)
+    init(timeout: TimeInterval = 30, uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        client = LiveTranslateClient(finishTimeout: timeout, uptime: uptime)
         client.onReady = { [weak self] in self?.ready = true; self?.callbacks += 1 }
         client.onEvent = { [weak self] event in
             self?.callbacks += 1
@@ -42,6 +42,16 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
 @main struct LiveTranslateTests {
     @MainActor static func main() async throws {
         setbuf(stdout, nil)
+        if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--read-profile" {
+            let suite = UserDefaults(suiteName: CommandLine.arguments[2])!
+            let saved = LiveTranslateConfiguration.load(defaults: suite)
+            try check(saved.profile.id == CommandLine.arguments[3] && saved.catalog.profiles.count == 3, "selection in new process")
+            if ProcessInfo.processInfo.environment["RECORDER_LIVE_TEST_KEYCHAIN"] == "1" {
+                try check(try APIKeyStore.read(endpoint: saved.keyAccount) == (saved.profile.id == "c" ? "mock-c" : "mock-only"),
+                          "credential in new process")
+            }
+            return
+        }
         let suite = "recorder.live.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -149,11 +159,18 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             do { _ = try LiveTranslateConfiguration(endpoint: address).url() } catch { rejected = true }
             try check(rejected, "unsafe URL rejected")
         }
+        var unknown = config
+        var unsupported = config.profile; unsupported.version = "3.5"
+        unknown.catalog.use(unsupported)
+        try check((try? unknown.url()) == nil, "unsupported protocol version rejected before connection")
         let model = AppModel(defaults: defaults, integrateSystem: false)
         defer { model.shutdown() }
         try check(model.liveEnabled && model.canStart, "Live mode starts without local models")
         model.load(); model.loadTranslator()
         try check(model.state == "ready", "local model load routes disabled")
+        let liveMenu = TranslationMenu(model: model)
+        model.partial = "live partial"
+        try check(liveMenu == TranslationMenu(model: model), "LiveTranslate transcription keeps the menu stable")
         let target = model.translationTarget
         model.setTranslation(enabled: true); model.setTranslationTarget("English")
         try check(!model.translationEnabled && model.translationTarget == target, "other translation route disabled")
@@ -167,6 +184,22 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         model.setLiveEnabled(false)
         try check(!model.liveEnabled && !LiveTranslateConfiguration.load(defaults: defaults).enabled, "can leave mode with invalid draft")
         try check(model.translationTarget == target, "previous translation preference preserved")
+
+        let menu = TranslationMenu(model: model)
+        try check(menu != liveMenu, "leaving LiveTranslate reveals ordinary translation controls")
+        model.level = 0.5
+        model.partial = "in progress"
+        model.translationTick += 1
+        try check(menu == TranslationMenu(model: model), "transcript updates leave the open translation menu alone")
+        model.setTranslationTarget("日本語")
+        try check(menu != TranslationMenu(model: model), "a new target updates the checkmark even with translation off")
+        model.setTranslationTarget(target)
+        model.translatorState = "warming"
+        let warmingMenu = TranslationMenu(model: model)
+        try check(menu != warmingMenu, "warming disables the ordinary translation toggle")
+        model.translatorState = "downloading"
+        try check(warmingMenu == TranslationMenu(model: model), "a tooltip-only change leaves the open menu alone")
+        model.translatorState = "idle"
 
         var events = LiveTranslateEvents()
         let delta: [String: Any] = ["event_id": "same", "type": "response.text.delta", "item_id": "t", "delta": "译文"]
@@ -213,6 +246,89 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             for i in 0..<3200 { buffer.floatChannelData![0][i] = Float(sin(Double(i) * 0.1) * 0.1) }
             try file.write(from: buffer)
         }
+        // Upgrade a legacy address, then add a second model on it and a separately authenticated endpoint.
+        let profileDefaults = UserDefaults(suiteName: suite + "-profiles")!
+        defer { profileDefaults.removePersistentDomain(forName: suite + "-profiles") }
+        let ab = base + "/profiles/ab", other = base + "/profiles/c"
+        let legacyProfile = try JSONSerialization.data(withJSONObject: ["enabled": true, "endpoint": ab, "language": "zh"])
+        profileDefaults.set(legacyProfile, forKey: "livetranslate.configuration.v1")
+        // Opt in to login Keychain coverage. Only the fixture's ephemeral loopback accounts are used.
+        let systemKeychain = ProcessInfo.processInfo.environment["RECORDER_LIVE_TEST_KEYCHAIN"] == "1"
+        var fixtureAccounts: [String] = []
+        defer { for account in fixtureAccounts { try? APIKeyStore.remove(endpoint: account) } }
+        if systemKeychain {
+            for (address, value) in [(ab, "mock-only"), (other, "mock-c")] {
+                let account = "livetranslate:" + address
+                try check(try APIKeyStore.read(endpoint: account) == nil, "fixture needs an unused Keychain account")
+                try APIKeyStore.save(value, endpoint: account)
+                fixtureAccounts.append(account)
+            }
+        }
+        var profileClients = [LiveTranslateClient]()
+        let profileApp = AppModel(defaults: profileDefaults, integrateSystem: false, liveAllowLocalhost: true,
+            liveClientFactory: {
+                let client = LiveTranslateClient(allowLocalhost: true)
+                profileClients.append(client)
+                return client
+            },
+            liveKeyReader: { account in
+                if systemKeychain { return try APIKeyStore.read(endpoint: account) }
+                return ["livetranslate:" + ab: "mock-only", "livetranslate:" + other: "mock-c"][account]
+            })
+        defer { profileApp.shutdown() }
+        var a = profileApp.liveProfile
+        a.name = "A"; a.modelID = "model-a"; a.threshold = 0.4; a.silenceMS = 600
+        var b = a; b.id = "b"; b.name = "B"; b.modelID = "model+b"; b.turnDetection = "speaker_detection"
+        var c = a; c.id = "c"; c.name = "C"; c.endpoint = other; c.modelID = "model-c"
+        for profile in [a, b, c] {
+            profileApp.liveProfile = profile
+            try check(profileApp.saveLiveSettings(), "save named profile")
+        }
+        profileApp.audioSource = "file"; profileApp.audioFileURL = URL(fileURLWithPath: "tests/fixtures/livetranslate-16k.wav")
+        let profileWait = Probe()
+        for (index, profile) in [a, b, c, a].enumerated() {
+            profileApp.selectLiveProfile(profile.id)
+            let reopen = Process()
+            reopen.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+            reopen.arguments = ["--read-profile", suite + "-profiles", profile.id]
+            try reopen.run(); reopen.waitUntilExit()
+            try check(reopen.terminationStatus == 0, "restarted process restored selected profile")
+            let restored = LiveTranslateConfiguration.load(defaults: profileDefaults)
+            try check(restored.catalog.profiles == [a, b, c] && restored.profile == profile, "restore exact selection")
+            profileApp.testLiveConnection()
+            try await profileWait.wait { !profileApp.liveTesting }
+            try check(profileApp.liveMessage.contains("连接成功") && profileApp.finalText.count == index, "silent profile probe")
+            profileApp.start()
+            try await profileWait.wait { profileApp.finalText.count == index + 1 && profileApp.state == "ready" }
+            try check(profileApp.finalText.last?.translation == "你好，世界🌏。", "profile recording drains tail")
+        }
+        let recordingOwner = profileApp.activeSessionID
+        var browsed = profileApp.sessionLibrary.load(id: recordingOwner)!
+        browsed.id = SessionFile.newID()
+        try profileApp.sessionLibrary.save(browsed)
+        profileApp.start()
+        try await profileWait.wait { profileApp.state == "recording" && profileApp.finalText.count > 4 }
+        profileApp.selectSession(browsed.id)
+        try check(profileApp.viewedSession?.id == browsed.id, "can browse another conversation while recording")
+        profileClients.last?.onSlowService?(true)
+        profileApp.switchRecordingProfile(b)
+        try await profileWait.wait { profileApp.liveConfiguration.profile.id == b.id && profileApp.state == "ready" }
+        try check(profileApp.activeSessionID == recordingOwner && profileApp.viewedSession?.id == browsed.id,
+                  "automatic restart after switching service keeps recording in the original conversation")
+        try check(profileApp.sessionLibrary.load(id: browsed.id) == browsed && profileApp.finalText.count == 6,
+                  "read-only history is unchanged and both segments are saved to their owner")
+        try check(profileApp.finalText.suffix(2).allSatisfy { $0.sourceDone && !$0.incomplete }, "switch drains both segments into history")
+        profileApp.selectLiveProfile(a.id)
+        profileApp.liveKeyInput = "mock-only"
+        profileApp.liveProfile.endpoint = other
+        try check(profileApp.liveKeyInput.isEmpty, "changing address synchronously clears draft key")
+        profileApp.liveProfile.modelID = "missing"
+        profileApp.testLiveConnection()
+        try await profileWait.wait { !profileApp.liveTesting }
+        try check(!profileApp.liveMessage.contains("成功") && !profileApp.liveMessage.contains("mock-"), "model failure is safe")
+        try check(LiveTranslateConfiguration.load(defaults: profileDefaults).profile == a, "failed test preserves saved model")
+        if systemKeychain { print("PASS: macOS Keychain legacy address account and isolated second endpoint") }
+        print("PASS: migrated credential account, A/B/C profile selection, shared handshake, recording and failed draft isolation")
         let mockConfig = LiveTranslateConfiguration(enabled: true, endpoint: base + "/ok")
         defaults.set(try JSONEncoder().encode(mockConfig), forKey: "livetranslate.configuration.v1")
         var clients: [LiveTranslateClient] = []
@@ -320,7 +436,7 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         empty.client.finish()
         try await empty.wait { empty.ended }
         try check(empty.error == nil && empty.bytes == 0 && empty.events.rows.isEmpty, "connection test sends no audio")
-        for route in ["/unauthorized", "/redirect", "/error", "/wrong-mode", "/disconnect", "/timeout"] {
+        for route in ["/unauthorized", "/redirect", "/error", "/wrong-language", "/model-error", "/wrong-mode", "/disconnect", "/timeout"] {
             let probe = Probe(timeout: 0.1)
             try probe.connect(base + route)
             try await probe.wait { probe.ready || probe.ended }
@@ -331,6 +447,24 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             try await probe.wait { probe.ended }
             try check(probe.error != nil, "failure surfaced: \(route)")
             try check(!probe.error!.contains("mock-only"), "provider payload never leaks credentials")
+        }
+        var virtualTime: TimeInterval = 0
+        let slowReader = Probe(uptime: { virtualTime += 16; return virtualTime })
+        var speedChanges: [Bool] = []
+        slowReader.client.onSlowService = { speedChanges.append($0) }
+        try slowReader.connect(base + "/slow-reader")
+        try await slowReader.wait { slowReader.ready }
+        _ = slowReader.client.append(Data([0, 0]))
+        try await slowReader.wait { speedChanges == [true, false] }
+        slowReader.client.finish()
+        try await slowReader.wait { slowReader.ended }
+        for (route, kind) in [("/rate-limited", LiveCloudEndKind.rateLimited), ("/no-semantic", .noResult), ("/no-semantic-close", .noResult)] {
+            let probe = Probe()
+            try probe.connect(base + route)
+            try await probe.wait { probe.ready || probe.ended }
+            if probe.ready { _ = probe.client.append(Data([0, 0])) }
+            try await probe.wait { probe.ended }
+            try check(probe.client.endKind == kind && probe.error == kind.message, "classified service end: " + route)
         }
         let cancel = Probe()
         try cancel.connect(base + "/ok")

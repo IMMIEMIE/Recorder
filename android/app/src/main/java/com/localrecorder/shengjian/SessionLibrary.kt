@@ -129,4 +129,12 @@ fun SessionRecord.subtitleRows(zone: ZoneId): List<SubtitleRow> {
     return out
 }
 
+/** `r:<index>` is the UI key assigned above to finalized text from disk. */
+fun SessionRecord.subtitleStartMs(key: String): Long? {
+    if (!key.startsWith("r:")) return null
+    val index = key.substring(2).toIntOrNull() ?: return null
+    val row = rows.getOrNull(index) ?: return null
+    return segments.getOrNull(row.segment)?.startedAtMs?.plus(row.offsetMs)
+}
+
 private fun marker(key: String, text: String) = SubtitleRow(key, "", true, "", true, text)
