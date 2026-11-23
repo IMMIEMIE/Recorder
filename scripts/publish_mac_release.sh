@@ -48,6 +48,14 @@ if [ "$bundle_version" != "$version" ]; then
   printf '拒绝发布：应用版本 %s 与 VERSION %s 不一致\n' "$bundle_version" "$version" >&2
   exit 1
 fi
+# CFBundleVersion is the integer build number: major*10000 + minor*100 + patch (scripts/build.sh).
+[[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]
+build_number=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))
+bundle_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")
+if [ "$bundle_build" != "$build_number" ]; then
+  printf '拒绝发布：应用构建号 %s 应为 %s\n' "$bundle_build" "$build_number" >&2
+  exit 1
+fi
 
 # The tag must already be on origin (checked remotely, not just locally).
 if [ -z "$(git ls-remote --tags origin "refs/tags/$tag")" ]; then

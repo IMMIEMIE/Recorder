@@ -26,7 +26,9 @@ grep -Fq 'major.toInt() * 10000 + minor.toInt() * 100 + patch.toInt()' "$gradle"
 
 # macOS: build.sh (Info.plist) and package.sh (DMG name, volume name, notes) read VERSION; no literal versions.
 grep -Fq "tr -d '[:space:]' < VERSION" scripts/build.sh || bad "scripts/build.sh 没有读取 VERSION"
-grep -Eq 'CFBundleVersion</key><string>__VERSION__' scripts/build.sh || bad "scripts/build.sh 的 CFBundleVersion 不是取自 VERSION"
+grep -Eq 'CFBundleVersion</key><string>__BUILD__' scripts/build.sh || bad "scripts/build.sh 的 CFBundleVersion 不是构建号占位符"
+# shellcheck disable=SC2016
+grep -Fq 'build_number=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))' scripts/build.sh || bad "scripts/build.sh 的构建号公式不是 major*10000 + minor*100 + patch"
 grep -Eq 'CFBundleShortVersionString</key><string>__VERSION__' scripts/build.sh || bad "scripts/build.sh 的 CFBundleShortVersionString 不是取自 VERSION"
 grep -Fq "tr -d '[:space:]' < VERSION" scripts/package.sh || bad "scripts/package.sh 没有读取 VERSION"
 if grep -Eq '声笺[ -]v?[0-9]+\.[0-9]+\.[0-9]+' scripts/package.sh; then
@@ -39,13 +41,14 @@ while IFS= read -r found; do
   [ "$found" = "$version" ] || bad "README.md 提到 $found，VERSION 为 $version"
 done < <(grep -Eo '(声笺-|Recorder-|声笺 v?)[0-9]+\.[0-9]+\.[0-9]+' README.md | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' || true)
 
-# A built app (not required): its Info.plist must carry VERSION.
+# A built app (not required): CFBundleShortVersionString is VERSION, CFBundleVersion the integer build number
+# (same formula as Android's versionCode).
 plist="dist/声笺.app/Contents/Info.plist"
 if [ -f "$plist" ] && command -v plutil >/dev/null 2>&1; then
-  for key in CFBundleShortVersionString CFBundleVersion; do
-    built=$(plutil -extract "$key" raw -o - "$plist")
-    [ "$built" = "$version" ] || bad "dist/声笺.app 的 $key 是 $built，VERSION 为 $version（请重新运行 build.sh）"
-  done
+  built=$(plutil -extract CFBundleShortVersionString raw -o - "$plist")
+  [ "$built" = "$version" ] || bad "dist/声笺.app 的 CFBundleShortVersionString 是 $built，VERSION 为 $version（请重新运行 build.sh）"
+  built=$(plutil -extract CFBundleVersion raw -o - "$plist")
+  [ "$built" = "$code" ] || bad "dist/声笺.app 的 CFBundleVersion 是 $built，应为 $code（请重新运行 build.sh）"
 fi
 
 if [ "$fail" -ne 0 ]; then
