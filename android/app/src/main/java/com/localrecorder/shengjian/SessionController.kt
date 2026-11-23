@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import com.localrecorder.live.Cancellable
+import com.localrecorder.live.EndCause
 import com.localrecorder.live.LiveSession
 import com.localrecorder.live.LiveTranslateClient
 import com.localrecorder.live.LiveTranslateConfig
@@ -239,7 +240,7 @@ class SessionController(private val context: Context) : SessionPlatform {
         probe = LiveTranslateClient(object : LiveTranslateClient.Listener {
             override fun onReady() = probe.finish()
             override fun onEvent(event: JSONObject) = Unit
-            override fun onEnd(error: String?, recoverable: Boolean) {
+            override fun onEnd(error: String?, recoverable: Boolean, cause: EndCause) {
                 if (tester !== probe) return
                 tester = null
                 _ui.update { it.copy(testing = false, settingsMessage = error ?: "连接成功：会话已建立并确认配置，未发送音频") }

@@ -57,6 +57,9 @@ interface SessionPlatform {
 
     /** Foreground service, network monitoring. Throws when the session may not start now. */
     fun sessionActive(active: Boolean)
+
+    /** A monotonic clock in milliseconds, on the same time base as [schedule]; any thread. */
+    fun elapsedMs(): Long = System.nanoTime() / 1_000_000
 }
 
 /**
@@ -65,24 +68,52 @@ interface SessionPlatform {
  * the break is marked) while capture keeps running. All methods must be called on the session
  * thread. Rows live in memory here; `SessionRecorder` persists the finalized ones from the snapshots
  * (a row counts as final once `sourceDone`, its translation once `translationDone`).
+ *
+ * Audio pacing (issue #24): the service falls behind for good when it gets several seconds of audio at
+ * once, so a ready connection gets at most [CATCH_UP_MS] of the speech captured before it, then real time.
+ * A growing uplink backlog is shed (chunks dropped, the gap marked) rather than answered with a reconnect;
+ * only a backlog that stops draining altogether replaces the connection.
  */
 class LiveSession(private val platform: SessionPlatform, private val onChange: (SessionSnapshot) -> Unit) {
     companion object {
         val RECONNECT_DELAYS_MS = longArrayOf(500, 1_000, 2_000, 4_000, 8_000)
         const val OFFLINE_GIVE_UP_MS = 60_000L
 
-        /** A reconnected session that lasts this long resets the attempt counter. */
+        /** A reconnected session that lasts this long resets the attempt and rate-limit counters. */
         const val STABLE_MS = 30_000L
 
-        /** Speech captured while connecting or reconnecting is kept (most recent 5 s) and sent first. */
-        const val MAX_GAP_AUDIO_BYTES = LiveTranslateConfig.INPUT_SAMPLE_RATE * 2 * 5
-        const val SLOW_AUDIO_BYTES = LiveTranslateConfig.INPUT_SAMPLE_RATE * 2 * 3
-        const val RECOVERED_AUDIO_BYTES = LiveTranslateConfig.INPUT_SAMPLE_RATE * 2
+        /** Waits after the service refuses the request rate (close 1007); one more rate limit ends the session. */
+        val RATE_LIMIT_DELAYS_MS = longArrayOf(20_000, 40_000, 80_000, 160_000)
+
+        /** Never more than this many connections in any [CONNECTION_WINDOW_MS] (the service allows about 10 a minute). */
+        const val MAX_CONNECTIONS_PER_WINDOW = 8
+        const val CONNECTION_WINDOW_MS = 60_000L
+
+        private const val BYTES_PER_MS = LiveTranslateConfig.INPUT_SAMPLE_RATE * 2 / 1000
+
+        /**
+         * Speech captured while connecting or reconnecting: only the most recent part is sent once the
+         * connection is ready, the rest is dropped. About 1 s is absorbed by the service; 5 s at once
+         * leaves it reading at about half real time for good.
+         */
+        const val CATCH_UP_MS = 1_000
+        const val CATCH_UP_AUDIO_BYTES = CATCH_UP_MS * BYTES_PER_MS
+
+        /** Above this uplink backlog new chunks are dropped (and the network shown as slow)… */
+        const val SHED_AUDIO_BYTES = 1_500 * BYTES_PER_MS
+
+        /** …until it is below this again. */
+        const val RESUME_AUDIO_BYTES = 300 * BYTES_PER_MS
+
+        /** A backlog that has not gone down at all for this long means the connection is dead: replace it. */
+        const val STALL_MS = 8_000L
 
         /** Rows still tracked by ID for the live connection; older ones are frozen into the history. */
         const val MAX_ACTIVE_ROWS = 200
         const val MAX_ROWS = 1_000
         const val BREAK_MARKER = "连接中断，此处内容可能有缺失"
+
+        fun congestionMarker(seconds: Int) = "网络拥塞，约 $seconds 秒语音未翻译"
     }
 
     var snapshot = SessionSnapshot()
@@ -105,11 +136,29 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
 
     private var attempts = 0
     private var lastError = ""
+
+    /** Short cause of the last disconnect for the reconnecting status (category + detail, never the key). */
+    private var lastCause = ""
     private var online = true
     private var network: Long? = null
     private var retry: Cancellable? = null
+    private var ticker: Cancellable? = null
     private var giveUp: Cancellable? = null
     private var stable: Cancellable? = null
+
+    /** Rate limits since the session start or the last stable connection; no connection opens before [limitedUntil]. */
+    private var limits = 0
+    private var limitedUntil = 0L
+
+    /** When recent connections were opened, oldest first (kept across sessions: the service counts per key). */
+    private val opens = ArrayDeque<Long>()
+
+    /** The current reconnect replaces a connection the service closed for lack of results: no marker, no notice. */
+    private var quiet = false
+
+    /** Congestion markers inside the live connection, each after the row ID that was newest at the time (null: before all). */
+    private val markers = ArrayList<Pair<String?, SubtitleRow>>()
+    private var markerCount = 0
 
     // Shared with the capture thread.
     private val audioLock = Any()
@@ -119,7 +168,11 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     private var buffering = false
     private val gap = ArrayDeque<ByteArray>()
     private var gapBytes = 0
-    private var slow = false
+    private var shedding = false
+    private var droppedBytes = 0L
+    private var lowestQueued = 0
+    private var lowestAt = 0L
+    private var stallReported = false
 
     /** Starts a session; the caller has already obtained the microphone permission. */
     fun start(config: LiveTranslateConfig, key: String, autoReconnect: Boolean = true) {
@@ -128,15 +181,25 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         this.key = key
         this.autoReconnect = autoReconnect
         attempts = 0
+        limits = 0
+        lastCause = ""
+        quiet = false
         online = true
         network = null
+        // A new session right after a rate limit or a burst of connections would only be refused again.
+        val wait = earliestOpen() - platform.elapsedMs()
+        if (wait > 0) {
+            update { it.copy(error = "连接过于频繁或服务限流，请 ${seconds(wait)} 秒后再试") }
+            return
+        }
         stopPlayback()
         speechOff = false
         open()?.let { failure ->
             update { it.copy(error = failure) }
             return
         }
-        update { it.copy(state = SessionState.CONNECTING, status = "正在连接，可以开始说话…", error = "", notice = "") }
+        // Speech before the connection is ready is kept only for its last second, so do not invite talking yet.
+        update { it.copy(state = SessionState.CONNECTING, status = "正在连接…", error = "", notice = "") }
         try {
             platform.sessionActive(true)
         } catch (_: Exception) {
@@ -144,7 +207,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             return
         }
         // Capture starts now, not once the session is configured: people speak as soon as they press start,
-        // and the handshake takes 0.5–2 s on mobile networks. Speech up to then is sent first once ready.
+        // and the handshake usually takes under 1 s. Its last second is sent first once ready.
         beginCapture()
     }
 
@@ -215,6 +278,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             SessionState.RECONNECTING -> if (switched || wasOffline) {
                 dropTransport()
                 attempts = 0
+                // A pending rate-limit wait still applies: the limit is per key, not per network.
                 attempt(immediately = true)
             }
             else -> Unit
@@ -236,7 +300,9 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     /** Opens a new connection for the current session; returns an error for an invalid configuration. */
     private fun open(): String? {
         val token = ++connection
+        opens.addLast(platform.elapsedMs())
         events = LiveTranslateEvents()
+        markers.clear()
         val next = platform.transport(Listener(token))
         try {
             next.connect(config, key)
@@ -248,9 +314,19 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         return null
     }
 
+    /** The earliest time a connection may open: after a rate-limit wait, and within the per-minute budget. */
+    private fun earliestOpen(): Long {
+        val now = platform.elapsedMs()
+        while (opens.isNotEmpty() && opens.first() <= now - CONNECTION_WINDOW_MS) opens.removeFirst()
+        val window = if (opens.size >= MAX_CONNECTIONS_PER_WINDOW) opens[opens.size - MAX_CONNECTIONS_PER_WINDOW] + CONNECTION_WINDOW_MS else now
+        return maxOf(now, window, limitedUntil)
+    }
+
     private fun dropTransport() {
         retry?.cancel()
         retry = null
+        ticker?.cancel()
+        ticker = null
         transport?.cancel()
         transport = null
         connection++
@@ -265,8 +341,8 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             if (token == connection) received(event)
         }
 
-        override fun onEnd(error: String?, recoverable: Boolean) {
-            if (token == connection) ended(error, recoverable)
+        override fun onEnd(error: String?, recoverable: Boolean, cause: EndCause) {
+            if (token == connection) ended(error, recoverable, cause)
         }
     }
 
@@ -277,7 +353,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             buffering = true
             gap.clear()
             gapBytes = 0
-            slow = false
+            resetShedding()
             ++capture
         }
         try {
@@ -292,7 +368,10 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         capturing = true
     }
 
-    /** Speech captured before this connection was ready goes first, in order; then chunks go straight to it. */
+    /**
+     * The last [CATCH_UP_MS] of speech captured before this connection was ready goes first, in order (the gap
+     * buffer keeps no more than that); then chunks go straight to it at the capture pace.
+     */
     private fun attach(current: LiveTransport) {
         synchronized(audioLock) {
             while (gap.isNotEmpty()) {
@@ -300,9 +379,17 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             }
             gap.clear()
             gapBytes = 0
+            resetShedding()
             buffering = false
             live = current
         }
+    }
+
+    /** Under [audioLock]. */
+    private fun resetShedding() {
+        shedding = false
+        droppedBytes = 0
+        stallReported = false
     }
 
     private fun ready() {
@@ -316,8 +403,18 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             }
             SessionState.RECONNECTING -> {
                 attach(current)
-                stable = platform.schedule(STABLE_MS) { attempts = 0 }
-                update { it.copy(state = SessionState.RECORDING, status = recordingStatus(), notice = "已重新连接；中断期间的内容可能有缺失") }
+                stable = platform.schedule(STABLE_MS) {
+                    attempts = 0
+                    limits = 0
+                }
+                val renewed = quiet
+                quiet = false
+                update {
+                    it.copy(
+                        state = SessionState.RECORDING, status = recordingStatus(),
+                        notice = if (renewed) it.notice else "已重新连接；中断期间的内容可能有缺失",
+                    )
+                }
             }
             else -> Unit
         }
@@ -327,8 +424,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
 
     /** Capture thread. */
     private fun chunk(generation: Int, pcm: ByteArray) {
-        var full: LiveTransport? = null
-        var slowChanged: Boolean? = null
+        val notify = ArrayList<() -> Unit>(2)
         synchronized(audioLock) {
             if (generation != capture) return
             val target = live
@@ -336,30 +432,51 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
                 if (buffering) keep(pcm)
                 return
             }
-            when (target.append(pcm)) {
-                AppendResult.SENT -> {
-                    val queued = target.queuedAudioBytes
-                    if (!slow && queued > SLOW_AUDIO_BYTES) {
-                        slow = true
-                        slowChanged = true
-                    } else if (slow && queued < RECOVERED_AUDIO_BYTES) {
-                        slow = false
-                        slowChanged = false
+            val queued = target.queuedAudioBytes
+            if (shedding) {
+                if (queued >= RESUME_AUDIO_BYTES) {
+                    droppedBytes += pcm.size
+                    val now = platform.elapsedMs()
+                    if (queued < lowestQueued) {
+                        lowestQueued = queued
+                        lowestAt = now
+                    } else if (!stallReported && now - lowestAt >= STALL_MS) {
+                        stallReported = true
+                        notify += { stalled(generation, target) }
                     }
+                } else {
+                    // Drained: send again, and mark what was not sent.
+                    val dropped = droppedBytes
+                    resetShedding()
+                    notify += { resumed(generation, target, dropped) }
                 }
-                // FULL: the socket is not draining. CLOSED: it ended and onEnd is on its way.
-                // Either way keep the audio for the connection that replaces it.
-                AppendResult.FULL -> {
-                    full = target
-                    hold(pcm)
+            } else if (queued > SHED_AUDIO_BYTES) {
+                startShedding(pcm, queued)
+                notify += { congested(generation, target) }
+            }
+            if (!shedding) {
+                when (target.append(pcm)) {
+                    AppendResult.SENT -> Unit
+                    // Only a chunk larger than the transport's whole queue gets here: drop it like the others.
+                    AppendResult.FULL -> {
+                        startShedding(pcm, queued)
+                        notify += { congested(generation, target) }
+                    }
+                    // The connection ended and onEnd is on its way: keep the audio for the one that replaces it.
+                    AppendResult.CLOSED -> hold(pcm)
                 }
-                AppendResult.CLOSED -> hold(pcm)
             }
         }
-        full?.let { stuck -> platform.post { backlog(stuck) } }
-        slowChanged?.let { value ->
-            platform.post { if (generation == capture && snapshot.state == SessionState.RECORDING) update { it.copy(slowNetwork = value) } }
-        }
+        notify.forEach(platform::post)
+    }
+
+    /** Under [audioLock]. */
+    private fun startShedding(pcm: ByteArray, queued: Int) {
+        shedding = true
+        droppedBytes += pcm.size
+        lowestQueued = queued
+        lowestAt = platform.elapsedMs()
+        stallReported = false
     }
 
     private fun hold(pcm: ByteArray) {
@@ -371,13 +488,34 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     private fun keep(pcm: ByteArray) {
         gap.addLast(pcm)
         gapBytes += pcm.size
-        while (gapBytes > MAX_GAP_AUDIO_BYTES && gap.size > 1) gapBytes -= gap.removeFirst().size
+        while (gapBytes > CATCH_UP_AUDIO_BYTES && gap.size > 1) gapBytes -= gap.removeFirst().size
     }
 
-    private fun backlog(stuck: LiveTransport) {
-        if (stuck !== transport || snapshot.state != SessionState.RECORDING) return
-        val message = "网络发送积压过多，已停止录音；已有文字已保留"
-        if (autoReconnect) interrupt(message) else end(message)
+    private fun current(generation: Int, target: LiveTransport) =
+        generation == capture && target === transport && snapshot.state == SessionState.RECORDING
+
+    /** The uplink backlog passed [SHED_AUDIO_BYTES]: audio is being dropped. */
+    private fun congested(generation: Int, target: LiveTransport) {
+        if (current(generation, target)) update { it.copy(slowNetwork = true) }
+    }
+
+    /** Sending resumed after [dropped] bytes were not sent: mark the gap where it happened. */
+    private fun resumed(generation: Int, target: LiveTransport, dropped: Long) {
+        if (!current(generation, target)) return
+        val seconds = ((dropped + 500L * BYTES_PER_MS) / (1000L * BYTES_PER_MS)).toInt().coerceAtLeast(1)
+        markers += events.order.lastOrNull() to SubtitleRow("congestion:${markerCount++}", "", true, "", true, congestionMarker(seconds))
+        update { it.copy(slowNetwork = false) }
+        publish()
+    }
+
+    /** The backlog has not gone down for [STALL_MS]: the connection is not usable any more. */
+    private fun stalled(generation: Int, target: LiveTransport) {
+        if (!current(generation, target)) return
+        if (autoReconnect) {
+            interrupt("网络发送长时间停滞", "上行发送停滞超过 ${STALL_MS / 1000} 秒")
+        } else {
+            end("网络发送长时间停滞，已停止录音；已有文字已保留")
+        }
     }
 
     private fun received(event: JSONObject) {
@@ -396,50 +534,108 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         }
         // A long connection keeps only its newest rows addressable by ID.
         val order = events.order
-        for (id in order.take((order.size - MAX_ACTIVE_ROWS).coerceAtLeast(0))) {
+        val retiring = order.take((order.size - MAX_ACTIVE_ROWS).coerceAtLeast(0))
+        if (retiring.isNotEmpty()) history.addAll(markersAfter(null))
+        for (id in retiring) {
             events.rows[id]?.let { row -> subtitle(row)?.let(history::add) }
+            history.addAll(markersAfter(id))
             events.retire(id)
         }
         publish()
     }
 
-    private fun ended(error: String?, recoverable: Boolean) {
+    /** Removes and returns the congestion markers anchored after [id]. */
+    private fun markersAfter(id: String?): List<SubtitleRow> {
+        if (markers.none { it.first == id }) return emptyList()
+        val (anchored, rest) = markers.partition { it.first == id }
+        markers.clear()
+        markers.addAll(rest)
+        return anchored.map { it.second }
+    }
+
+    private fun ended(error: String?, recoverable: Boolean, cause: EndCause) {
+        val limited = recoverable && cause.kind == EndCause.Kind.RATE_LIMITED
+        if (limited) limits++
+        if (limited && limits <= RATE_LIMIT_DELAYS_MS.size) limitedUntil = platform.elapsedMs() + RATE_LIMIT_DELAYS_MS[limits - 1]
+        val again = recoverable && (!limited || limits <= RATE_LIMIT_DELAYS_MS.size)
+        val failure = if (limited && !again) "LiveTranslate 持续限流，已停止录音；已有文字已保留" else error
         when (snapshot.state) {
-            SessionState.RECORDING -> if (recoverable && autoReconnect) interrupt(error.orEmpty()) else end(error)
-            SessionState.RECONNECTING -> if (recoverable) {
-                lastError = error.orEmpty()
-                dropTransport()
-                attempt()
-            } else {
-                end(error)
+            SessionState.RECORDING -> when {
+                !again || !autoReconnect -> end(failure)
+                cause.kind == EndCause.Kind.NO_RESULT -> renew(cause.detail)
+                else -> interrupt(error.orEmpty(), cause.detail, counted = !limited)
             }
-            else -> end(error)
+            SessionState.RECONNECTING -> if (again) {
+                lastError = error.orEmpty()
+                lastCause = cause.detail
+                dropTransport()
+                if (quiet) {
+                    // The quiet replacement failed too: from here on it is an ordinary break.
+                    quiet = false
+                    markBreak()
+                    publish()
+                }
+                attempt(counted = !limited)
+            } else {
+                end(failure)
+            }
+            else -> end(failure)
         }
     }
 
-    /** The connection of a running session is gone: keep capturing and replace it. */
-    private fun interrupt(reason: String) {
+    private fun markBreak() {
+        if (history.lastOrNull()?.marker != BREAK_MARKER) {
+            history.add(SubtitleRow("break:$epoch", "", true, "", true, BREAK_MARKER))
+        }
+    }
+
+    /** Stops sending to the current connection; capture keeps running into the gap buffer. */
+    private fun detach() {
         stable?.cancel()
         stable = null
         synchronized(audioLock) {
             live = null
             buffering = true
-            slow = false
+            resetShedding()
         }
         dropTransport()
         freeze()
-        if (history.lastOrNull()?.marker.isNullOrEmpty()) {
-            history.add(SubtitleRow("break:$epoch", "", true, "", true, BREAK_MARKER))
-        }
-        lastError = reason
-        update { it.copy(state = SessionState.RECONNECTING, slowNetwork = false, notice = "") }
-        publish()
-        attempt()
     }
 
-    private fun attempt(immediately: Boolean = false) {
+    /** The connection of a running session is gone: keep capturing and replace it. */
+    private fun interrupt(reason: String, cause: String = reason, counted: Boolean = true) {
+        detach()
+        markBreak()
+        quiet = false
+        lastError = reason
+        lastCause = cause
+        update { it.copy(state = SessionState.RECONNECTING, slowNetwork = false, notice = "") }
+        publish()
+        attempt(counted = counted)
+    }
+
+    /**
+     * The service closed a connection that heard nothing it could transcribe for 60 s (a long silence):
+     * replace it right away without a marker; this is not a failed attempt.
+     */
+    private fun renew(cause: String) {
+        detach()
+        quiet = true
+        lastCause = cause
+        update { it.copy(state = SessionState.RECONNECTING, slowNetwork = false) }
+        publish()
+        attempt(counted = false)
+    }
+
+    /**
+     * Schedules the next connection: after the backoff for a [counted] attempt (immediately otherwise), but never
+     * before a rate-limit wait ends or while [MAX_CONNECTIONS_PER_WINDOW] connections were opened in the last minute.
+     */
+    private fun attempt(immediately: Boolean = false, counted: Boolean = true) {
         retry?.cancel()
         retry = null
+        ticker?.cancel()
+        ticker = null
         if (!online) {
             update { it.copy(status = "网络已断开，等待恢复…") }
             if (giveUp == null) {
@@ -447,18 +643,44 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             }
             return
         }
-        if (attempts >= RECONNECT_DELAYS_MS.size) {
-            end("多次重新连接失败，已停止录音。$lastError")
-            return
+        var delay = 0L
+        if (counted) {
+            if (attempts >= RECONNECT_DELAYS_MS.size) {
+                end("多次重新连接失败，已停止录音。$lastError")
+                return
+            }
+            delay = if (immediately) 0 else RECONNECT_DELAYS_MS[attempts]
+            attempts++
         }
-        val delay = if (immediately) 0 else RECONNECT_DELAYS_MS[attempts]
-        attempts++
-        update { it.copy(status = "连接中断，正在重新连接（第 $attempts 次）…") }
-        retry = platform.schedule(delay) {
+        val now = platform.elapsedMs()
+        val at = maxOf(now + delay, earliestOpen())
+        retry = platform.schedule(at - now) {
             retry = null
+            ticker?.cancel()
+            ticker = null
             open()?.let(::end)
         }
+        when {
+            at > now + delay -> countdown(at, if (at == limitedUntil) "服务限流" else "连接过于频繁")
+            quiet -> update { it.copy(status = "长时间无识别结果，正在续接连接…") }
+            else -> update { it.copy(status = reconnectStatus()) }
+        }
     }
+
+    private fun reconnectStatus(): String {
+        val base = if (attempts > 0) "连接中断，正在重新连接（第 $attempts 次）…" else "连接中断，正在重新连接…"
+        return if (lastCause.isEmpty()) base else "$base 原因：$lastCause"
+    }
+
+    /** "服务限流，N 秒后重试", updated every second until the connection opens at [at]. */
+    private fun countdown(at: Long, label: String) {
+        val left = at - platform.elapsedMs()
+        val shown = seconds(left)
+        update { it.copy(status = "$label，$shown 秒后重试") }
+        if (shown > 1) ticker = platform.schedule(left - (shown - 1) * 1000L) { countdown(at, label) }
+    }
+
+    private fun seconds(ms: Long) = ((ms + 999) / 1000).toInt()
 
     private fun startSpeech() {
         try {
@@ -481,7 +703,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             buffering = false
             gap.clear()
             gapBytes = 0
-            slow = false
+            resetShedding()
         }
     }
 
@@ -492,6 +714,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         stable = null
         stopCapture()
         dropTransport()
+        quiet = false
         playback = null
         freeze()
         // Speech already received plays out; a new session or "stop playback" cuts it short.
@@ -511,6 +734,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     private fun freeze() {
         history.addAll(currentRows(frozen = true))
         events = LiveTranslateEvents()
+        markers.clear()
         epoch++
     }
 
@@ -525,7 +749,13 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
      * (its source is settled as empty); while live, that source may still arrive and re-key the row.
      */
     private fun currentRows(frozen: Boolean = false): List<SubtitleRow> {
-        val rows = events.order.mapNotNull { id -> events.rows[id]?.let(::subtitle) }
+        val rows = ArrayList<SubtitleRow>()
+        val anchored = markers.groupBy({ it.first }, { it.second })
+        anchored[null]?.let(rows::addAll)
+        for (id in events.order) {
+            events.rows[id]?.let(::subtitle)?.let(rows::add)
+            anchored[id]?.let(rows::addAll)
+        }
         // Translations whose source association has not arrived yet.
         val pending = events.unmatchedOutputs.map { (id, part) ->
             SubtitleRow("$epoch:out:$id", "", frozen && part.done, part.text, part.done)

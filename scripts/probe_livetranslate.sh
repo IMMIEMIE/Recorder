@@ -6,6 +6,13 @@
 #
 #   scripts/probe_livetranslate.sh                  # Chinese speech → English
 #   PROBE_SOURCE=en PROBE_TARGET=zh scripts/probe_livetranslate.sh
+#   PROBE_BURST_MS=5000 scripts/probe_livetranslate.sh             # 5 s sent at once first, then real time
+#   PROBE_SESSION=1 scripts/probe_livetranslate.sh                 # through the app's LiveSession (one pass)
+#   PROBE_SESSION=1 PROBE_BURST_MS=5000 scripts/probe_livetranslate.sh  # … with 5 s buffered before the first
+#                                                                       #   connection is used, like a reconnect
+#
+# PROBE_SESSION=1 runs the app's session logic (send only the last second of buffered speech, drop audio while
+# the uplink is backed up, reconnect only when it stalls) and reports reconnects, dropped audio and markers.
 #
 # Needs your LiveTranslate API key: set LIVETRANSLATE_API_KEY, or type it at the prompt (not echoed, not
 # saved). LIVETRANSLATE_ENDPOINT overrides the default service address. Uses about 5 minutes of audio on the
@@ -49,16 +56,20 @@ make_wav "$fast_rate" "$out/fast.wav"
 endpoint_arg=()
 [ -n "${LIVETRANSLATE_ENDPOINT:-}" ] && endpoint_arg=("--endpoint=$LIVETRANSLATE_ENDPOINT")
 
+extra_args=()
+# Plain mode: buffered speech sent at once, then real time (the 0.5.0 app after connecting or reconnecting).
+# Session mode: the first connection is held back this long, so the session's own catch-up rule applies.
+[ -n "${PROBE_BURST_MS:-}" ] && extra_args+=("--burst-ms=$PROBE_BURST_MS")
+[ -n "${PROBE_SESSION:-}" ] && extra_args+=("--session")
+
 probe() { # <label> <wav> <speech on|off>
-  (cd android && ./gradlew -q -PcoreOnly=true :core:liveProbe --args="--audio=$PWD/../$2 --language=$target --speech=$3 --label=$1 --json=$PWD/../$out/$1.json ${endpoint_arg[*]:-}")
+  (cd android && ./gradlew -q -PcoreOnly=true :core:liveProbe --args="--audio=$PWD/../$2 --language=$target --speech=$3 --label=$1 --json=$PWD/../$out/$1.json ${endpoint_arg[*]:-} ${extra_args[*]:-}")
 }
-if [ -n "${PROBE_BURST_MS:-}" ]; then
-  # Like the app after connecting or reconnecting: buffered speech sent at once, then real time.
-  probe() { # <label> <wav> <speech on|off>
-    (cd android && ./gradlew -q -PcoreOnly=true :core:liveProbe --args="--audio=$PWD/../$2 --language=$target --speech=$3 --label=$1 --burst-ms=$PROBE_BURST_MS --json=$PWD/../$out/$1.json ${endpoint_arg[*]:-}")
-  }
-  probe "burst-$PROBE_BURST_MS" "$out/normal.wav" off
-  echo "结果已保存到 $out/burst-$PROBE_BURST_MS.json"
+if [ -n "${PROBE_SESSION:-}" ] || [ -n "${PROBE_BURST_MS:-}" ]; then
+  label="burst-${PROBE_BURST_MS:-0}"
+  [ -n "${PROBE_SESSION:-}" ] && label="session${PROBE_BURST_MS:+-burst-$PROBE_BURST_MS}"
+  probe "$label" "$out/normal.wav" off
+  echo "结果已保存到 $out/$label.json"
   exit 0
 fi
 probe normal "$out/normal.wav" off

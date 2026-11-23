@@ -49,6 +49,7 @@ class LiveTranslateClientTest {
         @Volatile var ended = false
         @Volatile var error: String? = null
         @Volatile var recoverable = false
+        @Volatile var cause = EndCause()
         @Volatile var bytes = 0
         @Volatile var audioBytes = 0
         @Volatile var callbackCount = 0
@@ -63,9 +64,10 @@ class LiveTranslateClientTest {
             runCatching { decoder.consume(event) }.getOrNull()?.let { audioBytes += it.size }
             if (event.optString("type") == "fixture.audio_bytes") bytes = event.getInt("count")
         }
-        override fun onEnd(error: String?, recoverable: Boolean) {
+        override fun onEnd(error: String?, recoverable: Boolean, cause: EndCause) {
             this.error = error
             this.recoverable = recoverable
+            this.cause = cause
             callbackCount++
             ended = true
         }
@@ -159,6 +161,47 @@ class LiveTranslateClientTest {
         unauthorized.connect("/unauthorized")
         unauthorized.waitFor { unauthorized.ended }
         assertTrue(unauthorized.error!!.contains("API Key 无效"))
+        assertEquals("握手失败：HTTP 401", unauthorized.cause.detail)
+
+        val dropped = Probe()
+        dropped.connect("/disconnect")
+        dropped.waitFor { dropped.ready }
+        dropped.client.append(ByteArray(2))
+        dropped.waitFor { dropped.ended }
+        assertEquals(EndCause.Kind.OTHER, dropped.cause.kind)
+        assertTrue("a short cause for the status: ${dropped.cause.detail}", dropped.cause.detail.isNotEmpty() && !dropped.cause.detail.contains("mock-only"))
+    }
+
+    @Test
+    fun rateLimitAndIdleClosesAreClassified() {
+        // The service closes with 1007 and a rate-limit reason when connections come too often.
+        val limited = Probe()
+        limited.connect("/rate-limited")
+        limited.waitFor { limited.ended }
+        assertFalse(limited.ready)
+        assertEquals(LiveTranslateClient.RATE_LIMITED_ERROR, limited.error)
+        assertTrue(limited.recoverable)
+        assertEquals(EndCause.Kind.RATE_LIMITED, limited.cause.kind)
+        assertTrue(limited.cause.detail, limited.cause.detail.startsWith("服务限流：1007"))
+
+        // After 60 s of audio without a result the service reports an error and closes the session.
+        val idle = Probe()
+        idle.connect("/no-semantic")
+        idle.waitFor { idle.ready }
+        idle.client.append(ByteArray(640))
+        idle.waitFor { idle.ended }
+        assertEquals(LiveTranslateClient.NO_RESULT_ERROR, idle.error)
+        assertTrue(idle.recoverable)
+        assertEquals(EndCause.Kind.NO_RESULT, idle.cause.kind)
+
+        // The same reason as a close frame only.
+        val closed = Probe()
+        closed.connect("/no-semantic-close")
+        closed.waitFor { closed.ready }
+        closed.client.append(ByteArray(640))
+        closed.waitFor { closed.ended }
+        assertEquals(EndCause.Kind.NO_RESULT, closed.cause.kind)
+        assertTrue(closed.recoverable)
     }
 
     /** The session engine on real threads: one session thread, the test thread as the capture thread. */

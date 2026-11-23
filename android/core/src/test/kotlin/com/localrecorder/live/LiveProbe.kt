@@ -17,7 +17,11 @@ import kotlin.random.Random
  *
  * Run it through `scripts/probe_livetranslate.sh`. The key comes from `LIVETRANSLATE_API_KEY` and is never
  * printed or written. Arguments: `--audio=<wav> [--language=en] [--endpoint=wss://…] [--speech=on]
- * [--label=…] [--json=<summary.json>]`.
+ * [--label=…] [--json=<summary.json>] [--burst-ms=N] [--session]`.
+ *
+ * `--session` runs the WAV through the app's [LiveSession] instead (see [LiveSessionProbe]): its catch-up limit,
+ * load shedding and reconnects, as on the phone. There `--burst-ms=N` holds the first connection's readiness back
+ * by N ms, so N ms of speech waits in the session's buffer like after a reconnect.
  */
 fun main(args: Array<String>) {
     val options = args.associate { it.removePrefix("--").substringBefore('=') to it.substringAfter('=', "") }
@@ -32,7 +36,12 @@ fun main(args: Array<String>) {
         audioOutput = options["speech"] == "on",
     ).normalized(allowLocalhost)
     val burstMs = options["burst-ms"]?.toIntOrNull() ?: 0
-    val result = LiveProbe(config, key, readWav(audio), options["label"] ?: audio.name, allowLocalhost, burstMs).run()
+    val label = options["label"] ?: audio.name
+    val result = if ("session" in options) {
+        LiveSessionProbe(config, key, readWav(audio), label, allowLocalhost, holdReadyMs = burstMs.toLong()).run()
+    } else {
+        LiveProbe(config, key, readWav(audio), label, allowLocalhost, burstMs).run()
+    }
     options["json"]?.takeIf { it.isNotBlank() }?.let { File(it).writeText(result.toString(2)) }
 }
 
@@ -67,6 +76,7 @@ private class LiveProbe(
     private var endAt = -1L
     private var endError: String? = null
     private var endRecoverable = false
+    private var endCause = ""
     private val diagnostics = mutableListOf<String>()
     private val types = sortedMapOf<String, Int>()
     private var downlinkChars = 0L
@@ -131,7 +141,7 @@ private class LiveProbe(
             maxLateness = maxOf(maxLateness, now() - due)
             val queued = client.queuedAudioBytes
             maxQueue = maxOf(maxQueue, queued)
-            if (queued > LiveSession.SLOW_AUDIO_BYTES) slowChunks++
+            if (queued > LiveSession.SHED_AUDIO_BYTES) slowChunks++
             when (result) {
                 AppendResult.FULL -> full++
                 AppendResult.CLOSED -> closed++
@@ -143,8 +153,9 @@ private class LiveProbe(
     private fun report(client: LiveTranslateClient) {
         val line = synchronized(lock) {
             val sent = chunksSent / 10.0
-            val queueMs = client.queuedAudioBytes / (LiveTranslateConfig.INPUT_SAMPLE_RATE * 2 / 1000)
-            val text = "  ${"%6.1f".format(now() / 1000.0)} s  audio sent ${"%5.1f".format(sent)} s  queue ${"%5d".format(queueMs)} ms" +
+            // The backlog only matters while audio is still being sent; after session.finish it is just the tail draining.
+            val queue = if (finishSentAt >= 0) "sending done  " else "queue ${"%5d".format(client.queuedAudioBytes / BYTES_PER_MS)} ms"
+            val text = "  ${"%6.1f".format(now() / 1000.0)} s  audio sent ${"%5.1f".format(sent)} s  $queue" +
                 "  events/s ${"%3d".format(windowEvents)}  down ${"%5.1f".format(windowChars / 1024.0)} KB/s"
             windowEvents = 0
             windowChars = 0
@@ -189,11 +200,12 @@ private class LiveProbe(
             }
         }
 
-        override fun onEnd(error: String?, recoverable: Boolean) {
+        override fun onEnd(error: String?, recoverable: Boolean, cause: EndCause) {
             synchronized(lock) {
                 endAt = now()
                 endError = error
                 endRecoverable = recoverable
+                endCause = "${cause.kind} ${cause.detail}".trim()
             }
             ended.countDown()
         }
@@ -228,6 +240,7 @@ private class LiveProbe(
             .put("end_ms", endAt)
             .put("end_error", endError ?: JSONObject.NULL)
             .put("end_recoverable", endRecoverable)
+            .put("end_cause", endCause)
             .put("tail_ms", if (finishSentAt >= 0 && endAt >= 0) endAt - finishSentAt else JSONObject.NULL)
             .put("transport_diagnostics", JSONArray(diagnostics))
             .put("utterances", sourceDone.size)
@@ -240,7 +253,7 @@ private class LiveProbe(
             .put("event_counts", JSONObject(types as Map<*, *>))
         println("[$label] summary")
         println("  handshake ${json.opt("handshake_ms")} ms; ${sourceDone.size} utterances; downlink ${"%.0f".format(downlinkChars / 1024.0)} KB")
-        println("  uplink backlog max ${"%.1f".format(queueSeconds)} s (app warns above 3 s, reconnects at ~10 s); chunks over 3 s: $slowChunks; FULL: $full; CLOSED: $closed; sender late max ${maxLateness} ms")
+        println("  uplink backlog max ${"%.1f".format(queueSeconds)} s (the app drops audio above 1.5 s until it is below 0.3 s); chunks over 1.5 s: $slowChunks; FULL: $full; CLOSED: $closed; sender late max ${maxLateness} ms")
         println("  first source text after speech start: ${describe(partialLag)}")
         println("  source final after speech end:        ${describe(finalLag)}")
         println("  first translation after speech start: ${describe(firstTranslationLag)}")
@@ -251,21 +264,23 @@ private class LiveProbe(
     }
 }
 
-private fun stats(values: List<Long>): JSONObject {
+internal const val BYTES_PER_MS = LiveTranslateConfig.INPUT_SAMPLE_RATE * 2 / 1000
+
+internal fun stats(values: List<Long>): JSONObject {
     if (values.isEmpty()) return JSONObject().put("n", 0)
     val sorted = values.sorted()
     fun pct(p: Double) = sorted[((sorted.size - 1) * p).toInt()]
     return JSONObject().put("n", sorted.size).put("p50", pct(0.5)).put("p90", pct(0.9)).put("max", sorted.last())
 }
 
-private fun describe(values: List<Long>): String {
+internal fun describe(values: List<Long>): String {
     if (values.isEmpty()) return "n/a"
     val sorted = values.sorted()
     return "p50 ${sorted[(sorted.size - 1) / 2]} ms, p90 ${sorted[((sorted.size - 1) * 0.9).toInt()]} ms, max ${sorted.last()} ms (n=${sorted.size})"
 }
 
 /** Low-level noise instead of digital zero: a real microphone never delivers exact silence. */
-private fun roomTone(buffer: ByteArray) {
+internal fun roomTone(buffer: ByteArray) {
     val random = Random(7)
     for (i in buffer.indices step 2) {
         val sample = random.nextInt(-24, 25)

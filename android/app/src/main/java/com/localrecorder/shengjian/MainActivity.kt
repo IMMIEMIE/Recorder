@@ -484,7 +484,7 @@ private fun TranscriptScreen(
             }
             if (session.error.isNotEmpty()) Message(session.error, MaterialTheme.colorScheme.errorContainer, controller::dismissMessages)
             if (session.notice.isNotEmpty()) Message(session.notice, MaterialTheme.colorScheme.tertiaryContainer, controller::dismissMessages)
-            if (session.slowNetwork) Message("网络较慢，音频发送有积压，字幕可能延迟。", MaterialTheme.colorScheme.tertiaryContainer) {}
+            if (session.slowNetwork) Message("网络较慢，音频发送有积压，暂停上传期间的语音不会翻译。", MaterialTheme.colorScheme.tertiaryContainer) {}
             Subtitles(rows, trimmed = ui.viewingRecording && session.trimmed, emptyText = emptyText, modifier = Modifier.weight(1f))
         }
     }
