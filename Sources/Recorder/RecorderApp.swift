@@ -149,7 +149,7 @@ struct MainView: View {
                     } label: {
                         Label(model.liveEnabled ? "译为\(model.liveConfiguration.languageName)" : (model.translationEnabled ? "译为\(model.translationTarget)" : "翻译"), systemImage: "character.bubble")
                     }.fixedSize().help(model.translationSummary)
-                    Button { ai.prepare(text: model.joinedText); showAI = true } label: { Label("AI 提问", systemImage: "sparkles") }
+                    Button { ai.prepare(text: model.joinedText, recordingID: model.viewedSession?.id ?? model.activeSessionID); showAI = true } label: { Label("AI 提问", systemImage: "sparkles") }
                         .disabled(!model.displayedHasText || model.liveEnabled)
                     if model.livePlaying { Button("停止译音", systemImage: "speaker.slash") { model.stopLivePlayback() } }
                     Button { model.exportRequest = SessionExportRequest(sessionID: nil) } label: { Label("导出…", systemImage: "square.and.arrow.up") }

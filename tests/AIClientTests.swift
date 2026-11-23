@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 struct TestFailure: Error { let message: String }
 func expect(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
@@ -13,7 +14,56 @@ actor Output {
     func append(_ text: String) { value += text }
 }
 @main struct Tests {
+    static func markdown() throws {
+        let source = """
+        ## **结论**
+
+        3. *确认* `value`
+           - 第二层
+        4. [来源](https://example.org)
+
+        > 引用
+
+        ```swift
+          print("好")
+        ```
+
+        | 项目 | 数量 |
+        | --- | --- |
+        | | 一 |
+
+        ![示意](https://example.org/pixel) [本地](file:///tmp/private) [脚本](javascript:alert)
+
+        ---
+        """
+        let blocks = AIAnswerBlock.parse(source)
+        let heading = try require(blocks.first, "heading is missing")
+        try expect(heading.style == .heading(2) && String(heading.text.characters) == "结论", "Markdown heading")
+        try expect(heading.text.runs.first?.inlinePresentationIntent?.contains(.stronglyEmphasized) == true, "bold")
+        try expect(blocks.compactMap(\.marker) == ["3.", "•", "4."], "ordered and nested list markers")
+        try expect(blocks.contains { $0.listDepth == 2 }, "nested list indent")
+        let runs = blocks.flatMap { Array($0.text.runs) }
+        try expect(runs.contains { $0.inlinePresentationIntent?.contains(.emphasized) == true }, "emphasis")
+        try expect(runs.contains { $0.inlinePresentationIntent?.contains(.code) == true }, "inline code")
+        try expect(blocks.contains { $0.quoted && String($0.text.characters) == "引用" }, "quote")
+        try expect(blocks.contains { $0.style == .code && String($0.text.characters) == "  print(\"好\")\n" }, "code indent and newline")
+        try expect(blocks.contains { $0.style == .tableRow(header: true) && $0.cells.count == 2 }, "table header")
+        try expect(blocks.contains { $0.cells.map { String($0.characters) } == ["", "一"] }, "empty table cell")
+        try expect(blocks.last?.style == .divider, "thematic break")
+        try expect(runs.compactMap(\.link).map(\.absoluteString) == ["https://example.org"], "safe link only")
+        try expect(runs.allSatisfy { $0.imageURL == nil }, "no image attachment")
+        try expect(blocks.contains { String($0.text.characters).contains("示意 本地 脚本") }, "inert image alt and unsafe link labels")
+        try expect(AIAnswerBlock.parse("```\npartial").first?.style == .code, "unfinished streaming fence")
+        try expect(AIAnswerBlock.parse("普通\n\n文本").map { String($0.text.characters) } == ["普通", "文本"], "plain paragraphs")
+    }
+
+    static func require<T>(_ value: T?, _ message: String) throws -> T {
+        guard let value else { throw TestFailure(message: message) }
+        return value
+    }
+
     @MainActor static func main() async throws {
+        try markdown()
         for endpoint in ["http://example.com/v1/chat/completions", "https://user:password@example.com/chat", "https://example.com/chat?key=x", "file:///tmp/test", "https://example.com/"] {
             try rejects { _ = try AIServiceConfiguration(endpoint: endpoint, model: "model").url() }
         }
@@ -66,14 +116,21 @@ actor Output {
         try rejects { _ = try AIStreamEvent.parse(#"{"error":{"message":"secret"}}"#) }
         guard let base = ProcessInfo.processInfo.environment["RECORDER_MOCK_URL"] else { throw TestFailure(message: "Use scripts/test_ai.sh") }
         func config(_ path: String) -> AIServiceConfiguration { .init(endpoint: base + path, model: "mock-model") }
+        try expect(try AIStreamEvent.parse(#"{"choices":[{"delta":{"reasoning_content":null,"reasoning":"","reasoning_details":[{"type":"unknown","summary":"private"}]}}]}"#).reasoning == nil, "ignore null or unknown reasoning")
         let output = Output()
         try await AIClient().stream(config: config("/ok"), key: "mock-key", instruction: "总结", text: "synthetic test") { text in await output.append(text) }
         let result = await output.value
         try expect(result == "你好，世界🌏", "SSE Unicode fragments and keepalive")
-        for path in ["/unauthorized", "/redirect", "/malformed", "/truncated", "/length"] {
+        for path in ["/unauthorized", "/redirect", "/malformed", "/truncated", "/length", "/reasoning-only", "/summary-limit"] {
             var failed = false
             do { try await AIClient().stream(config: config(path), key: "mock-key", instruction: "总结", text: "synthetic test") { _ in } }
-            catch { failed = true; try expect(!error.localizedDescription.contains("mock-key"), "secret in error") }
+            catch {
+                failed = true
+                let message = error.localizedDescription
+                try expect(!message.contains("mock-key"), "secret in error")
+                if path == "/summary-limit" { try expect(message.contains("返回内容过长"), "summary counts toward the output bound") }
+                if path == "/reasoning-only" { try expect(message.contains("未返回文本"), "public summary alone is not an answer") }
+            }
             try expect(failed, "Expected failure for \(path)")
         }
         let task = Task { try await AIClient().stream(config: config("/slow"), key: "mock-key", instruction: "总结", text: "test") { _ in } }
@@ -97,6 +154,45 @@ actor Output {
             }
             throw TestFailure(message: "API translation queue timed out")
         }
+        var path = "/reasoning"
+        let workspace = AIWorkspace { (config(path), "mock-key") }
+        workspace.prepare(text: "synthetic", recordingID: "first")
+        var statuses: [String] = []
+        let observation = workspace.$status.sink { statuses.append($0) }
+        defer { observation.cancel() }
+        workspace.send()
+        try await waitFor { !workspace.running }
+        try expect(workspace.error.isEmpty && workspace.status == "完成", "workspace completion")
+        try expect(statuses.contains("服务正在推理…") && statuses.contains("正在生成回答…"), "provider activity and answer status")
+        try expect(workspace.reasoningSummary == "已整理要点。", "only public summary chunks reach the workspace")
+        let markdownAnswer = "## 结论\n\n- 完成"
+        try expect(workspace.result == markdownAnswer, "copy and export source contains answer Markdown only")
+
+        path = "/late"
+        workspace.send()
+        try await waitFor { workspace.result == markdownAnswer }
+        workspace.cancel()
+        try expect(!workspace.running && workspace.result == markdownAnswer, "cancel retains partial Markdown")
+        workspace.question = "previous recording question"
+        workspace.prepare(text: "synthetic", recordingID: "second")
+        try expect(workspace.result.isEmpty && workspace.question.isEmpty && workspace.reasoningSummary.isEmpty, "same transcript in another recording resets private state")
+        statuses.removeAll()
+        path = "/ok"
+        workspace.send()
+        try await waitFor { !workspace.running }
+        try await Task.sleep(for: .milliseconds(600))
+        try expect(workspace.result == "你好，世界🌏" && workspace.reasoningSummary.isEmpty, "cancelled response cannot append to the new request")
+        try expect(!statuses.contains("服务正在推理…"), "no invented reasoning state")
+
+        path = "/length"
+        workspace.send()
+        try await waitFor { !workspace.running }
+        try expect(workspace.status == "未完成" && !workspace.error.isEmpty && workspace.result == "partial", "partial answer survives error")
+
+        queue.enqueue(job("with-reasoning", path: "/reasoning"))
+        try await waitFor { updates.contains { $0.0 == "with-reasoning" && $0.2 } }
+        try expect(updates.last?.1 == markdownAnswer, "translation queue receives answer only")
+        updates.removeAll()
         queue.enqueue(job("session-one:1"))
         queue.enqueue(job("session-two:1"))
         try await waitFor { updates.filter { $0.2 }.count == 2 }
@@ -122,6 +218,7 @@ actor Output {
         queue.enqueue(job("after-cancel"))
         try await waitFor { updates.contains { $0.0 == "after-cancel" && $0.2 } }
         try expect(APITranslationQueue.instruction(target: "English").contains("English"), "translation target in prompt")
+        print("PASS: native Markdown block and inline formatting, safe links and inert images, public summaries, private reasoning isolation, cancellation and recording boundaries")
         print("PASS: persistent API profiles, corruption recovery, translation queue ordering, streaming, failures, backlog and cancellation")
         print("PASS: endpoint validation, credential isolation, request encoding, input bounds, SSE parser, Unicode streaming, HTTP errors, redirect rejection, malformed/truncated responses, output limit and cancellation")
     }
