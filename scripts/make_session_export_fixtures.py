@@ -44,6 +44,9 @@ def entries(session, mode):
         if row["kind"] == "break":
             out.append(("marker", BREAK_MARKER))
             continue
+        switch = clean(row.get("language_switch") or "")
+        if switch:
+            out.append(("marker", "译文语言已切换为 " + switch))
         source, translation = clean(row["source"]), clean(row["translation"])
         if mode == "source":
             parts = [("source", source)] if source else []
@@ -52,6 +55,10 @@ def entries(session, mode):
         else:
             parts = [p for p in (("source", source), ("translation", translation)) if p[1]]
         if parts:
+            speaker = {"A": "A", "B": "B", "unknown": "未识别"}.get(row.get("speaker"))
+            if speaker:
+                role, text = parts[0]
+                parts[0] = (role, speaker + "：" + text)
             out.append(("row", parts))
     return out
 
@@ -78,7 +85,7 @@ def export_md(session, mode):
     blocks = []
     for kind, value in entries(session, mode):
         if kind == "marker":
-            blocks.append(f"*【{value}】*")
+            blocks.append(f"*【{md_escape(value)}】*")
             continue
         lines = []
         for part, text in value:
@@ -152,13 +159,34 @@ def title_cases():
     return [{"created_at_ms": created, "rows": rows, "expected": default_title(created, rows)} for rows in cases]
 
 
+def dialogue_fixture():
+    session = session_fixture()
+    session["title"] = "语言切换与对话"
+    session["rows"] = [
+        {"segment": 0, "kind": "text", "offset_ms": i * 1000, "source": source, "translation": translated, **fields}
+        for i, (source, translated, fields) in enumerate([
+            ("Good morning.", "早上好。", {"target_language": "zh"}),
+            ("早上好。", "Good morning.", {"target_language": "en", "language_switch": "English"}),
+            ("早上好。", "おはよう。", {"target_language": "ja", "source_language": "zh", "speaker": "A"}),
+            ("こんにちは。", "你好。", {"target_language": "zh", "source_language": "ja", "speaker": "B"}),
+            ("42", "", {"speaker": "unknown"}),
+        ])
+    ]
+    return session
+
+
+def write_fixture(directory, session):
+    (directory / "expected").mkdir(parents=True, exist_ok=True)
+    (directory / "session.json").write_text(json.dumps(session, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    for mode in MODES:
+        (directory / "expected" / f"{mode}.txt").write_text(export_txt(session, mode), encoding="utf-8")
+        (directory / "expected" / f"{mode}.md").write_text(export_md(session, mode), encoding="utf-8")
+
+
 def main():
     session = session_fixture()
-    (FIXTURES / "expected").mkdir(parents=True, exist_ok=True)
-    (FIXTURES / "session.json").write_text(json.dumps(session, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    for mode in MODES:
-        (FIXTURES / "expected" / f"{mode}.txt").write_text(export_txt(session, mode), encoding="utf-8")
-        (FIXTURES / "expected" / f"{mode}.md").write_text(export_md(session, mode), encoding="utf-8")
+    write_fixture(FIXTURES, session)
+    write_fixture(FIXTURES / "dialogue", dialogue_fixture())
     meta = {
         "zone": "Asia/Shanghai",
         "file_names": {"txt": file_name(session, "txt"), "md": file_name(session, "md")},

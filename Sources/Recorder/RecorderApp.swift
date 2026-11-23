@@ -179,15 +179,16 @@ struct MainView: View {
                                 if index > 0, item.segment != items[index - 1].segment {
                                     SessionMarker(text: "继续录制" + (model.segmentStart(item.segment).map { " " + SessionExport.stamp($0, zone: .current) } ?? ""))
                                 }
+                                if let marker = item.languages.switchMarker { SessionMarker(text: marker) }
                                 if item.isBreak { SessionMarker(text: SessionExport.breakMarker) } else {
                                 HStack(alignment: .top, spacing: 18) {
                                     Text(String(format:"%02d:%02d", Int(item.seconds) / 60, Int(item.seconds) % 60)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).frame(width: 38).padding(.top, 6)
                                     VStack(alignment: .leading, spacing: 6) {
                                         if item.incomplete { Text("此段内容可能不完整").font(.caption2).foregroundStyle(.orange) }
                                         else if !item.sourceDone { Text("识别中…").font(.caption2).foregroundStyle(.secondary) }
-                                        if !item.text.isEmpty { Text(item.text).font(.system(size: 17)).lineSpacing(7).textSelection(.enabled) }
+                                        if !item.text.isEmpty { Text(item.languages.speakerPrefix + item.text).font(.system(size: 17)).lineSpacing(7).textSelection(.enabled) }
                                         if !item.translation.isEmpty {
-                                            Text(item.translation).font(.system(size: 15)).lineSpacing(5).foregroundStyle(.secondary).textSelection(.enabled)
+                                            Text((item.text.isEmpty ? item.languages.speakerPrefix : "") + item.translation).font(.system(size: 15)).lineSpacing(5).foregroundStyle(.secondary).textSelection(.enabled)
                                         } else if item.translating {
                                             Text("翻译中…").font(.caption).foregroundStyle(.tertiary)
                                         }

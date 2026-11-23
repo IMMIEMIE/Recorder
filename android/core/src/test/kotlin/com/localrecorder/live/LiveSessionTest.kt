@@ -257,6 +257,28 @@ class LiveSessionTest {
     }
 
     @Test
+    fun oversizedCaptureDuringRecoveryAndAPacedDeliberateSwitch() {
+        val device = Device()
+        device.session.start(LiveTranslateConfig(), "mock-only")
+        device.speak(7 * 32_000, fill = 8)
+        device.transport.listener.onReady()
+        assertEquals(32_000, device.transport.audio.sumOf { it.size })
+
+        val handoff = LiveHandoffAudio(LiveHandoffAudio.Reason.LANGUAGE_SWITCH)
+        repeat(60) { handoff.append(ByteArray(CHUNK) { _ -> it.toByte() }) }
+        val packets = mutableListOf<Byte>()
+        repeat(50) {
+            val next = handoff.poll(device.now)!!
+            packets += next.first()
+            assertEquals(CHUNK, next.size)
+            assertNull("a delayed tick cannot accumulate burst credit", handoff.poll(device.now))
+            device.advance(if (it == 5) 2000 else 80)
+        }
+        assertEquals((10..59).map { it.toByte() }, packets)
+        assertNull(handoff.poll(device.now))
+    }
+
+    @Test
     fun reconnectCatchesUpOnlyTheLastSecond() {
         val device = Device()
         device.record()
@@ -809,7 +831,7 @@ class LiveSessionTest {
         assertTrue(saved.isEmpty())
         device.advance(1)
         assertEquals(1, saved.size)
-        assertEquals(listOf(SessionRow(0, SessionRow.KIND_TEXT, 500, "Hello.", "你好。")), saved.last().rows)
+        assertEquals(listOf(SessionRow(0, SessionRow.KIND_TEXT, 500, "Hello.", "你好。", targetLanguage = "zh")), saved.last().rows)
         assertEquals("08:00 is 1970-01-01 in Shanghai", "01-01 08:00 Hello.", saved.last().title)
         assertNull("still recording", saved.last().segments.single().endedAtMs)
 
@@ -843,12 +865,12 @@ class LiveSessionTest {
         assertEquals(first, ended.single().second)
         assertEquals(
             listOf(
-                SessionRow(0, SessionRow.KIND_TEXT, 500, "Hello.", "你好。"),
-                SessionRow(0, SessionRow.KIND_TEXT, 1500, "Second.", "第二句。"),
-                SessionRow(0, SessionRow.KIND_TEXT, 3500, "", "孤立译文"),
+                SessionRow(0, SessionRow.KIND_TEXT, 500, "Hello.", "你好。", targetLanguage = "zh"),
+                SessionRow(0, SessionRow.KIND_TEXT, 1500, "Second.", "第二句。", targetLanguage = "zh"),
+                SessionRow(0, SessionRow.KIND_TEXT, 3500, "", "孤立译文", targetLanguage = "zh"),
                 SessionRow(0, SessionRow.KIND_BREAK, 4500),
-                SessionRow(0, SessionRow.KIND_TEXT, 5000, "Back.", "回来了。"),
-                SessionRow(0, SessionRow.KIND_TEXT, 5000, "", "尾部译文"),
+                SessionRow(0, SessionRow.KIND_TEXT, 5000, "Back.", "回来了。", targetLanguage = "zh"),
+                SessionRow(0, SessionRow.KIND_TEXT, 5000, "", "尾部译文", targetLanguage = "zh"),
             ),
             first.rows,
         )
@@ -875,7 +897,7 @@ class LiveSessionTest {
         val continued = saved.last()
         assertEquals(id, continued.id)
         assertEquals(listOf("zh", "ja"), continued.segments.map { it.targetLanguage })
-        assertEquals(SessionRow(1, SessionRow.KIND_TEXT, 0, "Day two.", "二日目。"), continued.rows.last())
+        assertEquals(SessionRow(1, SessionRow.KIND_TEXT, 0, "Day two.", "二日目。", targetLanguage = "ja"), continued.rows.last())
         assertEquals(first.rows, continued.rows.dropLast(1))
         assertEquals("the automatic title keeps the first text", first.title, continued.title)
 

@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "id": "0b8f6c2e-4d1a-4c47-9a53-2f1e6d7c8a90",
+  "title": "语言切换与对话",
+  "title_edited": true,
+  "created_at_ms": 1795413900000,
+  "updated_at_ms": 1795484470000,
+  "segments": [
+    {
+      "started_at_ms": 1795413900000,
+      "ended_at_ms": 1795415502000,
+      "target_language": "zh",
+      "mode": "live_translate"
+    },
+    {
+      "started_at_ms": 1795483805000,
+      "ended_at_ms": 1795484470000,
+      "target_language": "ja",
+      "mode": "live_translate"
+    }
+  ],
+  "rows": [
+    {
+      "segment": 0,
+      "kind": "text",
+      "offset_ms": 0,
+      "source": "Good morning.",
+      "translation": "早上好。",
+      "target_language": "zh"
+    },
+    {
+      "segment": 0,
+      "kind": "text",
+      "offset_ms": 1000,
+      "source": "早上好。",
+      "translation": "Good morning.",
+      "target_language": "en",
+      "language_switch": "English"
+    },
+    {
+      "segment": 0,
+      "kind": "text",
+      "offset_ms": 2000,
+      "source": "早上好。",
+      "translation": "おはよう。",
+      "target_language": "ja",
+      "source_language": "zh",
+      "speaker": "A"
+    },
+    {
+      "segment": 0,
+      "kind": "text",
+      "offset_ms": 3000,
+      "source": "こんにちは。",
+      "translation": "你好。",
+      "target_language": "zh",
+      "source_language": "ja",
+      "speaker": "B"
+    },
+    {
+      "segment": 0,
+      "kind": "text",
+      "offset_ms": 4000,
+      "source": "42",
+      "translation": "",
+      "speaker": "unknown"
+    }
+  ],
+  "future_field": {
+    "ignored": true
+  }
+}

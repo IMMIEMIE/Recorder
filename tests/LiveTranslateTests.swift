@@ -249,6 +249,7 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         try check(stored.count == 1 && stored[0].segments.count == 2 && stored[0].rows.map(\.segment) == [0, 1], "one session, one segment per recording")
         try check(stored[0].rows.allSatisfy { $0.kind == .text && $0.source == "Hello world." && $0.translation == "你好，世界🌏。" }, "finalized rows saved")
         try check(stored[0].segments.allSatisfy { $0.endedAtMs != nil && $0.mode == "live_translate" && $0.targetLanguage == "zh" }, "segments closed with mode and language")
+        try check(stored[0].rows.allSatisfy { $0.languages.target == "zh" }, "live rows store their own target")
         try check(stored[0].title.hasSuffix(" Hello world.") && !stored[0].titleEdited, "default title")
         try check(app.sessionSummaries.map(\.id) == [stored[0].id] && app.recordingSessionID == nil && app.continuesSession, "listed, not recording")
         app.clear()

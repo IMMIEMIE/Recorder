@@ -24,6 +24,7 @@ struct Transcript: Identifiable {
     var translations: [Int: TranslationPart] = [:]
     /// Index of the recording segment within its conversation session (docs/SESSIONS.md).
     var segment = 0
+    var languages = SessionRowLanguages()
     /// A reconnect marker restored from a session file; it has no text.
     var isBreak = false
     var translation: String { translations.keys.sorted().compactMap { translations[$0]?.text }.filter { !$0.isEmpty }.joined(separator: " ") }
@@ -744,9 +745,11 @@ final class AppModel: ObservableObject {
             if event["type"] as? String == "final" {
                 seen.insert(id)
                 if !text.isEmpty {
+                    let index = segmentForRecording()
+                    let languages = rowLanguages(for: index, backendTarget: event["translation_target"] as? String)
                     rows[id] = finalText.count
                     finalText.append(Transcript(id:id, text:text, seconds:Double(event["start_sample"] as? Int ?? 0) / 16000,
-                                                segment:segmentForRecording()))
+                                                segment:index, languages:languages))
                     translateFinal(id: id, text: text)
                 }
                 partial = ""
@@ -1111,7 +1114,8 @@ extension AppModel {
         if let existing = rows[id] { index = existing }
         else {
             index = finalText.count; rows[id] = index
-            finalText.append(Transcript(id: id, text: "", seconds: Double(placed.startSample) / 16000, segment: segmentForRecording()))
+            finalText.append(Transcript(id: id, text: "", seconds: Double(placed.startSample) / 16000, segment: segmentForRecording(),
+                                        languages: .init(target: liveConfiguration.language)))
         }
         var row = finalText[index]
         let moved = row.seconds != Double(placed.startSample) / 16000
@@ -1186,10 +1190,19 @@ extension AppModel {
     static func transcripts(from file: SessionFile) -> [Transcript] {
         file.rows.enumerated().map { index, row in
             var item = Transcript(id: "\(file.id):stored:\(index)", text: row.source, seconds: Double(row.offsetMs) / 1000,
-                                  segment: row.segment, isBreak: row.kind == .break)
+                                  segment: row.segment, languages: row.languages, isBreak: row.kind == .break)
             if !row.translation.isEmpty { item.translations[storedTranslationUnit] = TranslationPart(text: row.translation, revision: 0, done: true) }
             return item
         }
+    }
+
+    private func rowLanguages(for segment: Int, backendTarget: String?) -> SessionRowLanguages {
+        guard translationEnabled else { return .init() }
+        let name = translationProvider == "local" ? (backendTarget ?? translationTarget) : translationTarget
+        let target = Self.translationLanguageCodes[name] ?? name
+        let previous = finalText.last { $0.segment == segment && $0.languages.target != nil }?.languages.target
+            ?? activeMeta.segments[segment].targetLanguage
+        return .init(target: target, languageSwitch: target != previous ? name : nil)
     }
 
     private var sessionMode: String {
@@ -1216,7 +1229,7 @@ extension AppModel {
             finalizedRows[item.id] = saved
             guard !saved.source.isEmpty || !saved.translation.isEmpty else { continue }
             index[item.id] = out.count
-            out.append(.init(segment: item.segment, offsetMs: offset, source: saved.source, translation: saved.translation))
+            out.append(.init(segment: item.segment, offsetMs: offset, source: saved.source, translation: saved.translation, languages: item.languages))
         }
         return (out, index)
     }

@@ -115,10 +115,15 @@ fun SessionRecord.subtitleRows(zone: ZoneId): List<SubtitleRow> {
             out += marker("seg:$index", SessionExport.continuedMarker(segments[row.segment].startedAtMs, zone))
         }
         previous = row.segment
+        row.switchMarker?.let { out += marker("lang:$index", it) }
         when {
             row.isBreak -> out += marker("b:$index", SessionExport.BREAK_MARKER)
-            row.source.isNotBlank() || row.translation.isNotBlank() ->
-                out += SubtitleRow("r:$index", row.source.trim(), true, row.translation.trim(), true)
+            row.source.isNotBlank() || row.translation.isNotBlank() -> {
+                val source = row.source.trim()
+                val translation = row.translation.trim()
+                out += if (source.isEmpty()) SubtitleRow("r:$index", "", true, row.speakerPrefix + translation, true)
+                    else SubtitleRow("r:$index", row.speakerPrefix + source, true, translation, true)
+            }
         }
     }
     return out

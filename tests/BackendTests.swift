@@ -965,6 +965,21 @@ func testFinalIsSentFirstThenTranslationStreams() async throws {
     try expect(harness.translator.calls[0].text == "这是测试" && harness.translator.calls[0].target == "English", "translator input")
 }
 
+func testTargetSwitchDuringRecording() async throws {
+    let harness = await translationHarness()
+    await harness.core.control(command("start"))
+    for target in ["English", "日本語"] {
+        await harness.core.control(command("translation_settings", extra: ["target_language": target]))
+        try await harness.feed(60, true)
+        try await harness.feed(50, false)
+        try await harness.settleDown()
+        try expect(harness.recorder.last("final")?["translation_target"] as? String == target, "row uses the backend target")
+        try expect(harness.translator.calls.last?.target == target, "translator uses the same target as the row")
+    }
+    try expect(harness.translator.calls.map(\.target) == ["English", "日本語"], "switch acts on the next sentence")
+    await harness.core.control(command("stop"))
+}
+
 func testLongUtteranceRecognizedOnlyAfterPauseThenTranslatedOnce() async throws {
     let harness = await translationHarness()
     var config = ModelConfig()
@@ -1275,6 +1290,7 @@ func testTranslatorDownloadThenLoads() async throws {
         await run("disable unloads", testDisablingUnloadsAndPersists)
         await run("enable without model", testEnablingWithoutDownloadedModelReportsAndTurnsOff)
         await run("api provider local", testAPIProviderPersistsAndNeverCallsLocalTranslator)
+        await run("target switch during recording", testTargetSwitchDuringRecording)
         await run("invalid target", testInvalidTargetRejectedWithoutChangingConfig)
         await run("download then load", testDownloadThenLoadsASR)
         await run("download failure + retry", testDownloadFailureReportsAndAllowsRetry)
