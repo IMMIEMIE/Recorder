@@ -6,16 +6,17 @@ struct RecorderApp: App {
     var body: some Scene {
         WindowGroup("声笺 · 实时转写", id: "main") {
             MainView(model: model)
-                .frame(minWidth: 800, minHeight: 570)
+                .frame(minWidth: 1000, minHeight: 570)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.shutdown() }
         }
-        .defaultSize(width: 1040, height: 700)
+        .defaultSize(width: 1280, height: 720)
         Settings {
             TabView {
                 ScrollView { SettingsView(model: model).padding(24) }.tabItem { Label("转写", systemImage: "waveform") }
                 ScrollView { TranslationSettingsView(model: model).padding(24) }.tabItem { Label("翻译", systemImage: "character.bubble") }
                 ScrollView { LiveTranslateSettingsView(model: model).padding(24) }.tabItem { Label("LiveTranslate", systemImage: "globe") }
                 AISettingsView().tabItem { Label("AI 服务", systemImage: "sparkles") }
+                ScrollView { SessionSettingsView(model: model).padding(24) }.tabItem { Label("会话记录", systemImage: "clock.arrow.circlepath") }
             }.frame(width: 640, height: 600)
         }
         MenuBarExtra("声笺", systemImage: model.recording ? "mic.fill" : "waveform") {
@@ -29,12 +30,15 @@ struct MenuContent: View {
     @Environment(\.openWindow) var openWindow
     var body: some View {
         Text(model.statusTitle)
-        Button(model.canStop ? "停止转写" : "开始转写") { model.toggle() }
+        Button(model.canStop ? "停止转写" : model.continuesSession ? "继续录制" : "开始转写") { model.toggle() }
             .disabled(!model.canStop && !model.canStart)
         Button("显示转写窗口") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
         Toggle("字幕模式", isOn: Binding(get: { model.subtitleMode }, set: { model.setSubtitleMode($0) }))
-        Button("文本另存为…") { model.saveText() }.disabled(model.finalText.isEmpty)
-        Button("复制文字") { model.copyText() }.disabled(model.finalText.isEmpty)
+        Button("导出会话…") {
+            openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true)
+            model.exportRequest = SessionExportRequest(sessionID: nil)
+        }.disabled(!model.displayedHasText)
+        Button("复制文字") { model.copyText() }.disabled(!model.displayedHasText)
         Divider()
         Button("退出声笺") { model.shutdown(); NSApp.terminate(nil) }
     }
@@ -63,6 +67,16 @@ struct MainView: View {
     @StateObject private var ai = AIWorkspace()
     private let accent = Color(red: 0.14, green: 0.43, blue: 0.38)
     var body: some View {
+        NavigationSplitView {
+            SessionSidebar(model: model)
+                .navigationSplitViewColumnWidth(min: 190, ideal: 230, max: 320)
+        } detail: {
+            workspace
+        }
+        .sheet(item: $model.exportRequest) { request in SessionExportSheet(model: model, request: request) }
+    }
+
+    private var workspace: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 25) {
                 HStack(spacing: 12) {
@@ -114,6 +128,8 @@ struct MainView: View {
             Divider()
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .center) {
+                    Text(model.displayedTitle).font(.system(size: 15, weight: .semibold)).lineLimit(1).truncationMode(.tail)
+                        .help(model.displayedTitle)
                     Spacer()
                     Button { model.setSubtitleMode(!model.subtitleMode) } label: { Image(systemName: model.subtitleMode ? "captions.bubble.fill" : "captions.bubble") }
                         .help(model.subtitleMode ? "关闭字幕模式" : "打开字幕模式").accessibilityLabel("字幕模式")
@@ -134,24 +150,36 @@ struct MainView: View {
                         Label(model.liveEnabled ? "译为\(model.liveConfiguration.languageName)" : (model.translationEnabled ? "译为\(model.translationTarget)" : "翻译"), systemImage: "character.bubble")
                     }.fixedSize().help(model.translationSummary)
                     Button { ai.prepare(text: model.joinedText); showAI = true } label: { Label("AI 提问", systemImage: "sparkles") }
-                        .disabled(model.finalText.isEmpty || model.liveEnabled)
+                        .disabled(!model.displayedHasText || model.liveEnabled)
                     if model.livePlaying { Button("停止译音", systemImage: "speaker.slash") { model.stopLivePlayback() } }
-                    Button { model.saveText() } label: { Label("另存为…", systemImage: "square.and.arrow.down") }
-                        .disabled(model.finalText.isEmpty).help("将已确认文本保存为 TXT")
-                    Button { model.copyText() } label: { Label("复制", systemImage: "doc.on.doc") }.disabled(model.finalText.isEmpty)
-                    Button { model.clear() } label: { Image(systemName: "trash") }.disabled(model.busy || model.finalText.isEmpty).help("清空会话")
+                    Button { model.exportRequest = SessionExportRequest(sessionID: nil) } label: { Label("导出…", systemImage: "square.and.arrow.up") }
+                        .disabled(!model.displayedHasText).help("将此会话的已定稿文字导出为 TXT 或 Markdown")
+                    Button { model.copyText() } label: { Label("复制", systemImage: "doc.on.doc") }.disabled(!model.displayedHasText)
                 }.padding(.horizontal, 24).padding(.vertical, 14)
+                if let viewed = model.viewedSession, model.recordingSessionID != nil {
+                    HStack(spacing: 10) {
+                        Image(systemName: "record.circle").foregroundStyle(.red)
+                        Text("正在查看「\(viewed.title)」；新内容仍写入正在录制的会话。").font(.caption).lineLimit(2)
+                        Spacer()
+                        Button("回到录制中的会话") { model.selectSession(model.activeSessionID) }.font(.caption)
+                    }.padding(.horizontal, 24).padding(.vertical, 8).background(Color.red.opacity(0.06))
+                }
                 Divider().padding(.horizontal, 30)
                 ScrollViewReader { proxy in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 24) {
-                            if model.finalText.isEmpty && model.partial.isEmpty {
+                            if model.displayedTranscripts.isEmpty && (model.partial.isEmpty || model.viewedSession != nil) {
                                 VStack(spacing: 18) {
                                     Image(systemName: "waveform.circle").font(.system(size: 62, weight: .ultraLight)).foregroundStyle(accent.opacity(0.55))
-                                    Text(model.recording ? "正在聆听…" : "点击开始转写").font(.system(size: 15)).foregroundStyle(.secondary)
+                                    Text(model.viewedSession != nil ? "此会话没有文字" : model.recording ? "正在聆听…" : "点击开始转写").font(.system(size: 15)).foregroundStyle(.secondary)
                                 }.frame(maxWidth: .infinity).padding(.vertical, 80)
                             }
-                            ForEach(model.finalText) { item in
+                            let items = model.displayedTranscripts
+                            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                                if index > 0, item.segment != items[index - 1].segment {
+                                    SessionMarker(text: "继续录制" + (model.segmentStart(item.segment).map { " " + SessionExport.stamp($0, zone: .current) } ?? ""))
+                                }
+                                if item.isBreak { SessionMarker(text: SessionExport.breakMarker) } else {
                                 HStack(alignment: .top, spacing: 18) {
                                     Text(String(format:"%02d:%02d", Int(item.seconds) / 60, Int(item.seconds) % 60)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary).frame(width: 38).padding(.top, 6)
                                     VStack(alignment: .leading, spacing: 6) {
@@ -175,8 +203,9 @@ struct MainView: View {
                                         }
                                     }.frame(maxWidth: .infinity, alignment: .leading)
                                 }
+                                }
                             }
-                            if !model.partial.isEmpty {
+                            if !model.partial.isEmpty && model.viewedSession == nil {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text("识别中").font(.caption2).foregroundStyle(accent)
                                     Text(model.partial).font(.system(size: 17)).lineSpacing(7).foregroundStyle(.secondary)
@@ -197,6 +226,7 @@ struct MainView: View {
                     .onPreferenceChange(TranscriptBoundsKey.self) { trackScroll($0) }
                     .onChange(of: model.partial) { _, _ in keepLatest(proxy) }
                     .onChange(of: model.finalText.count) { _, _ in keepLatest(proxy) }
+                    .onChange(of: model.selectedSessionID) { _, _ in followLatest = true; newBelow = false; proxy.scrollTo("end", anchor: .bottom) }
                     .onChange(of: model.translationTick) { _, _ in keepLatest(proxy) }
                     .overlay(alignment: .bottomTrailing) {
                         if !followLatest {
@@ -235,7 +265,7 @@ struct MainView: View {
                         if model.liveEnabled {
                             if model.canLoadHyModel { Button("加载模型") { model.loadHyModel() } }
                             Button { model.toggle() } label: {
-                                Label(model.canStop ? "停止转写" : "开始转写", systemImage: model.canStop ? "stop.fill" : "mic.fill")
+                                Label(model.canStop ? "停止转写" : model.continuesSession ? "继续录制" : "开始转写", systemImage: model.canStop ? "stop.fill" : "mic.fill")
                             }.buttonStyle(.borderedProminent).tint(model.canStop ? .red : accent).disabled(!model.canStart && !model.canStop)
                         } else if ["idle", "error"].contains(model.state) {
                             Button("重新连接") { model.launch() }
@@ -245,7 +275,7 @@ struct MainView: View {
                             }
                         } else {
                             Button { model.toggle() } label: {
-                                Label(model.canStop ? "停止转写" : "开始转写", systemImage: model.recording ? "stop.fill" : "mic.fill").padding(.horizontal, 14).padding(.vertical, 5)
+                                Label(model.canStop ? "停止转写" : model.continuesSession ? "继续录制" : "开始转写", systemImage: model.recording ? "stop.fill" : "mic.fill").padding(.horizontal, 14).padding(.vertical, 5)
                             }.buttonStyle(.borderedProminent).tint(model.recording ? .red : accent).disabled(!model.canStart && !model.canStop)
                         }
                     }
@@ -266,8 +296,9 @@ struct MainView: View {
         else if scrolled && !jumping { followLatest = false }
     }
     private func keepLatest(_ proxy: ScrollViewProxy) {
+        guard model.viewedSession == nil else { return }
         if followLatest { proxy.scrollTo("end", anchor: .bottom) }
-        else if !model.finalText.isEmpty || !model.partial.isEmpty { newBelow = true }
+        else if model.viewedSession == nil && (!model.finalText.isEmpty || !model.partial.isEmpty) { newBelow = true }
     }
     private func jumpToLatest(_ proxy: ScrollViewProxy) {
         followLatest = true; newBelow = false; jumping = true

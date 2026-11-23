@@ -22,6 +22,10 @@ struct Transcript: Identifiable {
     var incomplete = false
     /// Keyed by backend unit id; a sentence carried past a forced cut can anchor a second unit here.
     var translations: [Int: TranslationPart] = [:]
+    /// Index of the recording segment within its conversation session (docs/SESSIONS.md).
+    var segment = 0
+    /// A reconnect marker restored from a session file; it has no text.
+    var isBreak = false
     var translation: String { translations.keys.sorted().compactMap { translations[$0]?.text }.filter { !$0.isEmpty }.joined(separator: " ") }
     var translating: Bool { translations.values.contains { !$0.done } }
 }
@@ -29,10 +33,16 @@ struct Transcript: Identifiable {
 final class AppModel: ObservableObject {
     @Published private(set) var subtitleMode = false
     private var subtitleWindow: SubtitleWindowController?
-    @Published var state = "connecting"
+    @Published var state = "connecting" {
+        didSet {
+            let active = ["recording", "finalizing"]
+            if active.contains(oldValue) && !active.contains(state) { endSessionSegment() }
+        }
+    }
     @Published var detail = "正在启动本地推理服务…"
     @Published var error = ""
-    @Published var finalText: [Transcript] = []
+    /// The transcript of the active conversation session; persisted (finalized rows only) by the session code below.
+    @Published var finalText: [Transcript] = [] { didSet { scheduleSessionSave() } }
     @Published var partial = ""
     @Published var level: Float = 0
     @Published var microphones: [Microphone] = []
@@ -158,6 +168,31 @@ final class AppModel: ObservableObject {
             && !["loading", "ready"].contains(hyRuntimeState) && hyModelStore.state != "downloading"
     }
     private var liveAttempt = UUID()
+    // Conversation sessions (see the extension at the end of this file).
+    let sessionLibrary: SessionLibrary
+    @Published private(set) var sessionSummaries: [SessionSummary] = []
+    /// The session that owns `finalText`; recordings always write here.
+    @Published private(set) var activeSessionID = ""
+    @Published private(set) var activeSessionSaved = false
+    /// A different session opened read-only (while the active one is recording).
+    @Published private(set) var viewedSession: SessionFile?
+    @Published var exportRequest: SessionExportRequest?
+    @Published var persistSessions = true {
+        didSet {
+            guard oldValue != persistSessions else { return }
+            liveDefaults.set(persistSessions, forKey: Self.persistSessionsKey)
+            sessionLibrary.persist = persistSessions
+            if persistSessions && activeSessionSaved { lastSavedSession = nil; saveActiveSession() }
+        }
+    }
+    private var activeMeta = SessionFile(id: SessionFile.newID(), title: "", createdAtMs: 0, updatedAtMs: 0)
+    private var lastSavedSession: SessionFile?
+    private var recordingSegments: [String: Int] = [:]
+    private var openSegment: Int?
+    private var finalizedRows: [String: (source: String, translation: String)] = [:]
+    private var orphanTranslations: [String: OrphanTranslation] = [:]
+    private var sessionSaveScheduled = false
+    private var sessionSaveFailed = false
     var liveEnabled: Bool { liveConfiguration.enabled }
     var liveSettingsBusy: Bool { recording || pendingStart || state == "finalizing" || liveTesting }
     var canStop: Bool { recording || pendingStart || (liveEnabled && state == "connecting") }
@@ -174,10 +209,12 @@ final class AppModel: ObservableObject {
         return state == "ready" && !asrTesting && asrProvider == activeASRProvider &&
         (asrProvider != "api" || (asrAPIBaseURL == activeAPIBaseURL && asrAPIModel == activeAPIModel && asrAPIProtocol == activeAPIProtocol))
     }
-    var joinedText: String { finalText.map { $0.text.isEmpty ? $0.translation : $0.text }.joined(separator: "\n") }
-    var exportText: String {
-        let translated = finalText.contains { !$0.translation.isEmpty }
-        return finalText.map { item in
+    var joinedText: String { displayedTranscripts.filter { !$0.isBreak }.map { $0.text.isEmpty ? $0.translation : $0.text }.joined(separator: "\n") }
+    var exportText: String { Self.plainText(finalText) }
+    static func plainText(_ items: [Transcript]) -> String {
+        let translated = items.contains { !$0.translation.isEmpty }
+        return items.map { item in
+            if item.isBreak { return "【\(SessionExport.breakMarker)】" }
             let translation = item.translation
             return [item.text, translation].filter { !$0.isEmpty }.joined(separator: "\n")
         }.joined(separator: translated ? "\n\n" : "\n")
@@ -219,7 +256,8 @@ final class AppModel: ObservableObject {
          runtimeVerified: @escaping () -> Bool = { HyRuntimeAvailability.isVerified },
          runtimeExecutable: @escaping () -> URL? = { HyRuntimeAvailability.executableURL },
          localSpeech: (any LocalSpeechOutputting)? = nil,
-         replaySpeech: (any LocalSpeechOutputting)? = nil) {
+         replaySpeech: (any LocalSpeechOutputting)? = nil,
+         sessionStore: SessionStore? = nil) {
         self.liveClientFactory = liveClientFactory; self.liveKeyReader = liveKeyReader
         self.liveSessionFactory = liveSessionFactory
         self.hyModelStore = hyModelStore ?? HyModelStore()
@@ -227,6 +265,10 @@ final class AppModel: ObservableObject {
         self.localSpeech = localSpeech ?? LocalSpeechOutput()
         self.replaySpeech = replaySpeech ?? LocalSpeechOutput()
         liveDefaults = defaults
+        let persist = defaults.object(forKey: Self.persistSessionsKey) as? Bool ?? true
+        // Tests (integrateSystem: false) never touch the real sessions directory unless they pass a store.
+        sessionLibrary = SessionLibrary(store: sessionStore ?? (integrateSystem ? SessionStore() : nil), persist: persist)
+        persistSessions = persist
         liveConfiguration = LiveTranslateConfiguration.load(defaults: defaults)
         liveProvider = liveConfiguration.provider
         liveEndpoint = liveConfiguration.endpoint; liveLanguage = liveConfiguration.language
@@ -240,13 +282,18 @@ final class AppModel: ObservableObject {
         self.localSpeech.onFailure = { [weak self] message in self?.error = message; self?.stopLivePlayback() }
         self.replaySpeech.onFailure = { [weak self] message in self?.error = message; self?.stopReplay() }
         apiTranslations.onUpdate = { [weak self] id, text, done in
-            guard let self, let index = self.rows[id], self.finalText.indices.contains(index) else { return }
+            guard let self else { return }
             // Negative unit IDs are reserved for frontend API translations.
-            self.finalText[index].translations[-1] = done && text.isEmpty ? nil : TranslationPart(text: text, revision: 1, done: done)
+            let part = done && text.isEmpty ? nil : TranslationPart(text: text, revision: 1, done: done)
+            guard let index = self.rows[id], self.finalText.indices.contains(index) else {
+                self.updateOrphanTranslation(id) { $0.translations[-1] = part }; return
+            }
+            self.finalText[index].translations[-1] = part
             self.translationTick += 1
         }
         apiTranslations.onError = { [weak self] message in self?.error = message }
         if integrateSystem { refreshDevices(); updatePermission() }
+        installActiveSession(nil)
         capture.onFailure = { [weak self] message in DispatchQueue.main.async { self?.stop(); self?.error = message } }
         capture.onPCM = { [weak self] pcm, rms in self?.audio(pcm, rms: rms) }
         if integrateSystem {
@@ -326,6 +373,7 @@ final class AppModel: ObservableObject {
         audioLock.lock(); accepting = false; audioLock.unlock()
         stopInputs()
         transport?.close(); transport = nil
+        endSessionSegment()
     }
 
     private func command(_ name: String, extra: [String:Any] = [:]) {
@@ -443,6 +491,7 @@ final class AppModel: ObservableObject {
         for index in finalText.indices {
             finalText[index].translations = finalText[index].translations.filter { $0.value.done }
         }
+        for id in Array(orphanTranslations.keys) { updateOrphanTranslation(id) { $0.translations = $0.translations.filter { $0.value.done } } }
     }
     func setTranslationProvider(_ provider: String) {
         guard !liveEnabled else { return }
@@ -509,6 +558,8 @@ final class AppModel: ObservableObject {
             return
         }
         if audioSource == "file", audioFileURL == nil { error = "请先选择音频文件"; return }
+        // "继续录制" on a session opened while another one was recording.
+        if let viewed = viewedSession { selectSession(viewed.id) }
         error = ""; pendingStart = true
         startAttempt = UUID()
         let attempt = startAttempt
@@ -572,6 +623,7 @@ final class AppModel: ObservableObject {
     private func beginCapture() {
         guard pendingStart else { command("stop"); return }
         pendingStart = false
+        beginSessionSegment()
         audioLock.lock(); sequence = 0; samples = 0; accepting = true; audioLock.unlock()
         let currentSession = session
         additionalInput.onPCM = { [weak self] pcm, rms in self?.audio(pcm, rms: rms) }
@@ -693,21 +745,27 @@ final class AppModel: ObservableObject {
                 seen.insert(id)
                 if !text.isEmpty {
                     rows[id] = finalText.count
-                    finalText.append(Transcript(id:id, text:text, seconds:Double(event["start_sample"] as? Int ?? 0) / 16000))
+                    finalText.append(Transcript(id:id, text:text, seconds:Double(event["start_sample"] as? Int ?? 0) / 16000,
+                                                segment:segmentForRecording()))
                     translateFinal(id: id, text: text)
                 }
                 partial = ""
             } else { partial = text }
         case "translation":
             guard translationProvider == "local", translationEnabled else { return }
-            // Translations may finish after a new session starts; they still belong to their original rows.
+            // Translations may finish after a new recording or conversation session starts; they still belong to their original rows.
             guard let sessionID = event["session_id"] as? String, let segment = event["segment_id"] as? Int,
-                  let unit = event["unit_id"] as? Int, let rev = event["revision"] as? Int,
-                  let index = rows["\(sessionID):\(segment)"], finalText.indices.contains(index),
-                  rev > (finalText[index].translations[unit]?.revision ?? -1) else { return }
+                  let unit = event["unit_id"] as? Int, let rev = event["revision"] as? Int else { return }
+            let id = "\(sessionID):\(segment)"
             let text = event["text"] as? String ?? ""
             let done = event["done"] as? Bool ?? false
-            finalText[index].translations[unit] = done && text.isEmpty ? nil : TranslationPart(text: text, revision: rev, done: done)
+            let part = done && text.isEmpty ? nil : TranslationPart(text: text, revision: rev, done: done)
+            guard let index = rows[id], finalText.indices.contains(index) else {
+                updateOrphanTranslation(id) { if rev > ($0.translations[unit]?.revision ?? -1) { $0.translations[unit] = part } }
+                return
+            }
+            guard rev > (finalText[index].translations[unit]?.revision ?? -1) else { return }
+            finalText[index].translations[unit] = part
             if index == finalText.count - 1 { translationTick += 1 }
         case "translator":
             let previous = translatorState
@@ -750,11 +808,10 @@ final class AppModel: ObservableObject {
         asrConnectionMessage = "已切换为固定流式识别模型 \(StreamingASRConfiguration.model)，正在应用新设置…"
         load()
     }
-    func saveText() {
-        TextExport.save(exportText) { [weak self] message in self?.error = message }
-    }
-    func copyText() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(exportText, forType: .string) }
-    func clear() { guard !busy else { return }; stopReplay(); replayCache.clear(); replayRevision = replayCache.revision; cancelLiveTranslations(); finalText.removeAll(); rows.removeAll(); seen.removeAll(); revisions.removeAll(); partial = "" }
+    /// Copies the transcript on screen (the active session, or the one opened read-only).
+    func copyText() { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(Self.plainText(displayedTranscripts), forType: .string) }
+    /// Starts an empty conversation session; the previous one stays in the session list.
+    func clear() { guard !busy else { return }; newSession() }
 
     func registerShortcut() {
         if let hotKey { UnregisterEventHotKey(hotKey); self.hotKey = nil }
@@ -1054,7 +1111,7 @@ extension AppModel {
         if let existing = rows[id] { index = existing }
         else {
             index = finalText.count; rows[id] = index
-            finalText.append(Transcript(id: id, text: "", seconds: Double(placed.startSample) / 16000))
+            finalText.append(Transcript(id: id, text: "", seconds: Double(placed.startSample) / 16000, segment: segmentForRecording()))
         }
         var row = finalText[index]
         let moved = row.seconds != Double(placed.startSample) / 16000
@@ -1081,5 +1138,284 @@ extension AppModel {
             if var part = finalText[index].translations[-2] { part.done = true; finalText[index].translations[-2] = part }
         }
         translationTick += 1
+    }
+}
+
+// MARK: - Conversation sessions (docs/SESSIONS.md)
+
+/// A translation still streaming for a row of a session that is no longer active; it is written into that
+/// session's file once it finishes, or moved back into `finalText` if the session is reopened first.
+struct OrphanTranslation {
+    var sessionID: String
+    var rowIndex: Int
+    var transcript: Transcript
+}
+
+struct SessionExportRequest: Identifiable {
+    let id = UUID()
+    /// nil exports the session on screen.
+    var sessionID: String?
+}
+
+extension AppModel {
+    static let persistSessionsKey = "sessions.persist.enabled"
+    /// Translation unit id for text restored from a session file (local units are ≥ 1, -1 API, -2 LiveTranslate).
+    static let storedTranslationUnit = -3
+    /// `target_language` of local/API translation segments; LiveTranslate segments use its own language code.
+    static let translationLanguageCodes = ["简体中文": "zh", "繁體中文": "zh-Hant", "English": "en", "日本語": "ja", "한국어": "ko",
+                                          "Français": "fr", "Deutsch": "de", "Español": "es", "Русский": "ru"]
+
+    /// The active session is in use while recording starts, runs or drains; it then cannot be switched or deleted.
+    var sessionLocked: Bool { recording || pendingStart || state == "finalizing" || (liveEnabled && state == "connecting") }
+    var recordingSessionID: String? { sessionLocked ? activeSessionID : nil }
+    /// Sidebar selection: the session on screen, or nil for a new session that has not been saved yet.
+    var selectedSessionID: String? { viewedSession?.id ?? (activeSessionSaved ? activeSessionID : nil) }
+    var displayedTranscripts: [Transcript] { viewedSession.map(Self.transcripts(from:)) ?? finalText }
+    var displayedHasText: Bool { displayedTranscripts.contains { !$0.isBreak && (!$0.text.isEmpty || !$0.translation.isEmpty) } }
+    var displayedTitle: String {
+        if let viewedSession { return viewedSession.title }
+        return activeSessionSaved ? activeMeta.title : "新会话"
+    }
+    /// The active session has earlier recordings, so starting appends a segment ("继续录制").
+    var continuesSession: Bool { viewedSession != nil || !activeMeta.segments.isEmpty || !finalText.isEmpty }
+    func segmentStart(_ index: Int) -> Int64? {
+        let segments = viewedSession?.segments ?? activeMeta.segments
+        return segments.indices.contains(index) ? segments[index].startedAtMs : nil
+    }
+
+    static func transcripts(from file: SessionFile) -> [Transcript] {
+        file.rows.enumerated().map { index, row in
+            var item = Transcript(id: "\(file.id):stored:\(index)", text: row.source, seconds: Double(row.offsetMs) / 1000,
+                                  segment: row.segment, isBreak: row.kind == .break)
+            if !row.translation.isEmpty { item.translations[storedTranslationUnit] = TranslationPart(text: row.translation, revision: 0, done: true) }
+            return item
+        }
+    }
+
+    private var sessionMode: String {
+        if liveEnabled { return liveConfiguration.provider == .hyLocal ? "hy_local" : "live_translate" }
+        if streamingActive { return "streaming_asr" }
+        return activeASRProvider == "api" ? "api_asr" : "local_asr"
+    }
+
+    /// Finalized rows only. A row's last finalized source and translation are kept while newer text is still
+    /// streaming, so a save never loses text that was already final. `settled` treats everything as final
+    /// (the recording is over and nothing more will arrive for its sources).
+    private func sessionRows(settled: Bool) -> (rows: [SessionFile.Row], index: [String: Int]) {
+        var out: [SessionFile.Row] = []
+        var index: [String: Int] = [:]
+        for item in finalText {
+            let offset = Int64((item.seconds * 1000).rounded())
+            if item.isBreak {
+                out.append(.init(segment: item.segment, kind: .break, offsetMs: offset, source: "", translation: ""))
+                continue
+            }
+            var saved = finalizedRows[item.id] ?? (source: "", translation: "")
+            if item.sourceDone || settled { saved.source = item.text }
+            if !item.translating { saved.translation = item.translation }
+            finalizedRows[item.id] = saved
+            guard !saved.source.isEmpty || !saved.translation.isEmpty else { continue }
+            index[item.id] = out.count
+            out.append(.init(segment: item.segment, offsetMs: offset, source: saved.source, translation: saved.translation))
+        }
+        return (out, index)
+    }
+
+    func activeSessionFile() -> SessionFile {
+        var file = activeMeta
+        file.rows = sessionRows(settled: !sessionLocked).rows
+        if !file.titleEdited { file.title = SessionExport.defaultTitle(createdAtMs: file.createdAtMs, rows: file.rows) }
+        return file
+    }
+
+    /// Throttled rather than debounced: token-by-token updates must not postpone the write indefinitely.
+    func scheduleSessionSave() {
+        guard !sessionSaveScheduled else { return }
+        sessionSaveScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.sessionSaveScheduled else { return }
+            self.saveActiveSession()
+        }
+    }
+
+    @discardableResult
+    func saveActiveSession(settled: Bool? = nil) -> [String: Int] {
+        sessionSaveScheduled = false
+        let snapshot = sessionRows(settled: settled ?? !sessionLocked)
+        var file = activeMeta
+        file.rows = snapshot.rows
+        guard !file.segments.isEmpty || !file.rows.isEmpty else { return snapshot.index }
+        if !file.titleEdited { file.title = SessionExport.defaultTitle(createdAtMs: file.createdAtMs, rows: file.rows) }
+        if let last = lastSavedSession {
+            var unchanged = file; unchanged.updatedAtMs = last.updatedAtMs
+            if unchanged == last { return snapshot.index }
+        }
+        file.updatedAtMs = max(SessionFile.nowMs(), file.createdAtMs)
+        do {
+            try sessionLibrary.save(file)
+            sessionSaveFailed = false
+            activeMeta.title = file.title; activeMeta.updatedAtMs = file.updatedAtMs
+            lastSavedSession = file; activeSessionSaved = true
+        } catch {
+            if !sessionSaveFailed { self.error = "会话记录保存失败：\(error.localizedDescription)" }
+            sessionSaveFailed = true
+        }
+        sessionSummaries = sessionLibrary.summaries
+        return snapshot.index
+    }
+
+    private func beginSessionSegment(open: Bool = true) {
+        let now = SessionFile.nowMs()
+        if !activeSessionSaved && activeMeta.segments.isEmpty && finalText.isEmpty {
+            activeMeta.createdAtMs = now; activeMeta.updatedAtMs = now
+        }
+        let target = liveEnabled ? liveConfiguration.language
+            : translationEnabled ? (Self.translationLanguageCodes[translationTarget] ?? translationTarget) : nil
+        activeMeta.segments.append(.init(startedAtMs: now, endedAtMs: open ? nil : now, targetLanguage: target, mode: sessionMode))
+        let index = activeMeta.segments.count - 1
+        recordingSegments[session] = index
+        if open { openSegment = index }
+        saveActiveSession()
+    }
+
+    /// The segment of the current recording; a row arriving without one (it should not happen) gets a closed segment.
+    private func segmentForRecording() -> Int {
+        if let index = recordingSegments[session], activeMeta.segments.indices.contains(index) { return index }
+        beginSessionSegment(open: ["recording", "finalizing"].contains(state))
+        return activeMeta.segments.count - 1
+    }
+
+    /// Called when a recording ends (and on shutdown): closes its segment and writes immediately.
+    /// A session whose recordings produced no text at all is dropped instead of being kept empty.
+    func endSessionSegment() {
+        if let index = openSegment, activeMeta.segments.indices.contains(index) { activeMeta.segments[index].endedAtMs = SessionFile.nowMs() }
+        openSegment = nil
+        if sessionRows(settled: true).rows.isEmpty && !activeMeta.segments.isEmpty {
+            if activeSessionSaved { try? sessionLibrary.delete(id: activeMeta.id) }
+            activeMeta.segments.removeAll(); recordingSegments.removeAll()
+            activeSessionSaved = false; lastSavedSession = nil
+            sessionSummaries = sessionLibrary.summaries
+            return
+        }
+        saveActiveSession(settled: true)
+    }
+
+    private func retireActiveSession() {
+        let index = saveActiveSession(settled: true)
+        if activeSessionSaved {
+            for item in finalText where item.translating {
+                guard let row = index[item.id] else { continue }
+                orphanTranslations[item.id] = OrphanTranslation(sessionID: activeMeta.id, rowIndex: row, transcript: item)
+            }
+        }
+        stopReplay(); replayCache.clear(); replayRevision = replayCache.revision
+        partial = ""
+    }
+
+    /// Makes `file` (or a new empty session) the one that owns `finalText` and receives recordings.
+    func installActiveSession(_ file: SessionFile?) {
+        let now = SessionFile.nowMs()
+        let next = file ?? SessionFile(id: SessionFile.newID(), title: "", createdAtMs: now, updatedAtMs: now)
+        activeMeta = next; activeMeta.rows = []
+        activeSessionSaved = file != nil; lastSavedSession = file
+        recordingSegments.removeAll(); openSegment = nil; finalizedRows.removeAll()
+        var restored = file.map(Self.transcripts(from:)) ?? []
+        rows.removeAll()
+        for (id, orphan) in orphanTranslations where orphan.sessionID == next.id && restored.indices.contains(orphan.rowIndex) {
+            // Keeps its original id, so the pending translation lands on this row again.
+            restored[orphan.rowIndex] = orphan.transcript
+            rows[id] = orphan.rowIndex
+            orphanTranslations[id] = nil
+        }
+        finalText = restored
+        activeSessionID = next.id
+        viewedSession = nil
+        sessionSummaries = sessionLibrary.summaries
+    }
+
+    func updateOrphanTranslation(_ id: String, _ change: (inout Transcript) -> Void) {
+        guard var orphan = orphanTranslations[id] else { return }
+        change(&orphan.transcript)
+        guard !orphan.transcript.translating else { orphanTranslations[id] = orphan; return }
+        orphanTranslations[id] = nil
+        guard var file = sessionLibrary.load(id: orphan.sessionID), file.rows.indices.contains(orphan.rowIndex),
+              file.rows[orphan.rowIndex].translation != orphan.transcript.translation else { return }
+        file.rows[orphan.rowIndex].translation = orphan.transcript.translation
+        file.updatedAtMs = max(file.updatedAtMs, SessionFile.nowMs())
+        do { try sessionLibrary.save(file) } catch { self.error = "会话记录保存失败：\(error.localizedDescription)" }
+        if viewedSession?.id == file.id { viewedSession = file }
+        sessionSummaries = sessionLibrary.summaries
+    }
+
+    // MARK: Session actions (sidebar, settings)
+
+    func refreshSessions() { sessionLibrary.reload(); sessionSummaries = sessionLibrary.summaries }
+
+    func newSession() {
+        guard !sessionLocked else { return }
+        viewedSession = nil
+        guard activeSessionSaved || !finalText.isEmpty else { return }
+        retireActiveSession()
+        installActiveSession(nil)
+    }
+
+    /// While recording, another session opens read-only; otherwise it becomes the active one,
+    /// so the next recording continues it.
+    func selectSession(_ id: String?) {
+        guard let id, id != activeSessionID else { viewedSession = nil; return }
+        guard let file = sessionLibrary.load(id: id) else { refreshSessions(); error = "无法读取该会话"; return }
+        if sessionLocked { viewedSession = file; return }
+        retireActiveSession()
+        installActiveSession(file)
+    }
+
+    func renameSession(_ id: String, to title: String) {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        if id == activeSessionID {
+            activeMeta.title = title; activeMeta.titleEdited = true
+            saveActiveSession()
+            return
+        }
+        do {
+            let file = try sessionLibrary.rename(id: id, title: title)
+            if viewedSession?.id == id { viewedSession = file }
+        } catch { self.error = "重命名失败：\(error.localizedDescription)" }
+        sessionSummaries = sessionLibrary.summaries
+    }
+
+    func canDeleteSession(_ id: String) -> Bool { id != recordingSessionID }
+
+    func deleteSession(_ id: String) {
+        guard canDeleteSession(id) else { return }
+        do { try sessionLibrary.delete(id: id) } catch { self.error = "删除会话失败：\(error.localizedDescription)" }
+        orphanTranslations = orphanTranslations.filter { $0.value.sessionID != id }
+        if viewedSession?.id == id { viewedSession = nil }
+        if id == activeSessionID {
+            stopReplay(); replayCache.clear(); replayRevision = replayCache.revision; partial = ""
+            installActiveSession(nil)
+        }
+        sessionSummaries = sessionLibrary.summaries
+    }
+
+    func deleteAllSessions() {
+        guard !sessionLocked else { return }
+        do { try sessionLibrary.deleteAll() } catch { self.error = "清空会话失败：\(error.localizedDescription)" }
+        orphanTranslations.removeAll()
+        stopReplay(); replayCache.clear(); replayRevision = replayCache.revision; partial = ""
+        installActiveSession(nil)
+    }
+
+    /// The finalized text of a session; nil means the one on screen.
+    func sessionForExport(_ id: String?) -> SessionFile? {
+        let id = id ?? viewedSession?.id ?? activeSessionID
+        return id == activeSessionID ? activeSessionFile() : sessionLibrary.load(id: id)
+    }
+
+    func exportSession(_ id: String?, format: SessionExportFormat, content: SessionExportContent) {
+        guard let file = sessionForExport(id) else { error = "无法读取该会话"; return }
+        TextExport.save(SessionExport.render(file, format: format, content: content),
+                        fileName: SessionExport.fileName(file, format: format),
+                        fileExtension: format.fileExtension, title: "导出会话") { [weak self] message in self?.error = message }
     }
 }

@@ -322,6 +322,10 @@ final class EndingFixtureSession: LiveTranslationSession, @unchecked Sendable {
         try hyCheck(appSpeech.spoken == ["你好，世界。", "你好，世界。"], "stale revisions never trigger duplicate speech")
         try hyCheck(replaySpeech.replayed.count == 2 && replaySpeech.replayed.allSatisfy { $0.1 == "zh" }, "replay preserves captured target language")
         try hyCheck(app.exportText == "Hello world.\n你好，世界。\n\nHello world.\n你好，世界。", "bilingual export remains compatible")
+        // Without a store (tests) the session lives in memory only; it still records mode and segments.
+        let hySession = app.sessionLibrary.load(id: app.activeSessionID)
+        try hyCheck(hySession?.segments.map(\.mode) == ["hy_local", "hy_local"] && hySession?.rows.map(\.translation) == ["你好，世界。", "你好，世界。"],
+                    "Hy-SimulMT session rows and segments")
         app.clear()
         try hyCheck(app.finalText.isEmpty && app.exportText.isEmpty, "clear drops transcript and replay history")
         app.unloadHyModel()
