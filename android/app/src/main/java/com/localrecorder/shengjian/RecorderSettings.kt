@@ -12,7 +12,6 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.ImeAction
@@ -34,11 +33,14 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
     var key by remember { mutableStateOf("") }
     var discard by rememberSaveable { mutableStateOf(false) }
     var invalid by remember { mutableStateOf(false) }
+    var testedDraft by rememberSaveable { mutableStateOf(false) }
     var confirmClear by rememberSaveable { mutableStateOf(false) }
 
     fun commitService(): Boolean {
         val current = controller.ui.value
         if (endpoint == current.config.endpoint && key.isBlank()) return true
+        // A pending or rejected probe must never replace the working service or its key.
+        if (testedDraft && current.testSucceeded != true) return false
         val saved = controller.saveSettings(current.config.copy(endpoint = endpoint), key, current.options)
         invalid = !saved
         if (saved) {
@@ -46,6 +48,11 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
             key = ""
         }
         return saved
+    }
+    fun edited() {
+        testedDraft = false
+        invalid = false
+        controller.clearSettingsFeedback()
     }
     fun leave() { if (commitService()) onBack() else discard = true }
     BackHandler { leave() }
@@ -60,9 +67,10 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
     SettingsLayout(back = ::leave, service = {
         ServiceFields(
             endpoint, key, ui.hasKey && endpoint == ui.config.endpoint, ui.testing, invalid,
-            onEndpoint = { endpoint = it; key = ""; invalid = false }, onKey = { key = it; invalid = false },
-            commit = { commitService() }, test = {
-                if (commitService()) controller.testConnection(controller.ui.value.config, "")
+            onEndpoint = { endpoint = it; key = ""; edited() }, onKey = { key = it; edited() },
+            test = {
+                testedDraft = true
+                controller.testConnection(controller.ui.value.config.copy(endpoint = endpoint), key)
             },
         )
         if (ui.settingsMessage.isNotEmpty()) {
@@ -109,32 +117,24 @@ internal fun SettingsLayout(back: () -> Unit, service: @Composable ColumnScope.(
 @Composable
 internal fun ServiceFields(
     endpoint: String, key: String, keySaved: Boolean, testing: Boolean, invalid: Boolean,
-    onEndpoint: (String) -> Unit, onKey: (String) -> Unit, commit: () -> Unit, test: () -> Unit,
+    onEndpoint: (String) -> Unit, onKey: (String) -> Unit, test: () -> Unit,
 ) {
     var visible by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
-    var addressFocused by remember { mutableStateOf(false) }
-    var keyFocused by remember { mutableStateOf(false) }
     Text("Qwen LiveTranslate · ${LiveTranslateConfig.MODEL}", style = Design.caption)
     OutlinedTextField(value = endpoint, onValueChange = onEndpoint, label = { Text("服务地址") },
         singleLine = true, enabled = !testing, isError = invalid,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { commit(); keyboard?.hide() }),
-        modifier = Modifier.fillMaxWidth().onFocusChanged {
-            if (addressFocused && !it.isFocused) commit()
-            addressFocused = it.isFocused
-        })
+        keyboardActions = KeyboardActions(onDone = { keyboard?.hide() }),
+        modifier = Modifier.fillMaxWidth())
     OutlinedTextField(value = key, onValueChange = onKey, label = { Text("API Key") },
         placeholder = { Text(if (keySaved) "已保存，留空保留原密钥" else "填写此地址的密钥") },
         singleLine = true, enabled = !testing,
         visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
         trailingIcon = { TextButton({ visible = !visible }) { Text(if (visible) "隐藏" else "显示") } },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { commit(); keyboard?.hide() }),
-        modifier = Modifier.fillMaxWidth().onFocusChanged {
-            if (keyFocused && !it.isFocused) commit()
-            keyFocused = it.isFocused
-        })
+        keyboardActions = KeyboardActions(onDone = { keyboard?.hide() }),
+        modifier = Modifier.fillMaxWidth())
     OutlinedButton(test, enabled = !testing) {
         if (testing) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp); Spacer(Modifier.width(Design.spaceSm)) }
         Text(if (testing) "正在测试…" else "测试连接")

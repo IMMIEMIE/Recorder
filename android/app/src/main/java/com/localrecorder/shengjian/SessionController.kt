@@ -233,6 +233,10 @@ class SessionController(private val context: Context) : SessionPlatform {
         return secrets.has(account)
     }
 
+    fun clearSettingsFeedback() {
+        _ui.update { it.copy(settingsMessage = "", testSucceeded = null) }
+    }
+
     /** Establishes a session without capturing or sending audio. */
     fun testConnection(draft: LiveTranslateConfig, key: String) {
         if (_ui.value.testing || engine.snapshot.state != SessionState.IDLE) return
