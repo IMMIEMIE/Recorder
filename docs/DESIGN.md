@@ -73,7 +73,7 @@ Android 使用 `ShengjianTheme`，由系统外观选择浅色或深色。保留�
 
 ## Android 样稿确认
 
-[Compose 样稿](../android/app/src/screenshotTest/kotlin/com/localrecorder/shengjian/DesignPreviews.kt) 使用示例会话和原生组件。手机为 393 × 780 dp，平板为 960 × 660 dp，另有 200% 字体、会话记录、设置、导出和首次引导。真实渲染的 [九张 PNG](../android/app/src/screenshotTestDebug/reference/com/localrecorder/shengjian/DesignPreviewsKt) 可在 GitHub 打开。在 Android Studio 的 Preview 打开上述文件；命令行使用以下步骤。
+[Compose 样稿](../android/app/src/screenshotTest/kotlin/com/localrecorder/shengjian/DesignPreviews.kt) 使用示例会话和原生组件。手机为 393 × 780 dp，平板为 960 × 660 dp，另有双人对话分屏、200% 字体、会话记录、设置、导出和首次引导。真实渲染的[样稿截图](../android/app/src/screenshotTestDebug/reference/com/localrecorder/shengjian/DesignPreviewsKt) 可在 GitHub 打开。在 Android Studio 的 Preview 打开上述文件；命令行使用以下步骤。
 
 ```sh
 cd android

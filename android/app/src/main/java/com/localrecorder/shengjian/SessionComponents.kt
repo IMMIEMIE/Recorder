@@ -51,7 +51,7 @@ internal fun SessionHeader(title: String, openList: (() -> Unit)?, actions: @Com
 }
 
 @Composable
-internal fun SessionStatus(snapshot: SessionSnapshot, language: String, hasSession: Boolean) {
+internal fun SessionStatus(snapshot: SessionSnapshot, language: String, hasSession: Boolean, targetControl: (@Composable () -> Unit)? = null) {
     val status = LocalStatusColors.current
     val colors = MaterialTheme.colorScheme
     val (label, tint) = when {
@@ -81,7 +81,7 @@ internal fun SessionStatus(snapshot: SessionSnapshot, language: String, hasSessi
             Text(label, style = Design.caption, color = tint)
             if (snapshot.slowNetwork && snapshot.status.isNotBlank()) Text(snapshot.status, style = Design.caption, color = colors.onSurfaceVariant)
         }
-        Text(stringResource(R.string.target_format, language), style = Design.caption, color = colors.onSurfaceVariant)
+        if (targetControl != null) targetControl() else Text(stringResource(R.string.target_format, language), style = Design.caption, color = colors.onSurfaceVariant)
     }
 }
 
@@ -91,7 +91,12 @@ internal fun SubtitleText(row: SubtitleRow, stamp: String? = null) {
     val draft = row.source.isNotEmpty() && !row.sourceDone || row.translation.isNotEmpty() && !row.translationDone
     Column(Modifier.fillMaxWidth().padding(horizontal = Design.spaceLg, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(Design.spaceXs)) {
-        val caption = listOfNotNull(stamp, stringResource(R.string.transcribing).takeIf { draft }).joinToString("  ·  ")
+        val speaker = when (row.speaker) {
+            "A", "B" -> stringResource(R.string.dialogue_speaker, row.speaker.orEmpty())
+            "unknown" -> stringResource(R.string.dialogue_unknown)
+            else -> null
+        }
+        val caption = listOfNotNull(stamp, speaker, stringResource(R.string.transcribing).takeIf { draft }).joinToString("  ·  ")
         if (caption.isNotEmpty()) Text(caption, style = Design.caption, color = if (draft) colors.primary else colors.onSurfaceVariant)
         if (row.translation.isNotEmpty()) Text(row.translation, style = Design.translation,
             color = colors.onSurface.copy(alpha = if (row.translationDone) 1f else Design.draftOpacity))

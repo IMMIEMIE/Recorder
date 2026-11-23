@@ -26,6 +26,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.localrecorder.live.LiveServiceProfile
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.live.PlaybackTiming
+import com.localrecorder.live.SessionState
 import com.localrecorder.shengjian.ui.theme.Design
 
 @Composable
@@ -67,7 +68,9 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
         onDispose { owner.lifecycle.removeObserver(observer) }
     }
 
+    val recording = ui.session.state != SessionState.IDLE
     SettingsLayout(back = ::leave, service = {
+        if (recording) Text(stringResource(R.string.dialogue_service_locked), style = Design.caption)
         ServiceFields(
             profile, ui.config, key, remember(profile.endpoint, ui.hasKey) { controller.hasKey(profile.endpoint) }, ui.testing,
             onEdit = { updated ->
@@ -87,6 +90,7 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
                 }
             },
             onKey = { key = it; edited() },
+            recording = recording,
             test = {
                 testedDraft = true
                 val current = controller.ui.value.config
@@ -102,11 +106,21 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
             Text(text, style = Design.caption, color = if (invalid || ui.testSucceeded == false) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }) {
-        PreferenceGroups(ui.config, ui.options, enabled = !ui.testing,
+        PreferenceGroups(ui.config, ui.options, enabled = !ui.testing && ui.session.state != SessionState.FINISHING,
             onConfig = { change -> if (commitService()) controller.saveSettings(change(controller.ui.value.config), "", controller.ui.value.options) },
             onOptions = { change -> if (commitService()) controller.saveSettings(controller.ui.value.config, "", change(controller.ui.value.options)) },
             canClear = ui.sessions.isNotEmpty() && ui.recordingId == null,
-            clear = { confirmClear = true })
+            clear = { confirmClear = true }, recording = recording,
+            dialogueTargets = if (ui.dialogueMode) ({
+                listOf("A" to ui.dialogueLanguageA, "B" to ui.dialogueLanguageB).forEach { (side, code) ->
+                    val name = LiveTranslateConfig.LANGUAGES.first { it.first == code }.second
+                    val other = if (side == "A") ui.dialogueLanguageB else ui.dialogueLanguageA
+                    LanguageChoice(stringResource(R.string.dialogue_seat, side, name), code,
+                        { if (side == "A") controller.setDialogueLanguages(it, other) else controller.setDialogueLanguages(other, it) },
+                        enabled = ui.session.state != SessionState.FINISHING, other = other)
+                }
+            }) else null)
+
     }
     if (discard) ConfirmDialog(stringResource(R.string.settings_unsaved), stringResource(R.string.discard_hint), stringResource(R.string.discard_changes),
         onDismiss = { discard = false }, onConfirm = onBack)
@@ -138,20 +152,20 @@ internal fun SettingsLayout(back: () -> Unit, service: @Composable ColumnScope.(
 internal fun ServiceFields(
     profile: LiveServiceProfile, config: LiveTranslateConfig, key: String, keySaved: Boolean, testing: Boolean,
     onEdit: (LiveServiceProfile) -> Unit, onSelect: (LiveServiceProfile) -> Unit,
-    onKey: (String) -> Unit, test: () -> Unit,
+    onKey: (String) -> Unit, test: () -> Unit, recording: Boolean = false,
 ) {
     var visible by remember(profile.id) { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
-    LiveServiceProfileEditor(profile, config, testing, onEdit, onSelect)
+    LiveServiceProfileEditor(profile, config, testing, onEdit, onSelect, recording)
     OutlinedTextField(value = key, onValueChange = onKey, label = { Text("API Key") },
         placeholder = { Text(if (keySaved) stringResource(R.string.use_saved_key) else stringResource(R.string.enter_service_key)) },
-        singleLine = true, enabled = !testing,
+        singleLine = true, enabled = !testing && !recording,
         visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-        trailingIcon = { TextButton({ visible = !visible }) { Text(if (visible) stringResource(R.string.hide) else stringResource(R.string.show)) } },
+        trailingIcon = { TextButton({ visible = !visible }, enabled = !recording) { Text(if (visible) stringResource(R.string.hide) else stringResource(R.string.show)) } },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { keyboard?.hide() }),
         modifier = Modifier.fillMaxWidth())
-    OutlinedButton(test, enabled = !testing) {
+    OutlinedButton(test, enabled = !testing && !recording) {
         if (testing) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp); Spacer(Modifier.width(Design.spaceSm)) }
         Text(if (testing) stringResource(R.string.testing) else stringResource(R.string.test_connection))
     }
@@ -162,11 +176,12 @@ internal fun PreferenceGroups(
     config: LiveTranslateConfig, options: AppOptions, enabled: Boolean,
     onConfig: ((LiveTranslateConfig) -> LiveTranslateConfig) -> Unit,
     onOptions: ((AppOptions) -> AppOptions) -> Unit, canClear: Boolean, clear: () -> Unit,
+    recording: Boolean = false, dialogueTargets: (@Composable () -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     GroupTitle(stringResource(R.string.translation))
     var expanded by remember { mutableStateOf(false) }
-    Box {
+    if (dialogueTargets != null) dialogueTargets() else Box {
         OutlinedButton({ expanded = true }, Modifier.fillMaxWidth(), enabled = enabled) { Text(stringResource(R.string.target_choice, config.languageName)) }
         DropdownMenu(expanded, { expanded = false }) {
             LiveTranslateConfig.LANGUAGES.forEach { (code, name) ->
@@ -177,7 +192,8 @@ internal fun PreferenceGroups(
     GroupTitle(stringResource(R.string.translated_audio))
     SettingSwitch(stringResource(R.string.play_translation), config.audioOutput, enabled) { value -> onConfig { it.copy(audioOutput = value) } }
     if (config.audioOutput) {
-        Segments(stringResource(R.string.playback_timing), listOf(stringResource(R.string.streaming_playback), stringResource(R.string.final_playback)), config.playbackTiming.ordinal) { i ->
+        if (dialogueTargets != null) Text(stringResource(R.string.dialogue_playback_timing), style = Design.caption)
+        else Segments(stringResource(R.string.playback_timing), listOf(stringResource(R.string.streaming_playback), stringResource(R.string.final_playback)), config.playbackTiming.ordinal) { i ->
             if (enabled) onConfig { it.copy(playbackTiming = PlaybackTiming.entries[i]) }
         }
         var volume by remember(config.volume) { mutableFloatStateOf(config.volume) }
@@ -188,6 +204,7 @@ internal fun PreferenceGroups(
     GroupTitle(stringResource(R.string.network))
     SettingSwitch(stringResource(R.string.auto_reconnect), options.autoReconnect, enabled) { value -> onOptions { it.copy(autoReconnect = value) } }
     SettingSwitch(stringResource(R.string.bluetooth_microphone), options.bluetoothMicrophone, enabled) { value -> onOptions { it.copy(bluetoothMicrophone = value) } }
+    if (recording) Text(stringResource(R.string.bluetooth_next_start), style = Design.caption)
     GroupTitle(stringResource(R.string.session_history))
     SettingSwitch(stringResource(R.string.save_history), options.saveSessions, enabled) { value -> onOptions { it.copy(saveSessions = value) } }
     Text(stringResource(R.string.history_brief), style = Design.caption)

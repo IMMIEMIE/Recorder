@@ -3,6 +3,11 @@
 package com.localrecorder.shengjian
 
 import android.content.res.Configuration
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.lazy.LazyListPrefetchStrategy
+import androidx.compose.foundation.lazy.layout.PrefetchScheduler
+import androidx.compose.foundation.lazy.layout.PrefetchRequest
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -15,6 +20,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import com.localrecorder.live.SessionState
+import com.localrecorder.live.SubtitleRow
 import com.android.tools.screenshot.PreviewTest
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.shengjian.ui.theme.Design
@@ -22,7 +30,7 @@ import com.localrecorder.shengjian.ui.theme.LocalStatusColors
 import com.localrecorder.shengjian.ui.theme.ShengjianTheme
 
 // Review fixtures only. No controller, credentials, microphone, wall clock or network.
-private enum class Page { Transcript, History, Settings, Export, Welcome }
+private enum class Page { Transcript, History, Settings, Export, Welcome, Dialogue }
 
 private val samples = listOf(
     "这附近有什么安静的地方？" to "Is there somewhere quiet near here?",
@@ -46,6 +54,7 @@ private fun Review(initial: Page = Page.Transcript) {
                         VerticalDivider()
                     }
                     when (page) {
+                        Page.Dialogue -> DialogueReview { page = Page.Transcript }
                         Page.Welcome -> Welcome({ page = Page.Settings }, { page = Page.Transcript })
                         Page.Settings -> Settings { page = Page.Transcript }
                         Page.History -> History(Modifier.fillMaxSize(), { page = Page.Transcript }, { page = Page.Settings })
@@ -98,6 +107,7 @@ private fun Transcript(wide: Boolean, recording: Boolean, toggle: () -> Unit, na
     var speech by remember { mutableStateOf(true) }
     Column(Modifier.fillMaxSize()) {
         SessionHeader("河岸散步", if (wide) null else ({ navigate(Page.History) })) {
+            TextButton({ navigate(Page.Dialogue) }) { Text(stringResource(R.string.dialogue_mode)) }
             Box {
                 Tool(R.drawable.ic_more_vert, "更多操作") { more = true }
                 DropdownMenu(more, { more = false }) {
@@ -107,7 +117,9 @@ private fun Transcript(wide: Boolean, recording: Boolean, toggle: () -> Unit, na
             }
         }
         SessionStatus(com.localrecorder.live.SessionSnapshot(state = if (recording) com.localrecorder.live.SessionState.RECORDING else com.localrecorder.live.SessionState.IDLE),
-            "中文", true)
+            "中文", true) {
+            LanguageChoice(stringResource(R.string.target_button, "中文"), "zh", {})
+        }
         HorizontalDivider()
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState(), reverseScrolling = true),
             verticalArrangement = Arrangement.Bottom) {
@@ -118,7 +130,7 @@ private fun Transcript(wide: Boolean, recording: Boolean, toggle: () -> Unit, na
         }
         Surface(color = colors.surfaceContainerLow) {
             Column(Modifier.fillMaxWidth().padding(horizontal = Design.spaceMd, vertical = Design.spaceSm)) {
-                SpeechToggle(speech, !recording, { speech = it })
+                SpeechToggle(speech, true, { speech = it })
                 Button(onClick = toggle, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = MaterialTheme.shapes.medium) {
                     Glyph(if (recording) R.drawable.ic_stop else R.drawable.ic_mic)
                     Spacer(Modifier.width(Design.spaceSm))
@@ -157,6 +169,35 @@ private fun Export(close: () -> Unit) {
         }
     }
 }
+
+// Layoutlib has no device fingerprint for Compose's default prefetch scheduler. A still preview
+// displays visible items only; use the real production lists without scheduling offscreen work.
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun previewListState() = rememberLazyListState(prefetchStrategy = remember {
+    object : LazyListPrefetchStrategy by LazyListPrefetchStrategy() {
+        override val prefetchScheduler = object : PrefetchScheduler {
+            override fun schedulePrefetch(prefetchRequest: PrefetchRequest) = Unit
+        }
+    }
+})
+
+@Composable
+private fun DialogueReview(exit: () -> Unit) {
+    val rows = listOf(
+        SubtitleRow("1", "我们在河边碰面吧。", true, "Let's meet by the river.", true,
+            sourceLanguage = "zh", targetLanguage = "en", speaker = "A"),
+        SubtitleRow("2", "Shall we meet at the bridge?", true, "我们在桥上见面好吗？", true,
+            sourceLanguage = "en", targetLanguage = "zh", speaker = "B"),
+    )
+    DialogueScreen(rows, "zh", "en", SessionState.RECORDING, true, false, false,
+        stringResource(R.string.recording), remember { SnackbarHostState() },
+        facing = true, toggleFacing = {}, setLanguages = { _, _ -> }, record = {}, exit = exit, onSpeech = {}, stopPlayback = {}, settings = {},
+        listA = previewListState(), listB = previewListState())
+}
+
+@PreviewTest @Preview(name = "PhoneDialogue", widthDp = 393, heightDp = 780, locale = "zh-rCN")
+@Composable fun DialoguePreview() = Review(Page.Dialogue)
 
 @PreviewTest @Preview(name = "PhoneLight", widthDp = 393, heightDp = 780, locale = "zh-rCN")
 @Composable fun PhoneLight() = Review()

@@ -155,4 +155,23 @@
     <string name="live_notification_recording">Shengjian is translating</string>
     <string name="live_notification_audio">Microphone audio is being sent to the LiveTranslate service</string>
     <string name="live_notification_reconnecting">Shengjian is reconnecting…</string>
+    <string name="dialogue_mode">Two-way conversation</string>
+    <string name="dialogue_cost">Conversation mode sends the microphone audio to two translation sessions, one per language. Audio input usage is about twice that of ordinary translation.</string>
+    <string name="dialogue_enter">Enter conversation</string>
+    <string name="dialogue_exit">Exit conversation</string>
+    <string name="dialogue_swap">Swap the two languages</string>
+    <string name="dialogue_face">Face each other</string>
+    <string name="dialogue_side_by_side">Read in the same direction</string>
+    <string name="dialogue_seat">Side %1$s · %2$s ▾</string>
+    <string name="dialogue_speaker">Speaker %1$s</string>
+    <string name="dialogue_unknown">Language unidentified</string>
+    <string name="dialogue_waiting">Translations into %1$s appear here.</string>
+    <string name="dialogue_start">Start</string>
+    <string name="dialogue_speech_on">Turn translated audio on</string>
+    <string name="dialogue_speech_off">Turn translated audio off</string>
+    <string name="dialogue_service_locked">Stop recording to change the service address or API key.</string>
+    <string name="bluetooth_next_start">Microphone changes take effect the next time recording starts.</string>
+    <string name="target_button">To %1$s ▾</string>
+    <string name="connecting">Connecting…</string>
+    <string name="dialogue_playback_timing">Each turn plays after the sentence is finalized and its speaker is identified.</string>
 </resources>
