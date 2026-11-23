@@ -15,6 +15,27 @@
 
 也可以直接用 Android Studio 打开 `android/` 目录。GitHub Actions（`.github/workflows/android.yml`）会运行测试并上传调试 APK。
 
+## 发布构建与签名
+
+```bash
+./gradlew :app:assembleRelease   # 开启 R8 与资源压缩；没有签名环境变量时生成未签名的 app-release-unsigned.apk
+../scripts/check_android_apk.sh app/build/outputs/apk/release/app-release-unsigned.apk   # 体积上限 10 MB
+```
+
+正式签名只从环境变量读取，keystore 不入库：`SHENGJIAN_KEYSTORE`（文件路径）、`SHENGJIAN_KEYSTORE_PASSWORD`、`SHENGJIAN_KEY_ALIAS`、`SHENGJIAN_KEY_PASSWORD`。
+
+推送标签 `v<versionName>`（例如 `v0.5.0`，必须与 `app/build.gradle.kts` 的 `versionName` 一致）会触发 `.github/workflows/release.yml`：运行 `:core:test`，用仓库 Secret 签名构建，`check_android_apk.sh --signed` 校验 v2 签名（拒绝调试证书）和体积，然后把 `Recorder-<ver>-android.apk` 及 `.sha256` 上传到该标签的 Release（不存在时创建草稿，说明取自 `docs/RELEASE-<ver>.md`）。macOS 的 DMG 仍在本机用 `scripts/build.sh` + `scripts/package.sh` 生成后上传到同一个 Release。
+
+首次配置（只需一次；keystore 和密码请离线备份，丢失后无法给已安装的用户推送更新）：
+
+```bash
+keytool -genkeypair -v -keystore shengjian-release.jks -alias shengjian -keyalg RSA -keysize 4096 -validity 10000
+base64 -i shengjian-release.jks | gh secret set SHENGJIAN_KEYSTORE_BASE64
+gh secret set SHENGJIAN_KEYSTORE_PASSWORD
+gh secret set SHENGJIAN_KEY_ALIAS --body shengjian
+gh secret set SHENGJIAN_KEY_PASSWORD
+```
+
 ## 结构
 
 - `core/` — 纯 Kotlin/JVM，从 macOS 版 `LiveTranslate*.swift` 移植：
