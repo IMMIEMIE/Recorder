@@ -224,7 +224,7 @@ class LiveTranslateClient(
         when (type) {
             "session.created" -> if (!configured) {
                 configured = true
-                send(Qwen38Adapter.sessionUpdate(configuration))
+                send(configuration.sessionUpdate())
             }
             "session.updated" -> {
                 if (!configured) {

@@ -94,6 +94,12 @@ data class LiveTranslateConfig(
         return copy(catalog = catalog.using(profile.copy(endpoint = address)))
     }
 
+    /** Shared by the connection and probes that construct their own WebSocket request. */
+    fun sessionUpdate(): JSONObject {
+        profile.validate()
+        return Qwen38Adapter.sessionUpdate(this)
+    }
+
     fun toJson(): String = JSONObject()
         .put("enabled", true)
         .put("catalog", catalog.json())
