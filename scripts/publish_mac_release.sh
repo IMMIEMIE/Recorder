@@ -7,11 +7,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-version=$(tr -d '[:space:]' < VERSION)
-if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  printf 'VERSION 必须是 x.y.z：%s\n' "$version" >&2
-  exit 1
-fi
+version=$(scripts/version.sh version)
+build_number=$(scripts/version.sh build)
 tag="v$version"
 dmg="dist/声笺-$version-arm64.dmg"
 # ASCII asset name: GitHub Releases rewrites non-ASCII file names (the CI APK is Recorder-<ver>-android.apk).
@@ -49,8 +46,6 @@ if [ "$bundle_version" != "$version" ]; then
   exit 1
 fi
 # CFBundleVersion is the integer build number: major*10000 + minor*100 + patch (scripts/build.sh).
-[[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]
-build_number=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))
 bundle_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")
 if [ "$bundle_build" != "$build_number" ]; then
   printf '拒绝发布：应用构建号 %s 应为 %s\n' "$bundle_build" "$build_number" >&2

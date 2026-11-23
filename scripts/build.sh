@@ -1,16 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# VERSION at the repository root is the single version for macOS and Android.
-version=$(tr -d '[:space:]' < VERSION)
-if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  printf 'VERSION 必须是 x.y.z：%s\n' "$version" >&2
-  exit 1
-fi
+# VERSION at the repository root is the single version for macOS and Android; scripts/version.sh interprets it.
+version=$(scripts/version.sh version)
 # CFBundleVersion is a monotonic integer (same formula as Android's versionCode): major*10000 + minor*100 + patch.
 # The earlier releases shipped small integers (0.4.0 -> "5"), and LaunchServices compares build numbers
 # component-wise, so a dotted "0.5.0" would sort below "5".
-build_number=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))
+build_number=$(scripts/version.sh build)
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache"
 if python3 -c 'import json,pathlib; p=pathlib.Path("docs/hy-runtime-verification.json"); raise SystemExit(0 if p.exists() and json.loads(p.read_text()).get("passed") is True else 1)' 2>/dev/null; then

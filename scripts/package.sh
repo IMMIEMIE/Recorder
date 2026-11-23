@@ -1,12 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# VERSION at the repository root is the single version for macOS and Android.
-version=$(tr -d '[:space:]' < VERSION)
-if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  printf 'VERSION 必须是 x.y.z：%s\n' "$version" >&2
-  exit 1
-fi
+# VERSION at the repository root is the single version for macOS and Android; scripts/version.sh interprets it.
+version=$(scripts/version.sh version)
 app="$PWD/dist/声笺.app"
 output="${1:-$PWD/dist/声笺-$version-arm64.dmg}"
 if [ ! -d "$app" ]; then

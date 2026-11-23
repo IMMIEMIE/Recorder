@@ -10,12 +10,22 @@ fail=0
 bad() { printf '版本不一致：%s\n' "$1" >&2; fail=1; }
 
 [ -f VERSION ] || { echo "缺少 VERSION 文件" >&2; exit 1; }
-version=$(tr -d '[:space:]' < VERSION)
-if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-  echo "VERSION 必须是 x.y.z：$version" >&2
-  exit 1
-fi
-code=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))
+version=$(scripts/version.sh version)
+code=$(scripts/version.sh build)
+
+# The shared parser/formula (scripts/version.sh): known vectors, and the real VERSION must not give 0.
+check_build() { # <version> <expected>
+  got=$(scripts/version.sh build "$1" 2>/dev/null || true)
+  [ "$got" = "$2" ] || bad "scripts/version.sh build $1 得到 \"$got\"，应为 $2"
+}
+check_build 0.5.0 500
+check_build 1.2.3 10203
+check_build 0.10.0 1000
+if scripts/version.sh build 0.5 >/dev/null 2>&1; then bad "scripts/version.sh 接受了不是 x.y.z 的 0.5"; fi
+if [[ ! "$code" =~ ^[1-9][0-9]*$ ]]; then bad "VERSION $version 的构建号无效：$code"; fi
+# Independent recomputation of the real VERSION.
+expected=$(awk -F. '{ print $1 * 10000 + $2 * 100 + $3 }' VERSION)
+[ "$code" = "$expected" ] || bad "构建号 $code 与独立计算的 $expected 不一致"
 
 # Android: versionName/versionCode must come from VERSION (not a literal), with the agreed formula.
 gradle=android/app/build.gradle.kts
@@ -25,12 +35,15 @@ grep -Eq '^ *versionCode = releaseVersionCode$' "$gradle" || bad "$gradle 的 ve
 grep -Fq 'major.toInt() * 10000 + minor.toInt() * 100 + patch.toInt()' "$gradle" || bad "$gradle 的 versionCode 公式不是 major*10000 + minor*100 + patch"
 
 # macOS: build.sh (Info.plist) and package.sh (DMG name, volume name, notes) read VERSION; no literal versions.
-grep -Fq "tr -d '[:space:]' < VERSION" scripts/build.sh || bad "scripts/build.sh 没有读取 VERSION"
+for f in scripts/build.sh scripts/package.sh scripts/publish_mac_release.sh; do
+  grep -Fq 'scripts/version.sh version' "$f" || bad "$f 没有通过 scripts/version.sh 读取版本"
+done
+grep -Fq 'scripts/version.sh build' scripts/build.sh || bad "scripts/build.sh 没有通过 scripts/version.sh 计算构建号"
 grep -Eq 'CFBundleVersion</key><string>__BUILD__' scripts/build.sh || bad "scripts/build.sh 的 CFBundleVersion 不是构建号占位符"
-# shellcheck disable=SC2016
-grep -Fq 'build_number=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))' scripts/build.sh || bad "scripts/build.sh 的构建号公式不是 major*10000 + minor*100 + patch"
 grep -Eq 'CFBundleShortVersionString</key><string>__VERSION__' scripts/build.sh || bad "scripts/build.sh 的 CFBundleShortVersionString 不是取自 VERSION"
-grep -Fq "tr -d '[:space:]' < VERSION" scripts/package.sh || bad "scripts/package.sh 没有读取 VERSION"
+if grep -Eq 'BASH_REMATCH' scripts/build.sh scripts/package.sh scripts/publish_mac_release.sh; then
+  bad "构建号公式应只在 scripts/version.sh 中"
+fi
 if grep -Eq '声笺[ -]v?[0-9]+\.[0-9]+\.[0-9]+' scripts/package.sh; then
   bad "scripts/package.sh 含有写死的版本号"
 fi
