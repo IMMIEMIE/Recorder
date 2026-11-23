@@ -84,7 +84,8 @@
 
 ### 阶段 5 · 发布
 
-- 正式签名（keystore 不入库，通过 CI Secret 注入）、R8 混淆验证、版本号与 `CHANGELOG`。
+- ✅ 正式签名（keystore 不入库，通过 CI Secret 注入）、R8 + 资源压缩、体积上限 10 MB（`scripts/check_android_apk.sh`）；推送 `v<版本>` 标签由 `.github/workflows/release.yml` 构建签名 APK 并上传到 GitHub Release。
+- 与 macOS 统一版本号、同一 Release 同时发布 DMG 与 APK（issue #13）。
 - 隐私政策（音频仅发往所配置的服务、不保存录音），应用商店素材；国内安卓商店与 Google Play 的权限说明（麦克风前台服务）。
 - 发布说明写入 `docs/RELEASE-ANDROID-*.md`。
 
