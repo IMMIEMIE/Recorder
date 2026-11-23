@@ -19,6 +19,7 @@ final class AIWorkspace: ObservableObject {
     private var task: Task<Void, Never>?
     private var requestID = UUID()
     private var recordingID: String?
+    private var originalTranscript = ""
     private let service: () throws -> (AIServiceConfiguration, String)
 
     init(service: @escaping () throws -> (AIServiceConfiguration, String) = {
@@ -42,10 +43,11 @@ final class AIWorkspace: ObservableObject {
 
     func prepare(text: String, recordingID: String) {
         let changedRecording = self.recordingID != recordingID
-        guard changedRecording || source != text else { return }
+        guard changedRecording || originalTranscript != text else { return }
         if running { cancel() }
         if changedRecording { question = "" }
         self.recordingID = recordingID
+        originalTranscript = text
         source = text
         result = ""
         reasoningSummary = ""

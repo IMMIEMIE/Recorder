@@ -157,6 +157,7 @@ actor Output {
         var path = "/reasoning"
         let workspace = AIWorkspace { (config(path), "mock-key") }
         workspace.prepare(text: "synthetic", recordingID: "first")
+        workspace.source = "edited excerpt"
         var statuses: [String] = []
         let observation = workspace.$status.sink { statuses.append($0) }
         defer { observation.cancel() }
@@ -167,6 +168,10 @@ actor Output {
         try expect(workspace.reasoningSummary == "已整理要点。", "only public summary chunks reach the workspace")
         let markdownAnswer = "## 结论\n\n- 完成"
         try expect(workspace.result == markdownAnswer, "copy and export source contains answer Markdown only")
+
+        workspace.prepare(text: "synthetic", recordingID: "first")
+        try expect(workspace.source == "edited excerpt" && workspace.result == markdownAnswer
+                   && workspace.reasoningSummary == "已整理要点。", "reopening the same recording preserves edits and its displayed answer")
 
         path = "/late"
         workspace.send()
@@ -183,6 +188,9 @@ actor Output {
         try await Task.sleep(for: .milliseconds(600))
         try expect(workspace.result == "你好，世界🌏" && workspace.reasoningSummary.isEmpty, "cancelled response cannot append to the new request")
         try expect(!statuses.contains("服务正在推理…"), "no invented reasoning state")
+        workspace.prepare(text: "synthetic plus new transcript", recordingID: "second")
+        try expect(workspace.source == "synthetic plus new transcript" && workspace.result.isEmpty,
+                   "reopening after new transcription refreshes the source and clears the stale answer")
 
         path = "/length"
         workspace.send()
