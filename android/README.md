@@ -24,7 +24,14 @@
 
 正式签名只从环境变量读取，keystore 不入库：`SHENGJIAN_KEYSTORE`（文件路径）、`SHENGJIAN_KEYSTORE_PASSWORD`、`SHENGJIAN_KEY_ALIAS`、`SHENGJIAN_KEY_PASSWORD`。
 
-推送标签 `v<versionName>`（例如 `v0.5.0`，必须与 `app/build.gradle.kts` 的 `versionName` 一致）会触发 `.github/workflows/release.yml`：运行 `:core:test`，用仓库 Secret 签名构建，`check_android_apk.sh --signed` 校验 v2 签名（拒绝调试证书）和体积，然后把 `Recorder-<ver>-android.apk` 及 `.sha256` 上传到该标签的 Release（不存在时创建草稿，说明取自 `docs/RELEASE-<ver>.md`）。macOS 的 DMG 仍在本机用 `scripts/build.sh` + `scripts/package.sh` 生成后上传到同一个 Release。
+### 发布清单（macOS 与安卓同版本、同一个 Release）
+
+版本号只写在仓库根目录的 `VERSION`（`x.y.z`，例如 `0.5.0`）。`app/build.gradle.kts` 从中读取 `versionName`，并算出 `versionCode = 主版本*10000 + 次版本*100 + 修订号`（0.5.0 → 500）；`VERSION` 不是 `x.y.z` 时 Gradle 构建直接失败。macOS 的 `scripts/build.sh`、`scripts/package.sh` 读取同一个文件。`scripts/check_version.sh` 检查各处是否一致（安卓 CI 也会运行它）。
+
+1. 修改 `VERSION`，写好 `docs/RELEASE-<ver>.md`（创建 Release 时作为说明），运行 `scripts/check_version.sh`，合并到 `main`。
+2. 推送标签 `v<ver>`（必须等于 `v$(cat VERSION)`）。`.github/workflows/release.yml` 会核对标签与 `VERSION`，运行 `:core:test`，用仓库 Secret 签名构建，`check_android_apk.sh --signed` 校验 v2 签名（拒绝调试证书）和体积，然后把 `Recorder-<ver>-android.apk` 及 `.sha256` 上传到该标签的 Release（不存在时创建草稿）。
+3. 在本机运行 `./scripts/build.sh && ./scripts/package.sh`（需要 Metal 工具链，所以不放在 CI），再运行 `./scripts/publish_mac_release.sh`：它确认 origin 上有标签、DMG 及其签名（`codesign --verify --deep --strict`）有效，然后把 `Recorder-<ver>-arm64.dmg` 及 `.sha256` 上传到同一个 Release（不存在时创建草稿）。脚本不会创建或推送标签，也不会发布。
+4. 在 GitHub 上检查草稿里的两个安装包与校验文件，确认后手动发布。
 
 首次配置（只需一次；keystore 和密码请离线备份，丢失后无法给已安装的用户推送更新）：
 

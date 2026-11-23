@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag v<version> (matching android versionName) to build the signed Android APK and attach it to the
+# Push a tag v<version> (matching the VERSION file, which also feeds android versionName) to build the signed Android APK and attach it to the
 # GitHub Release for that tag, creating a draft release if none exists. The macOS DMG needs the Metal
 # Toolchain and is built locally with scripts/build.sh + scripts/package.sh, then uploaded to the same release.
 on:
@@ -30,11 +30,11 @@ jobs:
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Check tag matches versionName
+      - name: Check tag matches VERSION
         run: |
-          version=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' android/app/build.gradle.kts)
+          version=$(tr -d '[:space:]' < VERSION)
           if [ "v$version" != "$TAG" ]; then
-            echo "标签 $TAG 与 android versionName $version 不一致" >&2
+            echo "标签 $TAG 与 VERSION 文件 v$version 不一致" >&2
             exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
