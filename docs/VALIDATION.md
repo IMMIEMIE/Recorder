@@ -154,3 +154,84 @@ Swift 版单次转写慢约 1.6–1.8×（spike 时 ≈1.0×），待空载复�
 7. 播放译音时打开音乐或视频应用：译音停止、字幕继续。
 8. 设置中开启「使用蓝牙耳机麦克风」并连接耳机：确认由耳机收音、译音从耳机播放；断开耳机后再开始应回退到手机麦克风并提示。
 9. 通知栏「停止」按钮、返回桌面后从通知回到应用。
+
+## 2026-11-23 — 0.5.0 发布验收（#13、#24）
+
+验收基线为 `v0.5.0` / `9f5cb08ff3cb5ddd1e37a9f1fa4564e28ec27823`。#25 已合入，公开 APK 含本次修复。自动化回归和联合附件核验通过。安卓真机与真实服务的验收仍开放。[#13 验收标准](https://github.com/IMMIEMIE/Recorder/issues/13) · [#24 验收标准](https://github.com/IMMIEMIE/Recorder/issues/24) · [合并 PR #25](https://github.com/IMMIEMIE/Recorder/pull/25)
+
+### 同名标签的两次构建
+
+| 标签构建 | 检出的提交 | CI 证据 |
+| --- | --- | --- |
+| 第一份草稿 | `5930094`，在 #25 之前 | [Release 日志](https://github.com/IMMIEMIE/Recorder/actions/runs/45110049149)记录 APK 为 1,317,995 B，v2、v3 签名验证通过。 |
+| 第二份草稿，后公开 | `9f5cb08`，含修复提交 `4a03588` | [Release 日志](https://github.com/IMMIEMIE/Recorder/actions/runs/45133266470)记录 core 测试、R8、正式签名检查、上传成功，APK 也是 1,317,995 B。[标签 Android CI](https://github.com/IMMIEMIE/Recorder/actions/runs/45133266344)通过 debug 和 release 构建。 |
+
+[当前公开 Release](https://github.com/IMMIEMIE/Recorder/releases/tag/v0.5.0) 的 ID 为 `455118412`，发布时间为 2026-11-23 08:56:47 UTC。核对 Release 列表时只见这一条 0.5.0。下表取自重新下载的公开附件。两份摘要文件均通过 `shasum -a 256 -c`，四个文件的本地 SHA-256 也逐一匹配 GitHub asset digest。旧草稿缺少可独立核验的附件，本次仅引用其 CI 日志。
+
+| 公开文件 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `Recorder-0.5.0-android.apk` | 1,317,995 | `f608c6c561299df880e6e707f602ccb498db088b001517e52dcd00122b655b92` |
+| `Recorder-0.5.0-arm64.dmg` | 16,766,381 | `ca85d83bce7c092b07f33114264f11061604161e5b559984bd582f95aaf8562d` |
+
+**APK**。对下载件运行 Android `apksig` 8.9.1 校验，v2、v3 均有效，签名证书 SHA-256 为 `7abcb2fbeb380a3593f1c6649305445d7660f2b29c6daaadc3c826d27e7ab258`。包内 manifest 的包名为 `com.localrecorder.shengjian`，版本 `0.5.0 (500)`，minSdk 26，`allowBackup=false`。体积低于 10 MB。有 Android SDK 时可用 `scripts/check_android_apk.sh <apk> --signed` 复核签名和大小，`apkanalyzer manifest print <apk>` 查看版本及备份声明。
+
+两次构建文件名、版本和大小相同。公开 APK 的 `classes.dex` 同时包含下列三段文本，覆盖 #25 的积压丢弃、限流及无语义结果分支；在 Android core 生产源码的标签历史中，这组文本首次出现在 `4a03588`。在基线检出根目录、将 APK 置于当前目录后可复核：
+
+```sh
+git log --oneline -G'网络拥塞，约|LiveTranslate 请求过于频繁|no semantic result' v0.5.0 -- android/core/src/main
+python3 - <<'PY'
+from zipfile import ZipFile
+with ZipFile("Recorder-0.5.0-android.apk") as apk:
+    dex = apk.read("classes.dex")
+for text in ("网络拥塞，约", "LiveTranslate 请求过于频繁（限流），请稍后重试；已有文字已保留", "no semantic result"):
+    assert text.encode() in dex, text
+PY
+```
+
+**DMG**。`hdiutil verify` 通过。只读挂载后，`声笺.app/Contents/Info.plist` 的 `CFBundleShortVersionString` 为 `0.5.0`，`CFBundleVersion` 为 `500`。`file` 识别主程序为 arm64 Mach-O。`codesign --verify --deep --strict` 通过，`codesign -dvv` 显示 `Signature=adhoc`。DMG 由本地打包，这些检查只验证了公开映像及包内应用，无法从中确定打包时的 Git 提交。
+
+### 两端回归与补发探针
+
+本机为 macOS 27.0.1 arm64。以下测试使用基线源码、临时会话目录和仓库夹具。WebSocket 端点为 `127.0.0.1`，凭据为夹具规定的 `mock-only`。
+
+| 从仓库根目录运行 | 实测结果 |
+| --- | --- |
+| `scripts/check_version.sh` | 两端版本一致，0.5.0，构建号 500。 |
+| `(cd android && ./gradlew --offline --max-workers=2 -PcoreOnly=true :core:test)` | JUnit XML 共 39 项，失败、错误、跳过均为 0。会话状态机 18，WebSocket 客户端 7，协议逻辑 5，导出 6，存储 3。 |
+| `scripts/test_sessions.sh` | 138 项检查通过，包括 0600 文件权限、读写、重命名、删除和导出。Swift 与 Kotlin 对同一会话的 TXT / Markdown × 双语 / 仅原文 / 仅译文均逐字节匹配同一组期望文件。 |
+| `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer scripts/test_livetranslate.sh` | 7 组 PASS。合成文件输入经过 AppModel 到回环服务，覆盖尾句定稿、打开历史会话并续录、关闭保存后停止写入、恢复保存和清空会话。 |
+
+本机 `:core:test` 的首次连接及重连用例均断言只补发最后 10 个 100 ms 的块。其他用例覆盖积压时丢弃及恢复标记、停滞 8 秒重连、限流退避、60 秒建连次数上限和无结果断开续接。
+
+通过 JVM `:core:liveProbe` 另跑两次真实回环 WebSocket。输入为仓库合成的 `english.aiff`（转为 5.188 秒 PCM16），探针追加 3 秒底噪；第二次将第一次连接的就绪通知推迟 5000 ms。两次均收到收尾事件，正常结束。
+
+| 延迟就绪 | 采集 / 发送 / 未发送（秒） | 最大排队（秒） | FULL | 连接 / 重连 |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 ms | 8.188 / 8.188 / 0 | 0.102 | 0 | 1 / 0 |
+| 5000 ms | 8.188 / 4.088 / 4.100 | 0.102 | 0 | 1 / 0 |
+
+在 macOS 仓库根目录用以下命令复测。结果按 100 ms 的采集块计量，握手时间会影响未发送块数。真实网络的积压与翻译延迟仍需在同一 Wi-Fi 上测量。
+
+```sh
+(
+  set -eu
+  out=$(mktemp -d)
+  afconvert -f WAVE -d LEI16@16000 -c 1 tests/fixtures/english.aiff "$out/english.wav"
+  python3 tests/mock_livetranslate_server.py "$out/port" &
+  fixture_pid=$!
+  trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
+  until [ -s "$out/port" ]; do kill -0 "$fixture_pid"; sleep 0.1; done
+  port=$(cat "$out/port")
+  cd android
+  for delay in 0 5000; do
+    LIVETRANSLATE_API_KEY=mock-only ./gradlew --max-workers=2 -PcoreOnly=true :core:liveProbe \
+      --args="--session --burst-ms=$delay --audio=$out/english.wav --language=zh --allow-localhost=on --endpoint=ws://127.0.0.1:$port/ok --json=$out/probe-$delay.json"
+  done
+  echo "$out"
+)
+```
+
+### 待验收
+
+- **#24**：本轮没有获授权的安卓真机和真实服务专用凭据。同一 Wi-Fi 上用公开签名 APK 连续转译至少 5 分钟、全程无「连接中断」、首字及定稿延迟与 Mac 真实服务探针相当，三项均待实测。届时记录机型、系统版本、APK 摘要、时长、重连数及两端延迟。
+- **#13**：真机阶段 1 冒烟仍按上方清单执行，包含真实双语字幕、停止后的尾句、可听译音、错误 Key 和断网后的中文提示及文字保留。两端发行包的侧栏交互、重启后恢复、从界面续录与导出仍待人工验收；安卓另需验证进程被杀后的定稿保留、系统备份与迁移排除。当前 APK 的 manifest 和源码备份规则只提供静态证据。

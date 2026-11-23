@@ -216,6 +216,12 @@
 "自定义提问" = "Question";
 "例如：这段内容的主要结论是什么？" = "For example, what are the main conclusions?";
 "原文（%lld 字，可编辑）" = "Source (%lld characters, editable)";
+"回答" = "Answer";
+"服务提供的推理摘要" = "Reasoning summary from the service";
+"发送提问后，可在这里阅读回答。" = "Send a question to see the answer here.";
+"服务正在推理…" = "The service is reasoning…";
+"正在生成回答…" = "Generating the answer…";
+"已停止，已保留部分回答" = "Stopped. The partial answer has been kept.";
 "AI 回答会显示在这里" = "The answer will appear here";
 "发送当前原文到 %@" = "Send the current text to %@";
 "未配置的 AI 服务" = "an unconfigured AI service";

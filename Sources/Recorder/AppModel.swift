@@ -175,7 +175,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeSessionID = ""
     @Published private(set) var activeSessionSaved = false
     /// A different session opened read-only (while the active one is recording).
-    @Published private(set) var viewedSession: SessionFile?
+    @Published private(set) var viewedSession: SessionFile? {
+        didSet { viewedTranscripts = viewedSession.map(Self.transcripts(from:)) }
+    }
+    // Keep the read-only session projection while the active recording publishes meter and text updates.
+    private var viewedTranscripts: [Transcript]?
     @Published var exportRequest: SessionExportRequest?
     @Published var persistSessions = true {
         didSet {
@@ -1170,7 +1174,7 @@ extension AppModel {
     var recordingSessionID: String? { sessionLocked ? activeSessionID : nil }
     /// Sidebar selection: the session on screen, or nil for a new session that has not been saved yet.
     var selectedSessionID: String? { viewedSession?.id ?? (activeSessionSaved ? activeSessionID : nil) }
-    var displayedTranscripts: [Transcript] { viewedSession.map(Self.transcripts(from:)) ?? finalText }
+    var displayedTranscripts: [Transcript] { viewedTranscripts ?? finalText }
     var displayedHasText: Bool { displayedTranscripts.contains { !$0.isBreak && (!$0.text.isEmpty || !$0.translation.isEmpty) } }
     var displayedTitle: String {
         if let viewedSession { return viewedSession.title }

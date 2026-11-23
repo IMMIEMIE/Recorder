@@ -24,6 +24,10 @@ struct InterfaceLanguageTests {
             // Render the same kind of localized literal used by controls in the shipped app.
             precondition(snapshot(Text("设置"), locale: restored.locale) ==
                          snapshot(Text(verbatim: settingsLabel), locale: restored.locale))
+            let reasoningStatus = "服务正在推理…"
+            let expectedStatus = choice == .english ? "The service is reasoning…" : reasoningStatus
+            precondition(snapshot(Text(LocalizedStringKey(reasoningStatus)), locale: restored.locale) ==
+                         snapshot(Text(verbatim: expectedStatus), locale: restored.locale))
             let typedTitle = "开始转写"
             precondition(snapshot(Text(typedTitle), locale: restored.locale) ==
                          snapshot(Text(verbatim: typedTitle), locale: restored.locale))
