@@ -2,9 +2,9 @@ name: Android
 
 on:
   push:
-    paths: ["android/**", "tests/mock_livetranslate_server.py", ".github/workflows/android.yml"]
+    paths: ["android/**", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", ".github/workflows/android.yml"]
   pull_request:
-    paths: ["android/**", "tests/mock_livetranslate_server.py", ".github/workflows/android.yml"]
+    paths: ["android/**", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", ".github/workflows/android.yml"]
   workflow_dispatch:
 
 jobs:
@@ -24,6 +24,11 @@ jobs:
         run: ./gradlew :core:test
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug
+      # Unsigned here (no keystore on PRs): checks that R8 and resource shrinking succeed and the size budget holds.
+      - name: Build release APK (unsigned, R8)
+        run: ./gradlew :app:assembleRelease
+      - name: Check release APK size
+        run: ../scripts/check_android_apk.sh app/build/outputs/apk/release/app-release-unsigned.apk
       - uses: actions/upload-artifact@v4
         with:
           name: shengjian-android-debug

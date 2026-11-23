@@ -1,0 +1,87 @@
+name: Release
+
+# Push a tag v<version> (matching android versionName) to build the signed Android APK and attach it to the
+# GitHub Release for that tag, creating a draft release if none exists. The macOS DMG needs the Metal
+# Toolchain and is built locally with scripts/build.sh + scripts/package.sh, then uploaded to the same release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已存在的标签，例如 v0.5.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Check tag matches versionName
+        run: |
+          version=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' android/app/build.gradle.kts)
+          if [ "v$version" != "$TAG" ]; then
+            echo "标签 $TAG 与 android versionName $version 不一致" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Core tests
+        working-directory: android
+        run: ./gradlew :core:test
+
+      - name: Restore release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SHENGJIAN_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "缺少 SHENGJIAN_KEYSTORE_BASE64 secret，无法签名（见 android/README.md）" >&2
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "SHENGJIAN_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        working-directory: android
+        env:
+          SHENGJIAN_KEYSTORE_PASSWORD: ${{ secrets.SHENGJIAN_KEYSTORE_PASSWORD }}
+          SHENGJIAN_KEY_ALIAS: ${{ secrets.SHENGJIAN_KEY_ALIAS }}
+          SHENGJIAN_KEY_PASSWORD: ${{ secrets.SHENGJIAN_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease
+
+      - name: Check signature and size
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          scripts/check_android_apk.sh "$apk" --signed
+          mkdir -p dist
+          # ASCII asset name: GitHub Releases rewrites non-ASCII file names (the DMG is uploaded as Recorder-<ver>-arm64.dmg).
+          cp "$apk" "dist/Recorder-$VERSION-android.apk"
+          (cd dist && shasum -a 256 "Recorder-$VERSION-android.apk" > "Recorder-$VERSION-android.apk.sha256")
+
+      - name: Remove keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            notes="docs/RELEASE-$VERSION.md"
+            if [ -f "$notes" ]; then set -- --notes-file "$notes"; else set -- --notes "声笺 $VERSION（macOS + 安卓）"; fi
+            gh release create "$TAG" --draft --verify-tag --title "声笺 $VERSION" "$@"
+          fi
+          gh release upload "$TAG" --clobber "dist/Recorder-$VERSION-android.apk" "dist/Recorder-$VERSION-android.apk.sha256"

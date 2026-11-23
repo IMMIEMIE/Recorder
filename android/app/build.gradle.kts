@@ -16,11 +16,38 @@ android {
         versionName = "0.2.0"
     }
 
+    // Release signing comes only from the environment (CI secrets, see android/README.md); the keystore
+    // never enters the repository. Without SHENGJIAN_KEYSTORE the release APK is built unsigned, which is
+    // enough for CI to check R8 and the size budget.
+    val releaseKeystore = providers.environmentVariable("SHENGJIAN_KEYSTORE").orNull?.takeIf { it.isNotBlank() }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            fun secret(name: String) = providers.environmentVariable(name).orNull?.takeIf { it.isNotEmpty() }
+                ?: throw GradleException("SHENGJIAN_KEYSTORE is set but $name is missing")
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = secret("SHENGJIAN_KEYSTORE_PASSWORD")
+                keyAlias = secret("SHENGJIAN_KEY_ALIAS")
+                keyPassword = secret("SHENGJIAN_KEY_PASSWORD")
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release")
         }
+    }
+
+    dependenciesInfo {
+        // The APK is distributed on GitHub Releases; the dependency block only Google Play reads stays in bundles.
+        includeInApk = false
     }
 
     compileOptions {
