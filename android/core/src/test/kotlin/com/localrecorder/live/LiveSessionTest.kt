@@ -58,6 +58,7 @@ class LiveSessionTest {
         private val timers = mutableListOf<Timer>()
         var now = 0L
         val transports = mutableListOf<FakeTransport>()
+        val openedAt = mutableListOf<Long>()
         val speeches = mutableListOf<FakeSpeech>()
         var onChunk: ((ByteArray) -> Unit)? = null
         var onError: ((String) -> Unit)? = null
@@ -77,7 +78,11 @@ class LiveSessionTest {
             timers.add(timer)
             return Cancellable { timer.cancelled = true }
         }
-        override fun transport(listener: LiveTranslateClient.Listener) = FakeTransport(listener).also(transports::add)
+        override fun transport(listener: LiveTranslateClient.Listener): FakeTransport {
+            openedAt += now
+            return FakeTransport(listener).also(transports::add)
+        }
+        override fun elapsedMs() = now
         override fun startCapture(onChunk: (ByteArray) -> Unit, onError: (String) -> Unit) {
             if (captureFails) throw LiveTranslateException("无法打开麦克风，请检查录音权限或是否被其他应用占用")
             captureStarts++
@@ -128,6 +133,11 @@ class LiveSessionTest {
     private companion object {
         fun json(vararg pairs: Pair<String, Any>): JSONObject = JSONObject().apply { pairs.forEach { put(it.first, it.second) } }
         const val LOST = "LiveTranslate 连接中断或无法连接，请检查网络、服务地址及 API Key；已有文字已保留"
+        val RATE_LIMITED = EndCause(EndCause.Kind.RATE_LIMITED, "服务限流：1007 rate limit")
+        val NO_RESULT = EndCause(EndCause.Kind.NO_RESULT, "服务端错误：no semantic result")
+
+        /** 100 ms of 16 kHz PCM16, the microphone's chunk size. */
+        const val CHUNK = 3200
     }
 
     @Test
@@ -229,17 +239,37 @@ class LiveSessionTest {
     }
 
     @Test
-    fun gapAudioIsBoundedToTheMostRecent() {
+    fun firstConnectionCatchesUpOnlyTheLastSecond() {
+        val device = Device()
+        device.session.start(LiveTranslateConfig(), "mock-only")
+        assertEquals("正在连接…", device.session.snapshot.status)
+        repeat(30) { device.speak(CHUNK, fill = it) } // 3 s before the configuration is acknowledged
+        assertTrue(device.transport.audio.isEmpty())
+        device.transport.listener.onReady()
+        val sent = device.transport.audio
+        assertEquals("only the last second goes at once", LiveSession.CATCH_UP_AUDIO_BYTES, sent.sumOf { it.size })
+        assertEquals((20..29).toList(), sent.map { it[0].toInt() })
+        // Then real time: one chunk per captured chunk.
+        device.speak(CHUNK, fill = 30)
+        device.speak(CHUNK, fill = 31)
+        assertEquals((20..31).toList(), sent.map { it[0].toInt() })
+        assertTrue(device.session.snapshot.rows.none { it.marker.isNotEmpty() })
+    }
+
+    @Test
+    fun reconnectCatchesUpOnlyTheLastSecond() {
         val device = Device()
         device.record()
-        device.transport.listener.onEnd(LOST, true)
-        repeat(80) { device.speak(fill = it) } // 8 s of 100 ms chunks
+        device.utter("a")
+        device.transport.listener.onEnd(LOST, true, EndCause(detail = "网络故障：SocketException: Connection reset"))
+        assertTrue("the cause is shown", device.session.snapshot.status.contains("原因：网络故障：SocketException"))
+        repeat(50) { device.speak(CHUNK, fill = it) } // 5 s while reconnecting
         device.advance(LiveSession.RECONNECT_DELAYS_MS[0])
         device.transport.listener.onReady()
         val sent = device.transport.audio
-        assertEquals(LiveSession.MAX_GAP_AUDIO_BYTES, sent.sumOf { it.size })
-        assertEquals("oldest audio dropped", 30, sent.first()[0].toInt())
-        assertEquals(79, sent.last()[0].toInt())
+        assertEquals(LiveSession.CATCH_UP_AUDIO_BYTES, sent.sumOf { it.size })
+        assertEquals("oldest audio dropped", (40..49).toList(), sent.map { it[0].toInt() })
+        assertEquals("the break is still marked", listOf("", BREAK), device.session.snapshot.rows.map { it.marker })
     }
 
     @Test
@@ -401,46 +431,224 @@ class LiveSessionTest {
     }
 
     @Test
-    fun backlogWarnsThenReconnects() {
+    fun backlogIsShedInsteadOfReconnecting() {
         val device = Device()
         device.record()
-        device.transport.queuedAudioBytes = LiveSession.SLOW_AUDIO_BYTES + 1
-        device.speak()
+        device.utter("a")
+        val link = device.transport
+        link.queuedAudioBytes = LiveSession.SHED_AUDIO_BYTES
+        device.speak(CHUNK, fill = 1)
+        assertFalse("at the limit still sending", device.session.snapshot.slowNetwork)
+        link.queuedAudioBytes = LiveSession.SHED_AUDIO_BYTES + 1
+        repeat(20) { device.speak(CHUNK, fill = 2) } // 2 s dropped
         assertTrue(device.session.snapshot.slowNetwork)
-        device.transport.queuedAudioBytes = LiveSession.RECOVERED_AUDIO_BYTES
-        device.speak()
-        assertTrue("hysteresis", device.session.snapshot.slowNetwork)
-        device.transport.queuedAudioBytes = LiveSession.RECOVERED_AUDIO_BYTES - 1
-        device.speak()
-        assertFalse(device.session.snapshot.slowNetwork)
+        assertEquals("dropped, not sent", listOf(1), link.audio.map { it[0].toInt() })
+        link.queuedAudioBytes = LiveSession.RESUME_AUDIO_BYTES
+        device.speak(CHUNK, fill = 3)
+        assertTrue("hysteresis: still dropping", device.session.snapshot.slowNetwork)
+        device.advance(LiveSession.STALL_MS * 3) // no timer replaces the connection; only a chunk checks for a stall
+        assertEquals(SessionState.RECORDING, device.state)
+        assertEquals("no new connection for a backlog", 1, device.transports.size)
 
+        link.queuedAudioBytes = LiveSession.RESUME_AUDIO_BYTES - 1
+        device.speak(CHUNK, fill = 4)
+        assertFalse(device.session.snapshot.slowNetwork)
+        assertEquals("sending resumes with the current chunk", listOf(1, 4), link.audio.map { it[0].toInt() })
+        device.utter("b", "Later.", "之后。")
+        val rows = device.session.snapshot.rows
+        assertEquals(listOf("", LiveSession.congestionMarker(2), ""), rows.map { it.marker })
+        assertEquals(listOf("Hello.", "", "Later."), rows.map { it.source })
+        assertTrue(device.session.exportText().contains("【网络拥塞，约 2 秒语音未翻译】"))
+
+        // A chunk the transport refuses outright is dropped the same way.
+        link.queuedAudioBytes = 0
+        link.result = AppendResult.FULL
+        device.speak(CHUNK, fill = 5)
+        assertEquals(SessionState.RECORDING, device.state)
+        assertTrue(device.session.snapshot.slowNetwork)
+        assertEquals(1, device.transports.size)
+
+        // The marker stays where it was when the connection ends.
+        link.result = AppendResult.SENT
+        device.speak(CHUNK, fill = 6)
+        link.listener.onEnd(LOST, true)
+        assertEquals(
+            listOf("", LiveSession.congestionMarker(2), "", LiveSession.congestionMarker(1), BREAK),
+            device.session.snapshot.rows.map { it.marker },
+        )
+    }
+
+    @Test
+    fun stalledBacklogReconnectsAfterTimeout() {
+        val device = Device()
+        device.record()
         val stuck = device.transport
-        stuck.result = AppendResult.FULL
-        device.speak(fill = 7)
+        stuck.queuedAudioBytes = LiveSession.SHED_AUDIO_BYTES + 1
+        device.speak()
+        // Draining, however slowly, keeps the connection.
+        repeat(5) {
+            device.advance(LiveSession.STALL_MS - 1)
+            stuck.queuedAudioBytes -= 1
+            device.speak()
+        }
+        assertEquals(SessionState.RECORDING, device.state)
+        // Not going down at all for STALL_MS replaces it.
+        device.advance(LiveSession.STALL_MS - 1)
+        device.speak()
+        assertEquals(SessionState.RECORDING, device.state)
+        device.advance(1)
+        device.speak()
         assertEquals(SessionState.RECONNECTING, device.state)
         assertTrue(stuck.cancelled)
+        assertTrue(device.session.snapshot.status.contains("停滞"))
+        assertFalse(device.session.snapshot.slowNetwork)
         device.advance(LiveSession.RECONNECT_DELAYS_MS[0])
         device.transport.listener.onReady()
-        assertEquals("the refused chunk is sent on the new connection", listOf(7), device.transport.audio.map { it[0].toInt() })
+        device.speak(fill = 7)
+        assertEquals(listOf(7), device.transport.audio.map { it[0].toInt() })
 
         val manual = Device()
         manual.record(autoReconnect = false)
-        manual.transport.result = AppendResult.FULL
+        manual.transport.queuedAudioBytes = LiveSession.SHED_AUDIO_BYTES + 1
+        manual.speak()
+        manual.advance(LiveSession.STALL_MS)
         manual.speak()
         assertEquals(SessionState.IDLE, manual.state)
-        assertTrue(manual.session.snapshot.error.contains("积压"))
+        assertTrue(manual.session.snapshot.error.contains("停滞"))
+    }
+
+    @Test
+    fun rateLimitWaitsWithoutBurningAttempts() {
+        val device = Device()
+        device.record()
+        device.transport.listener.onEnd(LiveTranslateClient.RATE_LIMITED_ERROR, true, RATE_LIMITED)
+        assertEquals(SessionState.RECONNECTING, device.state)
+        assertEquals("服务限流，20 秒后重试", device.session.snapshot.status)
+        device.advance(LiveSession.RATE_LIMIT_DELAYS_MS[0] - 1)
+        assertEquals("no connection during the wait", 1, device.transports.size)
+        assertEquals("the countdown ticks", "服务限流，1 秒后重试", device.session.snapshot.status)
+        device.advance(1)
+        assertEquals(2, device.transports.size)
+        // Limited again before it was ready: the wait doubles.
+        device.transport.listener.onEnd(LiveTranslateClient.RATE_LIMITED_ERROR, true, RATE_LIMITED)
+        assertEquals("服务限流，40 秒后重试", device.session.snapshot.status)
+        device.advance(LiveSession.RATE_LIMIT_DELAYS_MS[1])
+        assertEquals(3, device.transports.size)
+        device.transport.listener.onReady()
+        assertEquals(SessionState.RECORDING, device.state)
+        // The rate limits did not use up the ordinary attempts.
+        device.transport.listener.onEnd(LOST, true)
+        assertTrue(device.session.snapshot.status.contains("第 1 次"))
+        assertEquals("one marker for one break", 1, device.session.snapshot.rows.count { it.marker == BREAK })
+
+        // Rate limited on every attempt: the session ends after the last wait, minutes later.
+        val limited = Device()
+        limited.record()
+        for (wait in LiveSession.RATE_LIMIT_DELAYS_MS) {
+            limited.transport.listener.onEnd(LiveTranslateClient.RATE_LIMITED_ERROR, true, RATE_LIMITED)
+            assertEquals(SessionState.RECONNECTING, limited.state)
+            limited.advance(wait)
+        }
+        limited.transport.listener.onEnd(LiveTranslateClient.RATE_LIMITED_ERROR, true, RATE_LIMITED)
+        assertEquals(SessionState.IDLE, limited.state)
+        assertTrue(limited.session.snapshot.error.contains("持续限流"))
+        assertEquals(LiveSession.RATE_LIMIT_DELAYS_MS.sum(), limited.now)
+
+        // A rate-limited first connection ends the session; starting again right away is refused locally.
+        val first = Device()
+        first.session.start(LiveTranslateConfig(), "mock-only")
+        first.transport.listener.onEnd(LiveTranslateClient.RATE_LIMITED_ERROR, true, RATE_LIMITED)
+        assertEquals(SessionState.IDLE, first.state)
+        assertTrue(first.session.snapshot.error.contains("限流"))
+        first.advance(1_000)
+        first.session.start(LiveTranslateConfig(), "mock-only")
+        assertEquals(SessionState.IDLE, first.state)
+        assertTrue(first.session.snapshot.error.contains("19 秒后再试"))
+        assertEquals(1, first.transports.size)
+        first.advance(LiveSession.RATE_LIMIT_DELAYS_MS[0])
+        first.record()
+    }
+
+    @Test
+    fun noResultCloseReconnectsQuietly() {
+        val device = Device()
+        device.record()
+        device.utter("a")
+        device.transport.listener.onEnd(LiveTranslateClient.NO_RESULT_ERROR, true, NO_RESULT)
+        assertEquals(SessionState.RECONNECTING, device.state)
+        assertTrue(device.session.snapshot.status.contains("无识别结果"))
+        device.advance(0)
+        assertEquals("immediately", 2, device.transports.size)
+        device.transport.listener.onReady()
+        assertEquals(SessionState.RECORDING, device.state)
+        assertEquals("", device.session.snapshot.notice)
+        assertTrue("no marker", device.session.snapshot.rows.none { it.marker.isNotEmpty() })
+        // Not a failed attempt.
+        device.transport.listener.onEnd(LOST, true)
+        assertTrue(device.session.snapshot.status.contains("第 1 次"))
+
+        // If the quiet replacement fails, it is an ordinary break after all.
+        val failing = Device()
+        failing.record()
+        failing.transport.listener.onEnd(LiveTranslateClient.NO_RESULT_ERROR, true, NO_RESULT)
+        failing.advance(0)
+        failing.transport.listener.onEnd(LOST, true)
+        assertEquals(SessionState.RECONNECTING, failing.state)
+        assertEquals(listOf(BREAK), failing.session.snapshot.rows.map { it.marker })
+        assertTrue(failing.session.snapshot.status.contains("第 1 次"))
+        failing.advance(LiveSession.RECONNECT_DELAYS_MS[0])
+        failing.transport.listener.onReady()
+        assertTrue(failing.session.snapshot.notice.contains("已重新连接"))
+    }
+
+    @Test
+    fun connectionsAreCappedPerMinute() {
+        // Quiet replacements and network switches are not counted as attempts, so only the cap holds them back.
+        val device = Device()
+        device.record()
+        var round = 0
+        while (device.now < 3 * LiveSession.CONNECTION_WINDOW_MS) {
+            val link = device.transport
+            link.listener.onEnd(LiveTranslateClient.NO_RESULT_ERROR, true, NO_RESULT) // ignored while waiting
+            if (round++ % 2 == 1) device.session.networkAvailable(round.toLong())
+            device.advance(1_000)
+            if (device.transport !== link) device.transport.listener.onReady()
+        }
+        assertTrue("connections keep opening at the capped pace", device.transports.size >= 3 * LiveSession.MAX_CONNECTIONS_PER_WINDOW)
+        val times = device.openedAt
+        for (i in 0 until times.size - LiveSession.MAX_CONNECTIONS_PER_WINDOW) {
+            assertTrue(
+                "at most ${LiveSession.MAX_CONNECTIONS_PER_WINDOW} connections in any minute: $times",
+                times[i + LiveSession.MAX_CONNECTIONS_PER_WINDOW] - times[i] >= LiveSession.CONNECTION_WINDOW_MS,
+            )
+        }
+
+        val burst = Device()
+        burst.record()
+        repeat(LiveSession.MAX_CONNECTIONS_PER_WINDOW - 1) {
+            burst.transport.listener.onEnd(LiveTranslateClient.NO_RESULT_ERROR, true, NO_RESULT)
+            burst.advance(0)
+            burst.transport.listener.onReady()
+        }
+        assertEquals(LiveSession.MAX_CONNECTIONS_PER_WINDOW, burst.transports.size)
+        burst.transport.listener.onEnd(LiveTranslateClient.NO_RESULT_ERROR, true, NO_RESULT)
+        burst.advance(0)
+        assertEquals("the ninth waits", LiveSession.MAX_CONNECTIONS_PER_WINDOW, burst.transports.size)
+        assertEquals("连接过于频繁，60 秒后重试", burst.session.snapshot.status)
+        burst.advance(LiveSession.CONNECTION_WINDOW_MS)
+        assertEquals(LiveSession.MAX_CONNECTIONS_PER_WINDOW + 1, burst.transports.size)
     }
 
     @Test
     fun speechWhileConnectingIsBoundedAndDroppedOnCancel() {
-        // A slow handshake keeps only the most recent 5 s, like a reconnect gap.
+        // A slow handshake keeps only the most recent second, like a reconnect gap.
         val slow = Device()
         slow.session.start(LiveTranslateConfig(), "mock-only")
         val chunk = 3200
-        repeat(LiveSession.MAX_GAP_AUDIO_BYTES / chunk + 5) { slow.speak(chunk, fill = it) }
+        repeat(LiveSession.CATCH_UP_AUDIO_BYTES / chunk + 5) { slow.speak(chunk, fill = it) }
         slow.transport.listener.onReady()
         val sent = slow.transport.audio
-        assertEquals(LiveSession.MAX_GAP_AUDIO_BYTES, sent.sumOf { it.size })
+        assertEquals(LiveSession.CATCH_UP_AUDIO_BYTES, sent.sumOf { it.size })
         assertEquals("oldest chunks dropped first", 5.toByte(), sent.first()[0])
 
         // Without auto-reconnect the first connection still gets the speech captured while it was set up.

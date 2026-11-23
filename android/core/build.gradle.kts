@@ -26,3 +26,12 @@ tasks.test {
     systemProperty("session.fixtures", rootProject.projectDir.resolve("../tests/fixtures/session_export").absolutePath)
     testLogging { events("passed", "failed"); exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
 }
+
+// Real-API timing probe (scripts/probe_livetranslate.sh): the app's own client at real-time pace.
+// ./gradlew -PcoreOnly=true :core:liveProbe --args="--audio=<wav> [--language=en] [--speech=on] …"
+tasks.register<JavaExec>("liveProbe") {
+    group = "verification"
+    description = "Streams a WAV to LiveTranslate through LiveTranslateClient and reports backlog, latency and disconnect causes."
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.localrecorder.live.LiveProbeKt")
+}

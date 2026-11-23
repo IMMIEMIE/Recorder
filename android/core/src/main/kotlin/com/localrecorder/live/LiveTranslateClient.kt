@@ -18,6 +18,22 @@ import java.util.concurrent.TimeUnit
 
 enum class AppendResult { SENT, FULL, CLOSED }
 
+/**
+ * Why a connection ended, beyond `recoverable`: [kind] picks how a session retries, [detail] is a short
+ * category plus transport detail for the reconnecting status (never the key; empty when nothing is known).
+ */
+data class EndCause(val kind: Kind = Kind.OTHER, val detail: String = "") {
+    enum class Kind {
+        OTHER,
+
+        /** The service refused the request rate (close code 1007 or a rate-limit reason): wait before the next attempt. */
+        RATE_LIMITED,
+
+        /** The service closed a session that produced no result for 60 s of audio (long silence): just open a new one. */
+        NO_RESULT,
+    }
+}
+
 /** What a session needs from the realtime connection; [LiveTranslateClient] is the only production implementation. */
 interface LiveTransport {
     fun connect(configuration: LiveTranslateConfig, key: String)
@@ -25,7 +41,7 @@ interface LiveTransport {
     /** Queues 16 kHz mono PCM16: FULL when the outgoing queue is at its limit, CLOSED when not ready, finishing or ended. */
     fun append(pcm: ByteArray): AppendResult
 
-    /** Estimated raw PCM bytes still waiting to be sent, as of the last [append]. */
+    /** Estimated raw PCM bytes still waiting to be sent (current, also between appends); 0 once ended. */
     val queuedAudioBytes: Int
 
     /** Asks the server to drain the tail; `onEnd` follows `session.finished` or a timeout. */
@@ -46,18 +62,40 @@ class LiveTranslateClient(
     private val finishTimeoutMs: Long = 30_000,
     private val allowLocalhost: Boolean = false,
     private val httpClient: OkHttpClient = sharedHttpClient,
+    /**
+     * Transport detail behind a disconnect (exception class and message, close code), for diagnostics only:
+     * the user-facing error stays the generic Chinese text. Never contains the key. Runs on the client's queue.
+     */
+    private val diagnostic: (String) -> Unit = {},
 ) : LiveTransport {
     interface Listener {
         fun onReady()
         fun onEvent(event: JSONObject)
 
-        /** [recoverable]: the connection itself failed or the server closed the session, so a new session may work. */
-        fun onEnd(error: String?, recoverable: Boolean)
+        /**
+         * [recoverable]: the connection itself failed or the server closed the session, so a new session may work.
+         * [cause] says why, for recoverable ends that need different handling and for the status line.
+         */
+        fun onEnd(error: String?, recoverable: Boolean, cause: EndCause = EndCause())
     }
 
     companion object {
         /** Raw PCM bytes allowed to wait in the outgoing queue (~10 s of 16 kHz PCM16). */
         const val MAX_QUEUED_AUDIO_BYTES = 320_000
+
+        const val RATE_LIMITED_ERROR = "LiveTranslate 请求过于频繁（限流），请稍后重试；已有文字已保留"
+        const val NO_RESULT_ERROR = "LiveTranslate 长时间没有识别结果，服务端结束了会话；已有文字已保留"
+
+        /** Close code the service uses for a refused request rate (with a "rate limit" reason). */
+        const val RATE_LIMIT_CLOSE_CODE = 1007
+
+        fun isRateLimit(text: String): Boolean {
+            val value = text.lowercase()
+            return "rate limit" in value || "rate_limit" in value || "ratelimit" in value || "throttl" in value
+        }
+
+        /** The service ends a session after 60 s of merged audio without a result ("no semantic result after …"). */
+        fun isNoResult(text: String): Boolean = "no semantic result" in text.lowercase()
 
         // Redirects are refused: the bearer token must only ever reach the configured host.
         val sharedHttpClient: OkHttpClient by lazy {
@@ -87,7 +125,9 @@ class LiveTranslateClient(
     private val queue = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "livetranslate").apply { isDaemon = true }
     }
-    private var socket: WebSocket? = null
+
+    // Written on the queue; read by [queuedAudioBytes] from any thread (OkHttp's queueSize is synchronized).
+    @Volatile private var socket: WebSocket? = null
     private var configuration: LiveTranslateConfig? = null
     private var ready = false
     private var finishing = false
@@ -97,9 +137,14 @@ class LiveTranslateClient(
     private var httpStatus: Int? = null
     private var deadline: ScheduledFuture<*>? = null
 
+    /** The last transport detail, for [EndCause.detail]. */
+    private var cause = ""
+
     @Volatile private var acceptingAudio = false
-    @Volatile override var queuedAudioBytes = 0
-        private set
+
+    // OkHttp's queue holds base64 JSON; convert back to an estimate of raw PCM bytes.
+    override val queuedAudioBytes: Int
+        get() = ((socket?.queueSize() ?: 0L) * 3 / 4).toInt()
 
     override fun connect(configuration: LiveTranslateConfig, key: String) {
         if (key.isEmpty()) throw LiveTranslateException("请在 LiveTranslate 设置中保存专用 API Key")
@@ -110,7 +155,7 @@ class LiveTranslateClient(
             started = true
             this.configuration = configuration
             socket = httpClient.newWebSocket(request, SocketListener())
-            armTimeout(20_000, "LiveTranslate 连接或会话配置超时，请检查网络和服务地址", recoverable = true)
+            armTimeout(20_000, "LiveTranslate 连接或会话配置超时，请检查网络和服务地址", recoverable = true, detail = "连接超时：20 秒内未完成会话配置")
         }
     }
 
@@ -119,10 +164,7 @@ class LiveTranslateClient(
         return runSync {
             val socket = socket
             if (!ready || finishing || closed || socket == null) return@runSync AppendResult.CLOSED
-            // OkHttp's queue holds base64 JSON; convert back to an estimate of raw PCM bytes.
-            val waiting = (socket.queueSize() * 3 / 4).toInt()
-            queuedAudioBytes = waiting
-            if (waiting + pcm.size > MAX_QUEUED_AUDIO_BYTES) return@runSync AppendResult.FULL
+            if (queuedAudioBytes + pcm.size > MAX_QUEUED_AUDIO_BYTES) return@runSync AppendResult.FULL
             val sent = send(JSONObject().put("type", "input_audio_buffer.append").put("audio", Base64.getEncoder().encodeToString(pcm)))
             if (sent) AppendResult.SENT else AppendResult.CLOSED
         } ?: AppendResult.CLOSED
@@ -142,10 +184,13 @@ class LiveTranslateClient(
         runSync { end(null, notify = false) }
     }
 
-    private fun armTimeout(ms: Long, message: String, recoverable: Boolean = false) {
+    private fun armTimeout(ms: Long, message: String, recoverable: Boolean = false, detail: String = "") {
         deadline?.cancel(false)
         deadline = try {
-            queue.schedule({ end(message, recoverable = recoverable) }, ms, TimeUnit.MILLISECONDS)
+            queue.schedule({
+                if (detail.isNotEmpty()) note(detail)
+                end(message, recoverable = recoverable)
+            }, ms, TimeUnit.MILLISECONDS)
         } catch (_: RejectedExecutionException) {
             null
         }
@@ -203,11 +248,30 @@ class LiveTranslateClient(
             }
             "session.finished" -> {
                 // The service may close a session by itself (e.g. a duration limit); a new one can continue.
-                if (finishing) end(null) else end("LiveTranslate 会话意外结束，已保留收到的文字", recoverable = true)
+                if (finishing) {
+                    end(null)
+                } else {
+                    note("服务端结束会话")
+                    end("LiveTranslate 会话意外结束，已保留收到的文字", recoverable = true)
+                }
                 return
             }
             "error", "conversation.item.input_audio_transcription.failed" -> {
-                end(serviceError(event.optJSONObject("error")?.optStringOrNull("code") ?: "")); return
+                val error = event.optJSONObject("error")
+                val code = error?.optStringOrNull("code") ?: ""
+                val message = error?.optStringOrNull("message") ?: ""
+                when {
+                    isNoResult(message) || isNoResult(code) -> {
+                        note("服务端错误：${message.take(80)}")
+                        end(NO_RESULT_ERROR, recoverable = true, kind = EndCause.Kind.NO_RESULT)
+                    }
+                    isRateLimit(code) || isRateLimit(message) -> {
+                        note("服务限流：${code.ifEmpty { message }.take(80)}")
+                        end(RATE_LIMITED_ERROR, recoverable = true, kind = EndCause.Kind.RATE_LIMITED)
+                    }
+                    else -> end(serviceError(code))
+                }
+                return
             }
             "response.done" -> {
                 if (event.optJSONObject("response")?.optStringOrNull("status") != "completed") {
@@ -230,7 +294,34 @@ class LiveTranslateClient(
         end(connectionError(), recoverable = status == null || status >= 500)
     }
 
-    private fun end(error: String?, notify: Boolean = true, recoverable: Boolean = false) {
+    /** The server closes the WebSocket; the close code and reason say whether this is a rate limit or an idle session. */
+    private fun closing(code: Int, reason: String) {
+        if (closed) return
+        diagnostic("server closing: code=$code reason=${reason.take(200)}")
+        val shown = reason.take(60).ifEmpty { "无说明" }
+        when {
+            // First: the service may use 1007 for this too.
+            isNoResult(reason) -> {
+                note("服务端关闭：$code $shown")
+                end(NO_RESULT_ERROR, recoverable = true, kind = EndCause.Kind.NO_RESULT)
+            }
+            code == RATE_LIMIT_CLOSE_CODE || isRateLimit(reason) -> {
+                note("服务限流：$code $shown")
+                end(RATE_LIMITED_ERROR, recoverable = true, kind = EndCause.Kind.RATE_LIMITED)
+            }
+            else -> {
+                note("服务端关闭：$code $shown")
+                disconnected()
+            }
+        }
+    }
+
+    /** Records the short cause for [EndCause.detail]; the first one wins (later lines are consequences). */
+    private fun note(detail: String) {
+        if (cause.isEmpty()) cause = detail
+    }
+
+    private fun end(error: String?, notify: Boolean = true, recoverable: Boolean = false, kind: EndCause.Kind = EndCause.Kind.OTHER) {
         if (closed) return
         closed = true
         ready = false
@@ -239,19 +330,28 @@ class LiveTranslateClient(
         deadline = null
         socket?.cancel()
         socket = null
-        if (notify) callbackExecutor.execute { listener.onEnd(error, recoverable) }
+        if (notify) {
+            val ended = EndCause(kind, cause.ifEmpty { if (error != null && recoverable) "连接断开" else "" })
+            callbackExecutor.execute { listener.onEnd(error, recoverable, ended) }
+        }
         queue.shutdown()
     }
 
     private inner class SocketListener : WebSocketListener() {
         override fun onMessage(webSocket: WebSocket, text: String) = post { handle(text) }
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) = post { handle(bytes.utf8()) }
-        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) = post { disconnected() }
+        // Only for a connection still in use: a socket this client already closed reports nothing.
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) = post { closing(code, reason) }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = post { disconnected() }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             val status = response?.code
+            val detail = "failure: ${t.javaClass.simpleName}: ${t.message?.take(300)}" + (status?.let { " (HTTP $it)" } ?: "")
             response?.close()
             post {
+                if (!closed) {
+                    diagnostic(detail)
+                    note(if (status != null) "握手失败：HTTP $status" else "网络故障：${t.javaClass.simpleName}${t.message?.let { ": ${it.take(60)}" }.orEmpty()}")
+                }
                 httpStatus = status
                 disconnected()
             }

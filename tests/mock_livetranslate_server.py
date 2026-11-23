@@ -27,6 +27,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(header + data)
         self.wfile.flush()
 
+    def close(self, code, reason):
+        self.frame(struct.pack('!H', code) + reason.encode(), 8)
+
     def read_frame(self):
         header = self.rfile.read(2)
         if len(header) != 2:
@@ -70,6 +73,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
         try:
+            if route.path == '/rate-limited':
+                # Like the service when connections come too often: close 1007 before the session starts.
+                self.close(1007, 'Requests rate limit exceeded, please try again later.')
+                return
             self.frame({'type': 'session.created'})
             config = self.read_frame()
             assert config['type'] == 'session.update'
@@ -97,6 +104,14 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     if route.path == '/finished-early':
                         self.frame({'type': 'session.finished'})
+                        return
+                    # The service ends a session whose merged audio passed 60 s without a result (long silence).
+                    if route.path == '/no-semantic':
+                        self.frame({'type': 'error', 'error': {'code': 'InvalidParameter', 'message': 'no semantic result after merged audio exceeded 60s'}})
+                        self.close(1007, 'no semantic result after merged audio exceeded 60s')
+                        return
+                    if route.path == '/no-semantic-close':
+                        self.close(1007, 'no semantic result after merged audio exceeded 60s')
                         return
                     if drop:
                         self.frame({'type': 'conversation.item.input_audio_transcription.delta', 'item_id': 'lost', 'delta': 'Before the break'})
