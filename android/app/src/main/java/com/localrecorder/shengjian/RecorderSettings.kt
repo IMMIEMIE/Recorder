@@ -11,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
@@ -22,13 +23,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.localrecorder.live.LiveServiceProfile
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.live.PlaybackTiming
 import com.localrecorder.shengjian.ui.theme.Design
 
 @Composable
 internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: () -> Unit) {
-    var endpoint by rememberSaveable { mutableStateOf(ui.config.endpoint) }
+    var profile by rememberSaveable(stateSaver = profileSaver) { mutableStateOf(ui.config.profile) }
     // The replacement key stays out of saved instance state. Editing an address drops its draft key.
     var key by remember { mutableStateOf("") }
     var discard by rememberSaveable { mutableStateOf(false) }
@@ -38,13 +40,14 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
 
     fun commitService(): Boolean {
         val current = controller.ui.value
-        if (endpoint == current.config.endpoint && key.isBlank()) return true
+        if (profile == current.config.profile && key.isBlank()) return true
         // A pending or rejected probe must never replace the working service or its key.
         if (testedDraft && current.testSucceeded != true) return false
-        val saved = controller.saveSettings(current.config.copy(endpoint = endpoint), key, current.options)
+        val draft = current.config.copy(catalog = current.config.catalog.using(profile))
+        val saved = controller.saveSettings(draft, key, current.options)
         invalid = !saved
         if (saved) {
-            endpoint = controller.ui.value.config.endpoint
+            profile = controller.ui.value.config.profile
             key = ""
         }
         return saved
@@ -66,17 +69,34 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
 
     SettingsLayout(back = ::leave, service = {
         ServiceFields(
-            endpoint, key, ui.hasKey && endpoint == ui.config.endpoint, ui.testing, invalid,
-            onEndpoint = { endpoint = it; key = ""; edited() }, onKey = { key = it; edited() },
+            profile, ui.config, key, remember(profile.endpoint, ui.hasKey) { controller.hasKey(profile.endpoint) }, ui.testing,
+            onEdit = { updated ->
+                if (updated.id == profile.id || commitService()) {
+                    if (updated.id != profile.id || updated.endpoint != profile.endpoint) key = ""
+                    profile = updated
+                    edited()
+                }
+            },
+            onSelect = { selected ->
+                if (commitService()) {
+                    val latest = controller.ui.value.config.catalog.profiles.first { it.id == selected.id }
+                    if (controller.selectProfile(latest)) {
+                        profile = controller.ui.value.config.profile
+                        key = ""
+                    }
+                }
+            },
+            onKey = { key = it; edited() },
             test = {
                 testedDraft = true
-                controller.testConnection(controller.ui.value.config.copy(endpoint = endpoint), key)
+                val current = controller.ui.value.config
+                controller.testConnection(current.copy(catalog = current.catalog.using(profile)), key)
             },
         )
         if (ui.settingsMessage.isNotEmpty()) {
             val text = when {
-                ui.testing -> "正在测试连接…"
-                ui.testSucceeded == false -> "测试失败 · ${ui.settingsMessage}"
+                ui.testing -> stringResource(R.string.test_in_progress)
+                ui.testSucceeded == false -> stringResource(R.string.test_failure, ui.settingsMessage)
                 else -> ui.settingsMessage
             }
             Text(text, style = Design.caption, color = if (invalid || ui.testSucceeded == false) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -88,9 +108,9 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
             canClear = ui.sessions.isNotEmpty() && ui.recordingId == null,
             clear = { confirmClear = true })
     }
-    if (discard) ConfirmDialog("地址或密钥尚未保存", "可以返回检查输入，也可以放弃本次修改。", "放弃修改",
+    if (discard) ConfirmDialog(stringResource(R.string.settings_unsaved), stringResource(R.string.discard_hint), stringResource(R.string.discard_changes),
         onDismiss = { discard = false }, onConfirm = onBack)
-    if (confirmClear) ConfirmDialog("清空全部会话？", "本机保存的所有会话记录都将被永久删除，无法恢复。", "全部删除",
+    if (confirmClear) ConfirmDialog(stringResource(R.string.delete_all_question), stringResource(R.string.delete_all_detail), stringResource(R.string.delete_all),
         onDismiss = { confirmClear = false }, onConfirm = { controller.deleteAll(); confirmClear = false })
 }
 
@@ -100,13 +120,13 @@ internal fun SettingsLayout(back: () -> Unit, service: @Composable ColumnScope.(
     Surface(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Tool(R.drawable.ic_arrow_back, "返回", click = back)
-                Text("设置", style = Design.title)
+                Tool(R.drawable.ic_arrow_back, stringResource(R.string.back), click = back)
+                Text(stringResource(R.string.settings), style = Design.title)
             }
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).fillMaxWidth()
                 .padding(horizontal = Design.spaceLg, vertical = Design.spaceSm),
                 verticalArrangement = Arrangement.spacedBy(Design.spaceSm)) {
-                GroupTitle("服务")
+                GroupTitle(stringResource(R.string.service))
                 service()
                 preferences()
             }
@@ -116,28 +136,24 @@ internal fun SettingsLayout(back: () -> Unit, service: @Composable ColumnScope.(
 
 @Composable
 internal fun ServiceFields(
-    endpoint: String, key: String, keySaved: Boolean, testing: Boolean, invalid: Boolean,
-    onEndpoint: (String) -> Unit, onKey: (String) -> Unit, test: () -> Unit,
+    profile: LiveServiceProfile, config: LiveTranslateConfig, key: String, keySaved: Boolean, testing: Boolean,
+    onEdit: (LiveServiceProfile) -> Unit, onSelect: (LiveServiceProfile) -> Unit,
+    onKey: (String) -> Unit, test: () -> Unit,
 ) {
-    var visible by remember { mutableStateOf(false) }
+    var visible by remember(profile.id) { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
-    Text("Qwen LiveTranslate · ${LiveTranslateConfig.MODEL}", style = Design.caption)
-    OutlinedTextField(value = endpoint, onValueChange = onEndpoint, label = { Text("服务地址") },
-        singleLine = true, enabled = !testing, isError = invalid,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { keyboard?.hide() }),
-        modifier = Modifier.fillMaxWidth())
+    LiveServiceProfileEditor(profile, config, testing, onEdit, onSelect)
     OutlinedTextField(value = key, onValueChange = onKey, label = { Text("API Key") },
-        placeholder = { Text(if (keySaved) "已保存，留空保留原密钥" else "填写此地址的密钥") },
+        placeholder = { Text(if (keySaved) stringResource(R.string.use_saved_key) else stringResource(R.string.enter_service_key)) },
         singleLine = true, enabled = !testing,
         visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
-        trailingIcon = { TextButton({ visible = !visible }) { Text(if (visible) "隐藏" else "显示") } },
+        trailingIcon = { TextButton({ visible = !visible }) { Text(if (visible) stringResource(R.string.hide) else stringResource(R.string.show)) } },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { keyboard?.hide() }),
         modifier = Modifier.fillMaxWidth())
     OutlinedButton(test, enabled = !testing) {
         if (testing) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp); Spacer(Modifier.width(Design.spaceSm)) }
-        Text(if (testing) "正在测试…" else "测试连接")
+        Text(if (testing) stringResource(R.string.testing) else stringResource(R.string.test_connection))
     }
 }
 
@@ -148,37 +164,37 @@ internal fun PreferenceGroups(
     onOptions: ((AppOptions) -> AppOptions) -> Unit, canClear: Boolean, clear: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    GroupTitle("翻译")
+    GroupTitle(stringResource(R.string.translation))
     var expanded by remember { mutableStateOf(false) }
     Box {
-        OutlinedButton({ expanded = true }, Modifier.fillMaxWidth(), enabled = enabled) { Text("目标语言 · ${config.languageName} ▾") }
+        OutlinedButton({ expanded = true }, Modifier.fillMaxWidth(), enabled = enabled) { Text(stringResource(R.string.target_choice, config.languageName)) }
         DropdownMenu(expanded, { expanded = false }) {
             LiveTranslateConfig.LANGUAGES.forEach { (code, name) ->
                 DropdownMenuItem(text = { Text(name) }, onClick = { expanded = false; onConfig { it.copy(language = code) } })
             }
         }
     }
-    GroupTitle("译音")
-    SettingSwitch("播放译音", config.audioOutput, enabled) { value -> onConfig { it.copy(audioOutput = value) } }
+    GroupTitle(stringResource(R.string.translated_audio))
+    SettingSwitch(stringResource(R.string.play_translation), config.audioOutput, enabled) { value -> onConfig { it.copy(audioOutput = value) } }
     if (config.audioOutput) {
-        Segments("播放时机", PlaybackTiming.entries.map { it.title }, config.playbackTiming.ordinal) { i ->
+        Segments(stringResource(R.string.playback_timing), listOf(stringResource(R.string.streaming_playback), stringResource(R.string.final_playback)), config.playbackTiming.ordinal) { i ->
             if (enabled) onConfig { it.copy(playbackTiming = PlaybackTiming.entries[i]) }
         }
         var volume by remember(config.volume) { mutableFloatStateOf(config.volume) }
-        Text("音量 · ${(volume * 100).toInt()}%")
+        Text(stringResource(R.string.volume_format, (volume * 100).toInt()))
         Slider(volume, { volume = it }, enabled = enabled, onValueChangeFinished = { onConfig { it.copy(volume = volume) } })
-        Text("建议佩戴耳机，以免麦克风再次收录译音。音频输出可能增加服务费用。", style = Design.caption)
+        Text(stringResource(R.string.headphones_brief), style = Design.caption)
     }
-    GroupTitle("网络")
-    SettingSwitch("断线自动重连", options.autoReconnect, enabled) { value -> onOptions { it.copy(autoReconnect = value) } }
-    SettingSwitch("使用蓝牙耳机麦克风", options.bluetoothMicrophone, enabled) { value -> onOptions { it.copy(bluetoothMicrophone = value) } }
-    GroupTitle("会话记录")
-    SettingSwitch("保存会话记录", options.saveSessions, enabled) { value -> onOptions { it.copy(saveSessions = value) } }
-    Text("只保存已定稿的原文和译文。关闭后新内容只保留到退出，已有会话仍可查看和导出。", style = Design.caption)
-    OutlinedButton(clear, enabled = canClear && enabled, colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.error)) { Text("清空全部会话") }
-    GroupTitle("关于")
-    Text("声笺", style = Design.source)
-    Text("开始实时翻译后，麦克风语音会发往所选服务。测试连接不会采集音频。密钥按服务地址加密保存；录音、译音及识别中的内容不会保存。", style = Design.caption)
+    GroupTitle(stringResource(R.string.network))
+    SettingSwitch(stringResource(R.string.auto_reconnect), options.autoReconnect, enabled) { value -> onOptions { it.copy(autoReconnect = value) } }
+    SettingSwitch(stringResource(R.string.bluetooth_microphone), options.bluetoothMicrophone, enabled) { value -> onOptions { it.copy(bluetoothMicrophone = value) } }
+    GroupTitle(stringResource(R.string.session_history))
+    SettingSwitch(stringResource(R.string.save_history), options.saveSessions, enabled) { value -> onOptions { it.copy(saveSessions = value) } }
+    Text(stringResource(R.string.history_brief), style = Design.caption)
+    OutlinedButton(clear, enabled = canClear && enabled, colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.error)) { Text(stringResource(R.string.delete_sessions)) }
+    GroupTitle(stringResource(R.string.about))
+    Text(stringResource(R.string.app_name), style = Design.source)
+    Text(stringResource(R.string.privacy_brief), style = Design.caption)
     Spacer(Modifier.height(Design.spaceMd))
 }
 

@@ -135,7 +135,10 @@ private fun Settings(back: () -> Unit) {
     var key by remember { mutableStateOf("") }
     var options by remember { mutableStateOf(AppOptions()) }
     SettingsLayout(back, service = {
-        ServiceFields(config.endpoint, key, true, false, false, { config = config.copy(endpoint = it) }, { key = it }, {})
+        ServiceFields(config.profile, config, key, true, false,
+            onEdit = { config = config.copy(catalog = config.catalog.using(it)) },
+            onSelect = { config = config.copy(catalog = config.catalog.using(it)) },
+            onKey = { key = it }, test = {})
     }) {
         PreferenceGroups(config, options, true, { config = it(config) }, { options = it(options) }, true, {})
     }

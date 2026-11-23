@@ -22,11 +22,11 @@ class RecordingService : Service() {
             return START_NOT_STICKY
         }
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(
-            NotificationChannel(CHANNEL, "实时翻译", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "实时翻译进行中时显示"
+            NotificationChannel(CHANNEL, getString(R.string.live_notification_channel), NotificationManager.IMPORTANCE_LOW).apply {
+                description = getString(R.string.live_notification_description)
             }
         )
-        val notification = notification(this, DEFAULT_TITLE, DEFAULT_TEXT)
+        val notification = notification(this, getString(R.string.live_notification_recording), getString(R.string.live_notification_audio))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
         } else {
@@ -42,8 +42,6 @@ class RecordingService : Service() {
     }
 
     companion object {
-        const val DEFAULT_TITLE = "声笺正在实时翻译"
-        const val DEFAULT_TEXT = "麦克风音频正发送到 LiveTranslate 云端服务"
         private const val CHANNEL = "live_session"
         private const val NOTIFICATION_ID = 1
         private const val ACTION_STOP = "com.localrecorder.shengjian.STOP"
@@ -83,7 +81,7 @@ class RecordingService : Service() {
                 .setContentIntent(open)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
-                .addAction(Notification.Action.Builder(null, "停止", stop).build())
+                .addAction(Notification.Action.Builder(null, context.getString(R.string.stop), stop).build())
                 .build()
         }
     }

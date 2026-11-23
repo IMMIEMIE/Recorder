@@ -36,6 +36,17 @@ data class EndCause(val kind: Kind = Kind.OTHER, val detail: String = "") {
 
 /** What a session needs from the realtime connection; [LiveTranslateClient] is the only production implementation. */
 interface LiveTransport {
+    interface Listener {
+        fun onReady()
+        fun onEvent(event: LiveSessionEvent)
+
+        /**
+         * [recoverable]: the connection itself failed or the server closed the session, so a new session may work.
+         * [cause] says why, for recoverable ends that need different handling and for the status line.
+         */
+        fun onEnd(error: String?, recoverable: Boolean, cause: EndCause = EndCause())
+    }
+
     fun connect(configuration: LiveTranslateConfig, key: String)
 
     /** Queues 16 kHz mono PCM16: FULL when the outgoing queue is at its limit, CLOSED when not ready, finishing or ended. */
@@ -57,28 +68,19 @@ interface LiveTransport {
  * Callbacks are delivered on [callbackExecutor] (the main thread in the app).
  */
 class LiveTranslateClient(
-    private val listener: Listener,
+    private val listener: LiveTransport.Listener,
     private val callbackExecutor: Executor,
     private val finishTimeoutMs: Long = 30_000,
     private val allowLocalhost: Boolean = false,
     private val httpClient: OkHttpClient = sharedHttpClient,
+    /** Optional wire-level measurements for the JVM probe and local fixture. */
+    private val wireObserver: ((JSONObject) -> Unit)? = null,
     /**
      * Transport detail behind a disconnect (exception class and message, close code), for diagnostics only:
      * the user-facing error stays the generic Chinese text. Never contains the key. Runs on the client's queue.
      */
     private val diagnostic: (String) -> Unit = {},
 ) : LiveTransport {
-    interface Listener {
-        fun onReady()
-        fun onEvent(event: JSONObject)
-
-        /**
-         * [recoverable]: the connection itself failed or the server closed the session, so a new session may work.
-         * [cause] says why, for recoverable ends that need different handling and for the status line.
-         */
-        fun onEnd(error: String?, recoverable: Boolean, cause: EndCause = EndCause())
-    }
-
     companion object {
         /** Raw PCM bytes allowed to wait in the outgoing queue (~10 s of 16 kHz PCM16). */
         const val MAX_QUEUED_AUDIO_BYTES = 320_000
@@ -148,6 +150,7 @@ class LiveTranslateClient(
 
     override fun connect(configuration: LiveTranslateConfig, key: String) {
         if (key.isEmpty()) throw LiveTranslateException("请在 LiveTranslate 设置中保存专用 API Key")
+        if (key.any { it.code !in 33..126 }) throw LiveTranslateException("API Key 格式无效，请重新填写")
         val url = configuration.url(allowLocalhost)
         val request = Request.Builder().url(url).header("Authorization", "Bearer $key").build()
         runSync {
@@ -262,11 +265,11 @@ class LiveTranslateClient(
                 val message = error?.optStringOrNull("message") ?: ""
                 when {
                     isNoResult(message) || isNoResult(code) -> {
-                        note("服务端错误：${message.take(80)}")
+                        note("服务端长时间无结果")
                         end(NO_RESULT_ERROR, recoverable = true, kind = EndCause.Kind.NO_RESULT)
                     }
                     isRateLimit(code) || isRateLimit(message) -> {
-                        note("服务限流：${code.ifEmpty { message }.take(80)}")
+                        note("服务限流")
                         end(RATE_LIMITED_ERROR, recoverable = true, kind = EndCause.Kind.RATE_LIMITED)
                     }
                     else -> end(serviceError(code))
@@ -279,7 +282,11 @@ class LiveTranslateClient(
                 }
             }
         }
-        callbackExecutor.execute { listener.onEvent(event) }
+        val decoded = Qwen38Adapter.decode(event)
+        if (decoded != null || wireObserver != null) callbackExecutor.execute {
+            wireObserver?.invoke(event)
+            if (decoded != null) listener.onEvent(decoded)
+        }
     }
 
     private fun connectionError(): String = when (httpStatus) {
@@ -291,26 +298,29 @@ class LiveTranslateClient(
     /** Transport-level failure: worth a new session unless the server answered with a client error. */
     private fun disconnected() {
         val status = httpStatus
+        if (status == 429) {
+            end(RATE_LIMITED_ERROR, recoverable = true, kind = EndCause.Kind.RATE_LIMITED)
+            return
+        }
         end(connectionError(), recoverable = status == null || status >= 500)
     }
 
     /** The server closes the WebSocket; the close code and reason say whether this is a rate limit or an idle session. */
     private fun closing(code: Int, reason: String) {
         if (closed) return
-        diagnostic("server closing: code=$code reason=${reason.take(200)}")
-        val shown = reason.take(60).ifEmpty { "无说明" }
+        diagnostic("server closing: code=$code")
         when {
             // First: the service may use 1007 for this too.
             isNoResult(reason) -> {
-                note("服务端关闭：$code $shown")
+                note("服务端关闭：$code")
                 end(NO_RESULT_ERROR, recoverable = true, kind = EndCause.Kind.NO_RESULT)
             }
             code == RATE_LIMIT_CLOSE_CODE || isRateLimit(reason) -> {
-                note("服务限流：$code $shown")
+                note("服务限流：$code")
                 end(RATE_LIMITED_ERROR, recoverable = true, kind = EndCause.Kind.RATE_LIMITED)
             }
             else -> {
-                note("服务端关闭：$code $shown")
+                note("服务端关闭：$code")
                 disconnected()
             }
         }
@@ -345,12 +355,12 @@ class LiveTranslateClient(
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = post { disconnected() }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             val status = response?.code
-            val detail = "failure: ${t.javaClass.simpleName}: ${t.message?.take(300)}" + (status?.let { " (HTTP $it)" } ?: "")
+            val detail = "failure: " + t.javaClass.simpleName + (status?.let { " (HTTP $it)" } ?: "")
             response?.close()
             post {
                 if (!closed) {
                     diagnostic(detail)
-                    note(if (status != null) "握手失败：HTTP $status" else "网络故障：${t.javaClass.simpleName}${t.message?.let { ": ${it.take(60)}" }.orEmpty()}")
+                    note(if (status != null) "握手失败：HTTP $status" else "网络故障：" + t.javaClass.simpleName)
                 }
                 httpStatus = status
                 disconnected()

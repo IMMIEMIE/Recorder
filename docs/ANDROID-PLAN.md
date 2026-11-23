@@ -25,7 +25,7 @@
 
 ## 与 macOS 版保持一致的约束
 
-- 固定模型 `qwen3.8-livetranslate-flash-realtime`；地址只接受 `wss://`，不允许用户名/密码、片段或除 `model` 以外的查询参数；拒绝重定向，密钥只发往所配置的主机。
+- Qwen 3.8 预设模型为 `qwen3.8-livetranslate-flash-realtime`，具名配置可指定其他兼容模型；地址只接受 `wss://`，不允许用户名/密码、片段或除 `model` 以外的查询参数；拒绝重定向，密钥只发往所配置的主机。
 - 会话顺序：`session.created` → `session.update` → 必须收到与所选输出方式、目标语言（以及 24 kHz PCM 译音格式）一致的 `session.updated` 才开始采集。
 - 原文和译文只按 ID 关联（`conversation.item.created` 的 `previous_item_id`），不按文本或到达顺序；重复的 `event_id` 忽略；不对重复说出的内容去重。
 - 停止时先停麦克风并等待最后一块音频入队，再发 `session.finish`，等待 `session.finished` 收尾（30 秒超时，已收到的文字保留）。

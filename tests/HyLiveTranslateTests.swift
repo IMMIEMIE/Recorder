@@ -145,6 +145,13 @@ final class EndingFixtureSession: LiveTranslationSession, @unchecked Sendable {
         let suite = "HyLiveTranslateTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
+        let legacyLocal = Data(#"{"enabled":true,"provider":"hyLocal","endpoint":"wss://example.com/realtime","language":"en","audioOutput":true,"cloudPreferences":{"language":"ja","audioOutput":false,"volume":0.4,"playbackTiming":"afterFinal"}}"#.utf8)
+        defaults.set(legacyLocal, forKey: "livetranslate.configuration.v1")
+        let localUpgrade = LiveTranslateConfiguration.load(defaults: defaults)
+        try hyCheck(localUpgrade.provider == .hyLocal && localUpgrade.audioOutput && localUpgrade.language == "en",
+                    "upgrading a local installation preserves its provider and speech settings")
+        try hyCheck(localUpgrade.selecting(.qwenCloud).language == "ja" && localUpgrade.profile.endpoint == "wss://example.com/realtime",
+                    "the inactive legacy cloud endpoint and preferences survive local migration")
         let legacy = Data(#"{"enabled":true,"endpoint":"wss://example.com/realtime","language":"ja","audioOutput":true}"#.utf8)
         let migrated = try JSONDecoder().decode(LiveTranslateConfiguration.self, from: legacy)
         try hyCheck(migrated.provider == .qwenCloud, "old installations remain cloud")

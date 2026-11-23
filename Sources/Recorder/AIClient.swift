@@ -54,8 +54,14 @@ enum APIKeyStore {
     }
 }
 
+enum AIReasoningUpdate: Equatable {
+    case activity
+    case summary(String)
+}
+
 struct AIStreamEvent {
     var text = ""
+    var reasoning: AIReasoningUpdate?
     var finished = false
     var reason: String?
     static func parse(_ data: String) throws -> AIStreamEvent {
@@ -66,8 +72,52 @@ struct AIStreamEvent {
         if object["error"] != nil { throw AIError.message("AI 服务返回错误，请检查模型、余额和文本长度") }
         guard let choices = object["choices"] as? [[String:Any]], let first = choices.first else { return .init() }
         let delta = first["delta"] as? [String:Any]
-        return .init(text: delta?["content"] as? String ?? "", reason: first["finish_reason"] as? String)
+        // Only the typed public summary may cross the parser boundary as text.
+        let details = delta?["reasoning_details"] as? [[String: Any]] ?? []
+        let summary = details.compactMap { detail in
+            detail["type"] as? String == "reasoning.summary" ? detail["summary"] as? String : nil
+        }.joined()
+        let hasActivity = ["reasoning_content", "reasoning"].contains { (delta?[$0] as? String)?.isEmpty == false }
+            || details.contains { ["reasoning.text", "reasoning.encrypted"].contains($0["type"] as? String ?? "") }
+        let reasoning: AIReasoningUpdate? = summary.isEmpty ? (hasActivity ? .activity : nil) : .summary(summary)
+        return .init(text: delta?["content"] as? String ?? "", reasoning: reasoning, reason: first["finish_reason"] as? String)
     }
+}
+
+/// Some compatible servers put <think> blocks in the answer itself. Keep only a
+/// possible delimiter prefix between chunks, never a buffer of the hidden body.
+private struct AIVisibleText {
+    private var depth = 0
+    private var prefix = ""
+
+    mutating func consume(_ delta: String) -> (text: String, activity: Bool) {
+        var remaining = (prefix + delta)[...]
+        var text = ""
+        var activity = false
+        prefix = ""
+        while let start = remaining.firstIndex(of: "<") {
+            if depth == 0 { text += remaining[..<start] }
+            remaining = remaining[start...]
+            if remaining.hasPrefix("<think>") {
+                depth += 1
+                activity = true
+                remaining = remaining.dropFirst("<think>".count)
+            } else if depth > 0, remaining.hasPrefix("</think>") {
+                depth -= 1
+                remaining = remaining.dropFirst("</think>".count)
+            } else if "<think>".hasPrefix(remaining) || (depth > 0 && "</think>".hasPrefix(remaining)) {
+                prefix = String(remaining)
+                return (text, activity)
+            } else {
+                if depth == 0 { text += "<" }
+                remaining = remaining.dropFirst()
+            }
+        }
+        if depth == 0 { text += remaining }
+        return (text, activity)
+    }
+
+    var finalText: String { depth == 0 ? prefix : "" }
 }
 
 /// Credentials and text never follow redirects, enter a URL, or reach disk caches.
@@ -95,6 +145,7 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     }
 
     func stream(config: AIServiceConfiguration, key: String, instruction: String, text: String,
+                onReasoning: (@MainActor @Sendable (AIReasoningUpdate) async -> Void)? = nil,
                 onText: @escaping @MainActor @Sendable (String) async -> Void) async throws {
         let request = try Self.request(config: config, key: key, instruction: instruction, text: text)
         let settings = URLSessionConfiguration.ephemeral
@@ -126,17 +177,36 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         var done = false
         var reason: String?
         var outputSize = 0
+        var hasAnswer = false
+        var reportedActivity = false
+        var answerFilter = AIVisibleText()
+        var summaryFilter = AIVisibleText()
+        func deliver(text: String, reasoning: AIReasoningUpdate?) async throws {
+            outputSize += text.utf8.count
+            if case let .summary(summary) = reasoning { outputSize += summary.utf8.count }
+            guard outputSize <= 2_000_000 else { throw AIError.message("返回内容过长，已停止接收") }
+            if let reasoning, reasoning != .activity || !reportedActivity {
+                reportedActivity = true
+                await onReasoning?(reasoning)
+            }
+            if !text.isEmpty {
+                hasAnswer = true
+                await onText(text)
+            }
+        }
         func process() async throws {
             guard !eventLines.isEmpty else { return }
             let event = try AIStreamEvent.parse(eventLines.joined(separator: "\n"))
             eventLines.removeAll(keepingCapacity: true); size = 0
             if event.finished { done = true }
             if let r = event.reason { reason = r }
-            if !event.text.isEmpty {
-                outputSize += event.text.utf8.count
-                guard outputSize <= 2_000_000 else { throw AIError.message("返回内容过长，已停止接收") }
-                await onText(event.text)
+            let answer = answerFilter.consume(event.text)
+            var reasoning = event.reasoning
+            if case let .summary(delta) = reasoning {
+                let summary = summaryFilter.consume(delta)
+                reasoning = summary.text.isEmpty ? .activity : .summary(summary.text)
             }
+            try await deliver(text: answer.text, reasoning: reasoning ?? (answer.activity ? .activity : nil))
         }
         // Preserve empty SSE separators; AsyncBytes.lines omits empty lines.
         var lineBytes = Data()
@@ -169,9 +239,11 @@ final class AIClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
             try await process()
         }
         try Task.checkCancellation()
+        let finalSummary = summaryFilter.finalText
+        try await deliver(text: answerFilter.finalText, reasoning: finalSummary.isEmpty ? nil : .summary(finalSummary))
         if reason == "length" { throw AIError.message("结果达到模型输出长度上限，当前显示的内容不完整，请缩短原文后重试") }
         if reason == "content_filter" { throw AIError.message("内容被服务商过滤，当前结果可能不完整") }
         guard done || reason == "stop" else { throw AIError.message("连接提前结束，当前结果可能不完整，可重新发送") }
-        guard outputSize > 0 else { throw AIError.message("AI 未返回文本，请检查模型是否支持此接口") }
+        guard hasAnswer else { throw AIError.message("AI 未返回文本，请检查模型是否支持此接口") }
     }
 }
