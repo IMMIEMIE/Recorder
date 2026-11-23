@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "id": "0b8f6c2e-4d1a-4c47-9a53-2f1e6d7c8a90",
+  "title": "周会：Q4 *计划* #1 / 草稿?",
+  "title_edited": true,
+  "created_at_ms": 1795413900000,
+  "updated_at_ms": 1795484470000,
+  "segments": [
+    {
+      "started_at_ms": 1795413900000,
+      "ended_at_ms": 1795415502000,
+      "target_language": "zh",
+      "mode": "live_translate"
+    },
+    {
+      "started_at_ms": 1795483805000,
+      "ended_at_ms": 1795484470000,
+      "target_language": "ja",
+      "mode": "live_translate"
+    }
+  ],
+  "rows": [
+    {
+      "segment": 0,
+      "kind": "text",
+      "offset_ms": 1200,
+      "source": "Good morning, everyone.",
+      "translation": "大家早上好。"
+    },
+    {
+      "segment": 0,
+      "kind": "text",
+      "offset_ms": 5400,
+      "source": "- Agenda: [budget] & <hiring>",
+      "translation": "- 议程：[预算] 与 <招聘>"
+    },
+    {
+      "segment": 0,
+      "kind": "text",
+      "offset_ms": 9800,
+      "source": "3. Next steps\nfollow up",
+      "translation": ""
+    },
+    {
+      "segment": 0,
+      "kind": "text",
+      "offset_ms": 14100,
+      "source": "",
+      "translation": "仅有译文的一行"
+    },
+    {
+      "segment": 0,
+      "kind": "break",
+      "offset_ms": 15000,
+      "source": "",
+      "translation": ""
+    },
+    {
+      "segment": 0,
+      "kind": "text",
+      "offset_ms": 21000,
+      "source": "  We're back.  ",
+      "translation": "我们回来了。"
+    },
+    {
+      "segment": 1,
+      "kind": "text",
+      "offset_ms": 800,
+      "source": "Second day_test | ok ~ done",
+      "translation": "二日目のテスト"
+    },
+    {
+      "segment": 1,
+      "kind": "text",
+      "offset_ms": 4000,
+      "source": "   ",
+      "translation": ""
+    },
+    {
+      "segment": 1,
+      "kind": "text",
+      "offset_ms": 6000,
+      "source": "C:\\path `code`",
+      "translation": "パス"
+    }
+  ],
+  "future_field": {
+    "ignored": true
+  }
+}

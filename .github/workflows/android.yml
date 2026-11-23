@@ -2,9 +2,9 @@ name: Android
 
 on:
   push:
-    paths: ["android/**", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", ".github/workflows/android.yml"]
+    paths: ["android/**", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", "scripts/check_version.sh", "scripts/version.sh", "VERSION", "README.md", ".github/workflows/android.yml"]
   pull_request:
-    paths: ["android/**", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", ".github/workflows/android.yml"]
+    paths: ["android/**", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", "scripts/check_version.sh", "scripts/version.sh", "VERSION", "README.md", ".github/workflows/android.yml"]
   workflow_dispatch:
 
 jobs:
@@ -15,6 +15,10 @@ jobs:
         working-directory: android
     steps:
       - uses: actions/checkout@v4
+      # Cheap: VERSION, README and the Android versionName/versionCode must agree (macOS reads VERSION too).
+      - name: Check version consistency
+        working-directory: .
+        run: scripts/check_version.sh
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

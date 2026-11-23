@@ -4,6 +4,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// One version for macOS and Android: the repository's VERSION file (x.y.z). versionCode = major*10000 + minor*100 + patch.
+val releaseVersion = rootProject.file("../VERSION").readText().trim()
+val releaseVersionCode = Regex("""(\d+)\.(\d+)\.(\d+)""").matchEntire(releaseVersion)?.destructured
+    ?.let { (major, minor, patch) -> major.toInt() * 10000 + minor.toInt() * 100 + patch.toInt() }
+    ?: throw GradleException("VERSION 必须是 x.y.z，当前内容：\"$releaseVersion\"")
+
 android {
     namespace = "com.localrecorder.shengjian"
     compileSdk = 35
@@ -12,8 +18,8 @@ android {
         applicationId = "com.localrecorder.shengjian"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = releaseVersionCode
+        versionName = releaseVersion
     }
 
     // Release signing comes only from the environment (CI secrets, see android/README.md); the keystore

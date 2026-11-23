@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# VERSION at the repository root is the single version for macOS and Android; scripts/version.sh interprets it.
+version=$(scripts/version.sh version)
+# CFBundleVersion is a monotonic integer (same formula as Android's versionCode): major*10000 + minor*100 + patch.
+# The earlier releases shipped small integers (0.4.0 -> "5"), and LaunchServices compares build numbers
+# component-wise, so a dotted "0.5.0" would sort below "5".
+build_number=$(scripts/version.sh build)
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache"
 if python3 -c 'import json,pathlib; p=pathlib.Path("docs/hy-runtime-verification.json"); raise SystemExit(0 if p.exists() and json.loads(p.read_text()).get("passed") is True else 1)' 2>/dev/null; then
@@ -31,8 +37,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleName</key><string>声笺</string>
 <key>CFBundleDisplayName</key><string>声笺</string>
-<key>CFBundleVersion</key><string>5</string>
-<key>CFBundleShortVersionString</key><string>0.4.0</string>
+<key>CFBundleVersion</key><string>__BUILD__</string>
+<key>CFBundleShortVersionString</key><string>__VERSION__</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
@@ -40,6 +46,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>NSMicrophoneUsageDescription</key><string>声笺仅在你主动开始转写时使用麦克风；本地识别和本地 Hy-SimulMT 不上传音频，选择 API 识别或云端 LiveTranslate 时会发送音频到所选服务。应用不保存录音。</string>
 </dict></plist>
 PLIST
+sed -i '' -e "s/__VERSION__/$version/g" -e "s/__BUILD__/$build_number/g" "$app/Contents/Info.plist"
 python3 scripts/bundle_hy_runtime.py --app "$app"
 # The helper was signed before its hash was recorded; sign the outer bundle only.
 codesign --force --sign - "$app"

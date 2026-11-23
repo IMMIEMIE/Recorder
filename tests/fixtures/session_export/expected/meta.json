@@ -1,0 +1,67 @@
+{
+  "zone": "Asia/Shanghai",
+  "file_names": {
+    "txt": "声笺 2026-11-23 14-05 周会：Q4 _计划_ #1 _ 草稿_.txt",
+    "md": "声笺 2026-11-23 14-05 周会：Q4 _计划_ #1 _ 草稿_.md"
+  },
+  "default_titles": [
+    {
+      "created_at_ms": 1795413900000,
+      "rows": [],
+      "expected": "11-23 14:05 新会话"
+    },
+    {
+      "created_at_ms": 1795413900000,
+      "rows": [
+        {
+          "segment": 0,
+          "kind": "break",
+          "offset_ms": 0,
+          "source": "",
+          "translation": ""
+        },
+        {
+          "segment": 0,
+          "kind": "text",
+          "offset_ms": 0,
+          "source": "   ",
+          "translation": ""
+        },
+        {
+          "segment": 0,
+          "kind": "text",
+          "offset_ms": 0,
+          "source": "Hello there, this sentence is longer than twenty.",
+          "translation": ""
+        }
+      ],
+      "expected": "11-23 14:05 Hello there, this se"
+    },
+    {
+      "created_at_ms": 1795413900000,
+      "rows": [
+        {
+          "segment": 0,
+          "kind": "text",
+          "offset_ms": 0,
+          "source": "今天我们讨论第四季度的预算安排和招聘计划",
+          "translation": ""
+        }
+      ],
+      "expected": "11-23 14:05 今天我们讨论第四季度的预算安排和招聘计划"
+    },
+    {
+      "created_at_ms": 1795413900000,
+      "rows": [
+        {
+          "segment": 0,
+          "kind": "text",
+          "offset_ms": 0,
+          "source": "emoji 😀 counts as one code point here",
+          "translation": ""
+        }
+      ],
+      "expected": "11-23 14:05 emoji 😀 counts as on"
+    }
+  ]
+}
