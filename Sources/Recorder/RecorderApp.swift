@@ -77,6 +77,14 @@ struct MainView: View {
         .sheet(item: $model.exportRequest) { request in SessionExportSheet(model: model, request: request) }
     }
 
+    private var statusColor: Color {
+        switch model.state {
+        case "error": DesignTokens.error
+        case "connecting", "reconnecting", "loading", "warming", "finalizing": DesignTokens.connecting
+        default: model.recording ? DesignTokens.recording : DesignTokens.complete
+        }
+    }
+
     private var workspace: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 25) {
@@ -134,7 +142,7 @@ struct MainView: View {
                     Spacer()
                     Button { model.setSubtitleMode(!model.subtitleMode) } label: { Image(systemName: model.subtitleMode ? "captions.bubble.fill" : "captions.bubble") }
                         .help(model.subtitleMode ? "关闭字幕模式" : "打开字幕模式").accessibilityLabel("字幕模式")
-                    Button { floating.toggle(); NSApp.keyWindow?.level = floating ? .floating : .normal } label: { Image(systemName: floating ? "pin.fill" : "pin") }.help("窗口置顶").accessibilityLabel("窗口置顶")
+                    Button { floating.toggle(); NSApp.keyWindow?.level = floating ? .floating : .normal } label: { Image(systemName: floating ? "pin.fill" : "pin") }.help("窗口置顶")
                     Menu {
                         if model.liveEnabled {
                             Text("LiveTranslate → \(model.liveConfiguration.languageName)")
@@ -149,14 +157,14 @@ struct MainView: View {
                         SettingsLink { Text("翻译设置…") }
                     } label: {
                         Label(model.liveEnabled ? "译为\(model.liveConfiguration.languageName)" : (model.translationEnabled ? "译为\(model.translationTarget)" : "翻译"), systemImage: "character.bubble")
-                    }.menuStyle(.borderedButton).fixedSize().help(model.translationSummary)
+                    }.fixedSize().help(model.translationSummary)
                     Button { ai.prepare(text: model.joinedText); showAI = true } label: { Label("AI 提问", systemImage: "sparkles") }
                         .disabled(!model.displayedHasText || model.liveEnabled)
                     if model.livePlaying { Button("停止译音", systemImage: "speaker.slash") { model.stopLivePlayback() } }
                     Button { model.exportRequest = SessionExportRequest(sessionID: nil) } label: { Label("导出会话…", systemImage: "square.and.arrow.up") }
                         .disabled(!model.displayedHasText).help("将此会话的已定稿文字导出为 TXT 或 Markdown")
                     Button { model.copyText() } label: { Label("复制", systemImage: "doc.on.doc") }.disabled(!model.displayedHasText)
-                }.buttonStyle(ToolbarActionStyle())
+                }.buttonStyle(ToolbarActionStyle()).menuStyle(.borderedButton)
                 .padding(.horizontal, 24).padding(.vertical, 14)
                 if let viewed = model.viewedSession, model.recordingSessionID != nil {
                     HStack(spacing: 10) {
@@ -286,14 +294,6 @@ struct MainView: View {
             }.background(DesignTokens.surface)
         }.tint(accent).sheet(isPresented: $showAI) { AIWorkspaceView(ai: ai) }
             .onChange(of: model.liveEnabled) { _, enabled in if enabled { ai.cancel(); showAI = false } }
-    }
-
-    private var statusColor: Color {
-        switch model.state {
-        case "error": DesignTokens.error
-        case "connecting", "reconnecting", "loading", "warming", "finalizing": DesignTokens.connecting
-        default: model.recording ? DesignTokens.recording : DesignTokens.complete
-        }
     }
 
     private var atBottom: Bool { contentBounds.bottom - viewportHeight <= 48 }

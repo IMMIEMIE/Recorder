@@ -1,7 +1,7 @@
 <resources>
     <style name="Base.Theme.Shengjian" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/background</item>
-        <item name="android:colorAccent">@color/launcher_background</item>
+        <item name="android:colorAccent">@color/brand_primary</item>
     </style>
     <style name="Theme.Shengjian" parent="Base.Theme.Shengjian">
         <item name="android:windowBackground">@drawable/launch_window</item>

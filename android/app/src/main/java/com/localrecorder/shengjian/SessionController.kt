@@ -188,6 +188,12 @@ class SessionController(private val context: Context) : SessionPlatform {
         }
     }
 
+    fun subtitleStartMs(key: String): Long? {
+        val state = _ui.value
+        return if (state.viewingRecording) recorder.firstSeenAtMs(key) ?: recorder.base?.subtitleStartMs(key)
+        else state.viewed?.subtitleStartMs(key)
+    }
+
     fun stopPlayback() = engine.stopPlayback()
     fun dismissMessages() = engine.dismissMessages()
 
@@ -198,9 +204,9 @@ class SessionController(private val context: Context) : SessionPlatform {
             return false
         }
         return try {
+            if (key.isNotBlank()) secrets.put(draft.normalized(allowLocalhost).keyAccount, key.trim())
             val saved = settings.save(draft, allowLocalhost)
             settings.saveOptions(draftOptions)
-            if (key.isNotBlank()) secrets.put(saved.keyAccount, key.trim())
             config = saved
             options = draftOptions
             _ui.update {

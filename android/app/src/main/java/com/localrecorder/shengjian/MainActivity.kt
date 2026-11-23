@@ -18,22 +18,24 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,14 +43,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.localrecorder.shengjian.ui.theme.Design
-import com.localrecorder.shengjian.ui.theme.LocalStatusColors
-import com.localrecorder.shengjian.ui.theme.ShengjianTheme
 import com.localrecorder.live.SessionState
 import com.localrecorder.live.SubtitleRow
 import com.localrecorder.sessions.ExportContent
@@ -58,8 +55,11 @@ import com.localrecorder.sessions.SessionGroup
 import com.localrecorder.sessions.SessionRecord
 import com.localrecorder.sessions.SessionSummary
 import com.localrecorder.sessions.SessionText
-import kotlinx.coroutines.launch
+import com.localrecorder.shengjian.ui.theme.Design
+import com.localrecorder.shengjian.ui.theme.LocalStatusColors
+import com.localrecorder.shengjian.ui.theme.ShengjianTheme
 import java.time.ZoneId
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -457,14 +457,16 @@ private fun TranscriptScreen(
                     FilledTonalButton(onSettings) { Text("配置服务") }
                 }
             } else {
-                Subtitles(rows, trimmed = ui.viewingRecording && session.trimmed, emptyText = emptyText, modifier = Modifier.weight(1f))
+                Subtitles(rows, trimmed = ui.viewingRecording && session.trimmed, emptyText = emptyText, modifier = Modifier.weight(1f),
+                    sessionId = selectedId, stamp = { key -> controller.subtitleStartMs(key)?.let { SessionText.stamp(it, "HH:mm", zone) } })
             }
         }
     }
 }
 
 @Composable
-private fun Subtitles(rows: List<SubtitleRow>, trimmed: Boolean, emptyText: String, modifier: Modifier) {
+private fun Subtitles(rows: List<SubtitleRow>, trimmed: Boolean, emptyText: String, modifier: Modifier,
+                      sessionId: String?, stamp: (String) -> String?) {
     if (rows.isEmpty()) {
         Column(modifier.fillMaxWidth().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
             Text(emptyText, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
@@ -490,7 +492,7 @@ private fun Subtitles(rows: List<SubtitleRow>, trimmed: Boolean, emptyText: Stri
                     Marker(row.marker)
                     return@items
                 }
-                SubtitleText(row)
+                SubtitleText(row, remember(sessionId, row.key) { stamp(row.key) })
             }
             if (trimmed) {
                 item(key = "trimmed", contentType = 1) { Marker("较早的字幕已不在屏幕上（最多显示约 1000 条），已定稿的内容仍保存在会话中") }

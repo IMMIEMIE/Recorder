@@ -3,21 +3,16 @@
 package com.localrecorder.shengjian
 
 import android.content.res.Configuration
-import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.android.tools.screenshot.PreviewTest
@@ -118,7 +113,7 @@ private fun Transcript(wide: Boolean, recording: Boolean, toggle: () -> Unit, na
             verticalArrangement = Arrangement.Bottom) {
             samples.forEachIndexed { i, (translation, source) ->
                 val done = i != samples.lastIndex || !recording
-                SubtitleText(com.localrecorder.live.SubtitleRow(i.toString(), source, done, translation, done))
+                SubtitleText(com.localrecorder.live.SubtitleRow(i.toString(), source, done, translation, done), if (i < 2) "09:40" else if (i < 4) "09:41" else "09:42")
             }
         }
         Surface(color = colors.surfaceContainerLow) {
