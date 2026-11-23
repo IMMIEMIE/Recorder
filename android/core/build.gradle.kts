@@ -35,3 +35,10 @@ tasks.register<JavaExec>("liveProbe") {
     classpath = sourceSets["test"].runtimeClasspath
     mainClass.set("com.localrecorder.live.LiveProbeKt")
 }
+
+tasks.register<JavaExec>("dialogueProbe") {
+    group = "verification"
+    description = "Probes Qwen's second session.update and simultaneous text sessions using one short test WAV."
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("com.localrecorder.live.DialogueProbeKt")
+}

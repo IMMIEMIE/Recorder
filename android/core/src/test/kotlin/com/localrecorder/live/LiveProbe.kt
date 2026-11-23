@@ -290,7 +290,7 @@ internal fun roomTone(buffer: ByteArray) {
 }
 
 /** The data chunk of a 16 kHz mono PCM16 WAV (any other chunks are skipped). */
-private fun readWav(file: File): ByteArray {
+internal fun readWav(file: File): ByteArray {
     val bytes = file.readBytes()
     val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
     require(bytes.size > 12 && String(bytes, 0, 4) == "RIFF" && String(bytes, 8, 4) == "WAVE") { "${file.name} is not a WAV file" }
