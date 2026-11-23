@@ -11,6 +11,14 @@ data class SubtitleRow(
     val translationDone: Boolean,
     /** Non-empty for a separator (a connection break); source and translation are then empty. */
     val marker: String = "",
+    val targetLanguage: String? = null,
+    val sourceLanguage: String? = null,
+    val speaker: String? = null,
+    /** Start of the provider utterance on the shared monotonic capture clock. */
+    val audioStartMs: Long? = null,
+    val languageChange: Boolean = false,
+    /** Display name attached to the first text row after a confirmed switch, as required by the export format. */
+    val languageSwitch: String? = null,
 )
 
 data class SessionSnapshot(
@@ -32,7 +40,10 @@ fun interface Cancellable {
 }
 
 interface SpeechOutput {
+    /** Actual output route, when available. Read from the microphone thread during dialogue playback. */
+    val microphoneMayHearPlayback: Boolean? get() = null
     fun start(volume: Float)
+    fun setVolume(volume: Float) {}
 
     /** False when too much speech is already waiting. */
     fun append(pcm: ByteArray): Boolean
@@ -62,6 +73,24 @@ interface SessionPlatform {
     fun elapsedMs(): Long = System.nanoTime() / 1_000_000
 }
 
+/** One per logical recording controller. The two dialogue sockets draw on the same per-key service quota. */
+class LiveConnectionBudget {
+    private val opens = ArrayDeque<Long>()
+    var limitedUntil = 0L
+        private set
+
+    fun limit(until: Long) { limitedUntil = maxOf(limitedUntil, until) }
+
+    fun earliest(now: Long): Long {
+        while (opens.isNotEmpty() && opens.first() <= now - LiveSession.CONNECTION_WINDOW_MS) opens.removeFirst()
+        val window = if (opens.size >= LiveSession.MAX_CONNECTIONS_PER_WINDOW)
+            opens.first() + LiveSession.CONNECTION_WINDOW_MS else now
+        return maxOf(now, window, limitedUntil)
+    }
+
+    fun opened(now: Long) { opens.addLast(now) }
+}
+
 /**
  * The session state machine behind the UI: one user session spans one or more LiveTranslate
  * connections. A dropped connection is replaced by a new one (rows received so far are kept and
@@ -74,10 +103,19 @@ interface SessionPlatform {
  * A growing uplink backlog is shed (chunks dropped, the gap marked) rather than answered with a reconnect;
  * only a backlog that stops draining altogether replaces the connection.
  */
-class LiveSession(private val platform: SessionPlatform, private val onChange: (SessionSnapshot) -> Unit) {
+class LiveSession(
+    private val platform: SessionPlatform,
+    private val connectionBudget: LiveConnectionBudget,
+    private val onChange: (SessionSnapshot) -> Unit,
+) {
+    constructor(platform: SessionPlatform, onChange: (SessionSnapshot) -> Unit) :
+        this(platform, LiveConnectionBudget(), onChange)
+
     companion object {
         val RECONNECT_DELAYS_MS = longArrayOf(500, 1_000, 2_000, 4_000, 8_000)
         const val OFFLINE_GIVE_UP_MS = 60_000L
+        const val LANGUAGE_DEBOUNCE_MS = 1_000L
+        const val LANGUAGE_ACK_MS = 2_000L
 
         /** A reconnected session that lasts this long resets the attempt and rate-limit counters. */
         const val STABLE_MS = 30_000L
@@ -122,6 +160,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     private var config = LiveTranslateConfig()
     private var key = ""
     private var autoReconnect = true
+    private var recoverInitial = false
 
     private val history = ArrayList<SubtitleRow>()
     private var events = LiveTranslateEvents()
@@ -146,12 +185,21 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     private var giveUp: Cancellable? = null
     private var stable: Cancellable? = null
 
-    /** Rate limits since the session start or the last stable connection; no connection opens before [limitedUntil]. */
+    /** Rate limits since the session start or the last stable connection; no connection opens before the shared cooldown expires. */
     private var limits = 0
-    private var limitedUntil = 0L
-
-    /** When recent connections were opened, oldest first (kept across sessions: the service counts per key). */
-    private val opens = ArrayDeque<Long>()
+    private var desiredLanguage: String? = null
+    private var awaitingLanguage: String? = null
+    private var languageTimer: Cancellable? = null
+    private var debounceComplete = false
+    private val speaking = mutableSetOf<String>()
+    private var switchOnReady = false
+    private var drainingOldLanguage = false
+    private var settingsReconnect = false
+    private var firstSwitchRow: String? = null
+    private val switchCandidates = mutableSetOf<String>()
+    private var finishAfterHandoff = false
+    private var drain: Cancellable? = null
+    private var drainProgressAt = 0L
 
     /** The current reconnect replaces a connection the service closed for lack of results: no marker, no notice. */
     private var quiet = false
@@ -166,7 +214,14 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     private var capturing = false
     private var live: LiveTransport? = null
     private var buffering = false
-    private val gap = LiveHandoffAudio(LiveHandoffAudio.Reason.RECOVERY)
+    private var gap = LiveHandoffAudio(LiveHandoffAudio.Reason.RECOVERY)
+    private var plannedAudio = false
+    private var captureOriginMs: Long? = null
+    private var capturedBytes = 0L
+    // Each discontinuity in the uploaded audio needs its own offset to compare both dialogue lanes after a drop.
+    private data class AudioSpan(val sentStart: Long, val capturedStart: Long)
+    private val spans = ArrayDeque<AudioSpan>()
+    private var sentBytes = 0L
     private var shedding = false
     private var droppedBytes = 0L
     private var lowestQueued = 0
@@ -183,11 +238,15 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     private var windowCaptured = 0L
 
     /** Starts a session; the caller has already obtained the microphone permission. */
-    fun start(config: LiveTranslateConfig, key: String, autoReconnect: Boolean = true) {
+    fun start(
+        config: LiveTranslateConfig, key: String, autoReconnect: Boolean = true,
+        plannedHandoff: Boolean = false, recoverInitial: Boolean = false,
+    ) {
         if (snapshot.state != SessionState.IDLE) return
         this.config = config
         this.key = key
         this.autoReconnect = autoReconnect
+        this.recoverInitial = recoverInitial
         attempts = 0
         limits = 0
         lastCause = ""
@@ -196,13 +255,13 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         network = null
         // A new session right after a rate limit or a burst of connections would only be refused again.
         val wait = earliestOpen() - platform.elapsedMs()
-        if (wait > 0) {
+        if (wait > 0 && !plannedHandoff && !recoverInitial) {
             update { it.copy(error = "连接过于频繁或服务限流，请 ${seconds(wait)} 秒后再试") }
             return
         }
         stopPlayback()
         speechOff = false
-        open()?.let { failure ->
+        if (wait <= 0) open()?.let { failure ->
             update { it.copy(error = failure) }
             return
         }
@@ -216,12 +275,137 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         }
         // Capture starts now, not once the session is configured: people speak as soon as they press start,
         // and the handshake usually takes under 1 s. Its last second is sent first once ready.
-        beginCapture()
+        beginCapture(plannedHandoff)
+        if (wait > 0 && snapshot.state == SessionState.CONNECTING) attempt(immediately = true, counted = false)
+    }
+
+    /** Stable for an item within the current provider connection, even if a later socket reuses its ID. */
+    fun sourceRowKey(id: String): String = "$epoch:$id"
+
+    /** Local playback and reconnect settings take effect immediately; negotiated wire settings use a paced handoff. */
+    fun setPreferences(next: LiveTranslateConfig, reconnect: Boolean) {
+        autoReconnect = reconnect
+        if (next.profile.id != config.profile.id || next.endpoint != config.endpoint ||
+            snapshot.state !in setOf(SessionState.CONNECTING, SessionState.RECORDING, SessionState.RECONNECTING)) return
+        if (next.volume != config.volume) speech?.setVolume(next.volume)
+        if (next.playbackTiming != config.playbackTiming && config.audioOutput && !speechOff)
+            playback = LiveTranslatePlaybackQueue(next.playbackTiming)
+        val restart = next.profile.copy(name = config.profile.name) != config.profile ||
+            next.audioOutput != config.audioOutput
+        if (next.audioOutput != config.audioOutput) {
+            if (next.audioOutput) speechOff = false else stopPlayback()
+        }
+        config = next.copy(language = config.language)
+        if (restart) settingsReconnect = true
+        applySettingsHandoff()
+    }
+
+    private fun applySettingsHandoff() {
+        if (!settingsReconnect || snapshot.state != SessionState.RECORDING || awaitingLanguage != null || finishAfterHandoff) return
+        settingsReconnect = false
+        pauseForHandoff()
+        detach()
+        quiet = true
+        update { it.copy(state = SessionState.RECONNECTING, status = "正在应用转译设置…") }
+        attempt(immediately = true, counted = false)
+    }
+
+    /** Last selection wins; change only after the active utterance has ended. */
+    fun setTargetLanguage(language: String) {
+        if (snapshot.state !in setOf(SessionState.CONNECTING, SessionState.RECONNECTING, SessionState.RECORDING) ||
+            finishAfterHandoff || LiveTranslateConfig.LANGUAGES.none { it.first == language }) return
+        desiredLanguage = language
+        if (awaitingLanguage != null || switchOnReady) return
+        debounceLanguage()
+    }
+
+    private fun debounceLanguage() {
+        languageTimer?.cancel()
+        debounceComplete = false
+        if (desiredLanguage == config.language) {
+            desiredLanguage = null
+            return
+        }
+        languageTimer = platform.schedule(LANGUAGE_DEBOUNCE_MS) {
+            debounceComplete = true
+            tryLanguageChange()
+        }
+    }
+
+    private fun tryLanguageChange() {
+        val next = desiredLanguage ?: return
+        if (!debounceComplete || speaking.isNotEmpty() || snapshot.state != SessionState.RECORDING ||
+            awaitingLanguage != null || switchOnReady) return
+        languageTimer?.cancel()
+        awaitingLanguage = next
+        pauseForHandoff()
+        languageTimer = platform.schedule(LANGUAGE_ACK_MS) { replaceForLanguage(next) }
+        if (transport?.updateLanguage(next) != true) replaceForLanguage(next)
+    }
+
+    private fun pauseForHandoff() {
+        drain?.cancel()
+        drain = null
+        synchronized(audioLock) {
+            if (!plannedAudio) gap = LiveHandoffAudio(LiveHandoffAudio.Reason.LANGUAGE_SWITCH)
+            plannedAudio = true
+            live = null
+            buffering = true
+        }
+    }
+
+    private fun replaceForLanguage(language: String) {
+        if (awaitingLanguage != language) return
+        languageTimer?.cancel()
+        if (!drainingOldLanguage && events.rows.values.any { !events.translation(it).done }) {
+            // A translated tail can arrive after speech_stopped. Finish the old socket before retiring its rows.
+            drainingOldLanguage = true
+            transport?.finish()
+            languageTimer = platform.schedule(LANGUAGE_ACK_MS) { openLanguageReplacement(language) }
+            return
+        }
+        openLanguageReplacement(language)
+    }
+
+    private fun openLanguageReplacement(language: String) {
+        drainingOldLanguage = false
+        languageTimer?.cancel()
+        awaitingLanguage = null
+        switchOnReady = true
+        detach()
+        config = config.copy(language = language)
+        quiet = true
+        update { it.copy(state = SessionState.RECONNECTING, status = "正在切换译文语言…") }
+        attempt(immediately = true, counted = false)
+    }
+
+    private fun changedLanguage() {
+        switchOnReady = false
+        awaitingLanguage = null
+        languageTimer?.cancel()
+        languageTimer = null
+        val name = config.languageName
+        firstSwitchRow = name
+        switchCandidates.clear()
+        markers += events.order.lastOrNull() to SubtitleRow(
+            "language:${markerCount++}", "", true, "", true,
+            marker = "译文语言已切换为 $name", targetLanguage = config.language, languageChange = true,
+        )
+        if (desiredLanguage == config.language) desiredLanguage = null
+        debounceComplete = false
+        if (desiredLanguage != null && !finishAfterHandoff) debounceLanguage()
+        publish()
     }
 
     /** Explicit switch: keep the existing capture and history, and apply the same connection budget as reconnect. */
     fun switchProfile(next: LiveTranslateConfig, credential: String): Boolean {
         if (snapshot.state != SessionState.RECORDING || credential.isBlank() || next.profile.id == config.profile.id) return false
+        // An explicitly selected profile supplies its own target; ignore a late ack from the previous socket.
+        languageTimer?.cancel()
+        desiredLanguage = null
+        awaitingLanguage = null
+        debounceComplete = false
+        firstSwitchRow = null
         detach()
         config = next
         key = credential
@@ -236,6 +420,25 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
 
     /** Stops capture; the server still delivers the tail before the session ends. */
     fun stop() {
+        val waiting = synchronized(audioLock) { plannedAudio && gap.size > 0 }
+        if (waiting && (!online || transport == null && earliestOpen() > platform.elapsedMs())) {
+            // An explicit stop must not keep the microphone/service alive through a long quota or offline wait.
+            end("连接未就绪，已保留收到的文字；切换期间的尾句可能不完整")
+            return
+        }
+        if (waiting && snapshot.state in setOf(SessionState.CONNECTING, SessionState.RECONNECTING, SessionState.RECORDING)) {
+            if (capturing) {
+                platform.stopCapture()
+                capturing = false
+            }
+            finishAfterHandoff = true
+            update { it.copy(status = "正在等待尾句结果…") }
+            return
+        }
+        languageTimer?.cancel()
+        desiredLanguage = null
+        awaitingLanguage = null
+        drainingOldLanguage = false
         when (snapshot.state) {
             SessionState.CONNECTING, SessionState.RECONNECTING -> end(null)
             SessionState.RECORDING -> {
@@ -326,7 +529,14 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         serverSlow = false
         progressOffset = -1
         val token = ++connection
-        opens.addLast(platform.elapsedMs())
+        settingsReconnect = false // This handshake includes the latest negotiated settings.
+        connectionBudget.opened(platform.elapsedMs())
+        synchronized(audioLock) {
+            spans.clear()
+            sentBytes = 0
+        }
+        speaking.clear()
+        switchCandidates.clear()
         events = LiveTranslateEvents()
         markers.clear()
         val next: LiveTransport
@@ -342,12 +552,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     }
 
     /** The earliest time a connection may open: after a rate-limit wait, and within the per-minute budget. */
-    private fun earliestOpen(): Long {
-        val now = platform.elapsedMs()
-        while (opens.isNotEmpty() && opens.first() <= now - CONNECTION_WINDOW_MS) opens.removeFirst()
-        val window = if (opens.size >= MAX_CONNECTIONS_PER_WINDOW) opens[opens.size - MAX_CONNECTIONS_PER_WINDOW] + CONNECTION_WINDOW_MS else now
-        return maxOf(now, window, limitedUntil)
-    }
+    private fun earliestOpen() = connectionBudget.earliest(platform.elapsedMs())
 
     private fun dropTransport() {
         retry?.cancel()
@@ -364,6 +569,19 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             if (token == connection) ready()
         }
 
+        override fun onLanguageUpdate(language: String, confirmed: Boolean) {
+            if (token != connection || language != awaitingLanguage || drainingOldLanguage) return
+            if (!confirmed) {
+                replaceForLanguage(language)
+                return
+            }
+            config = config.copy(language = language)
+            changedLanguage()
+            transport?.let(::attach)
+            if (snapshot.state == SessionState.RECORDING) update { it.copy(status = recordingStatus()) }
+            applySettingsHandoff()
+        }
+
         override fun onEvent(event: LiveSessionEvent) {
             if (token == connection) received(event)
         }
@@ -374,11 +592,14 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     }
 
     /** Opens the microphone; until a connection is ready its chunks wait in the gap buffer. */
-    private fun beginCapture() {
+    private fun beginCapture(planned: Boolean) {
         val generation = synchronized(audioLock) {
             live = null
             buffering = true
-            gap.clear()
+            plannedAudio = planned
+            gap = LiveHandoffAudio(if (planned) LiveHandoffAudio.Reason.LANGUAGE_SWITCH else LiveHandoffAudio.Reason.RECOVERY)
+            captureOriginMs = null
+            capturedBytes = 0
             resetShedding()
             ++capture
         }
@@ -400,19 +621,78 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
      */
     private fun attach(current: LiveTransport) {
         synchronized(audioLock) {
-            while (true) {
-                val pcm = gap.poll(platform.elapsedMs()) ?: break
-                if (current.append(pcm) != AppendResult.SENT) break
-            }
-            gap.clear()
             resetShedding()
-            buffering = false
             live = current
+            buffering = false
             windowStartMs = platform.elapsedMs()
+            drainProgressAt = windowStartMs
             windowStartQueue = current.queuedAudioBytes
             windowSent = 0
             windowCaptured = 0
+            if (!plannedAudio) {
+                while (gap.size > 0) {
+                    val start = capturedBytes - gap.size
+                    val pcm = gap.poll(platform.elapsedMs()) ?: break
+                    if (appendMapped(current, pcm, start) != AppendResult.SENT) break
+                }
+                gap.clear()
+            }
         }
+        drainHandoff(current)
+    }
+
+    /** Paces a deliberate switch even when capture stops with buffered audio still to deliver. */
+    private fun drainHandoff(current: LiveTransport) {
+        drain?.cancel()
+        drain = null
+        synchronized(audioLock) {
+            if (live !== current || !plannedAudio) return
+            if (gap.size > 0 && current.queuedAudioBytes < SHED_AUDIO_BYTES) {
+                val start = capturedBytes - gap.size
+                val pcm = gap.poll(platform.elapsedMs())
+                if (pcm != null) {
+                    val result = appendMapped(current, pcm, start)
+                    if (result == AppendResult.SENT) drainProgressAt = platform.elapsedMs() else gap.restoreFront(pcm)
+                    if (result == AppendResult.CLOSED) {
+                        live = null
+                        buffering = true
+                        return
+                    }
+                }
+            }
+            if (gap.size > 0) {
+                if (platform.elapsedMs() - drainProgressAt >= STALL_MS) {
+                    val generation = capture
+                    platform.post { stalled(generation, current) }
+                } else {
+                    drain = platform.schedule(20) { drainHandoff(current) }
+                }
+                return
+            }
+            plannedAudio = false
+            gap = LiveHandoffAudio(LiveHandoffAudio.Reason.RECOVERY)
+        }
+        if (finishAfterHandoff && snapshot.state == SessionState.RECORDING) stop()
+    }
+
+    /** Under audioLock. Provider positions count only audio successfully sent on this connection. */
+    private fun appendMapped(target: LiveTransport, pcm: ByteArray, capturedStart: Long): AppendResult {
+        val result = target.append(pcm)
+        if (result == AppendResult.SENT) {
+            val span = spans.lastOrNull()
+            if (span == null || span.capturedStart + sentBytes - span.sentStart != capturedStart) {
+                spans.addLast(AudioSpan(sentBytes, capturedStart))
+                if (spans.size > MAX_ROWS) spans.removeFirst()
+            }
+            sentBytes += pcm.size
+        }
+        return result
+    }
+
+    private fun audioPosition(offsetMs: Int): Long? = synchronized(audioLock) {
+        val offset = offsetMs.toLong() * BYTES_PER_MS
+        val span = spans.lastOrNull { it.sentStart <= offset } ?: return@synchronized null
+        captureOriginMs?.plus((span.capturedStart + offset - span.sentStart) / BYTES_PER_MS)
     }
 
     /** Under [audioLock]. */
@@ -437,6 +717,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
                     attempts = 0
                     limits = 0
                 }
+                if (config.audioOutput && !speechOff && speech == null) startSpeech()
                 val renewed = quiet
                 quiet = false
                 update {
@@ -448,6 +729,10 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             }
             else -> Unit
         }
+        if (switchOnReady) changedLanguage()
+        applySettingsHandoff()
+        tryLanguageChange()
+        if (finishAfterHandoff && !plannedAudio) stop()
     }
 
     private fun recordingStatus() = "正在转写 → ${config.languageName}"
@@ -457,9 +742,16 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         val notify = ArrayList<() -> Unit>(2)
         synchronized(audioLock) {
             if (generation != capture) return
+            if (captureOriginMs == null) captureOriginMs = platform.elapsedMs() - pcm.size / BYTES_PER_MS
+            val capturedStart = capturedBytes
+            capturedBytes += pcm.size
             val target = live
             if (target == null) {
                 if (buffering) gap.append(pcm)
+                return
+            }
+            if (plannedAudio) {
+                gap.append(pcm)
                 return
             }
             val queued = target.queuedAudioBytes
@@ -499,7 +791,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
                 notify += { congested(generation, target) }
             }
             if (!shedding) {
-                when (target.append(pcm)) {
+                when (appendMapped(target, pcm, capturedStart)) {
                     AppendResult.SENT -> windowSent += pcm.size
                     // Only a chunk larger than the transport's whole queue gets here: drop it like the others.
                     AppendResult.FULL -> {
@@ -558,11 +850,43 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
 
     private fun received(event: LiveSessionEvent) {
         when (event) {
-            is LiveSessionEvent.SpeechStart -> observeProgress(event.milliseconds)
-            is LiveSessionEvent.SpeechEnd -> observeProgress(event.milliseconds)
+            is LiveSessionEvent.SpeechStart -> {
+                speaking.add(event.source)
+                observeProgress(event.milliseconds)
+            }
+            is LiveSessionEvent.SpeechEnd -> {
+                if (event.source == null) speaking.clear() else speaking.remove(event.source)
+                observeProgress(event.milliseconds)
+            }
             else -> Unit
         }
         events.apply(event)
+        if (event is LiveSessionEvent.Text && event.source && event.final) speaking.remove(event.item)
+        val sourceID = when (event) {
+            is LiveSessionEvent.SpeechStart -> event.source
+            is LiveSessionEvent.Link -> event.source
+            is LiveSessionEvent.Text -> if (event.source) event.item else null
+            else -> null
+        }
+        sourceID?.let { id -> events.rows[id]?.let { row ->
+            if (row.targetLanguage == null) {
+                row.targetLanguage = config.language
+                if (firstSwitchRow != null) switchCandidates.add(id)
+            }
+            if (event is LiveSessionEvent.SpeechStart) row.audioStartMs = audioPosition(event.milliseconds)
+        } }
+        firstSwitchRow?.let { name ->
+            // speech_started can be reported for an empty/noise-only turn; attach the export marker to actual text.
+            val visible = events.rows.values.firstOrNull {
+                it.targetLanguage == config.language && (it.source.text.isNotEmpty() || events.translation(it).text.isNotEmpty())
+                    && it.id in switchCandidates
+            }
+            if (visible != null) {
+                visible.languageSwitch = name
+                firstSwitchRow = null
+                switchCandidates.clear()
+            }
+        }
         playback?.let { queue ->
             try {
                 for (pcm in queue.consume(event, events)) {
@@ -583,8 +907,11 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             events.rows[id]?.let { row -> subtitle(row)?.let(history::add) }
             history.addAll(markersAfter(id))
             events.retire(id)
+            speaking.remove(id)
+            switchCandidates.remove(id)
         }
         publish()
+        tryLanguageChange()
     }
 
     /** Compares service-reported audio positions, even when the local socket is sending at full speed. */
@@ -612,10 +939,23 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     private fun ended(error: String?, recoverable: Boolean, cause: EndCause) {
         val limited = recoverable && cause.kind == EndCause.Kind.RATE_LIMITED
         if (limited) limits++
-        if (limited && limits <= RATE_LIMIT_DELAYS_MS.size) limitedUntil = platform.elapsedMs() + RATE_LIMIT_DELAYS_MS[limits - 1]
+        if (limited && limits <= RATE_LIMIT_DELAYS_MS.size) connectionBudget.limit(platform.elapsedMs() + RATE_LIMIT_DELAYS_MS[limits - 1])
+        if (drainingOldLanguage && !limited) {
+            awaitingLanguage?.let(::openLanguageReplacement)
+            return
+        }
+        drainingOldLanguage = false
         val again = recoverable && (!limited || limits <= RATE_LIMIT_DELAYS_MS.size)
         val failure = if (limited && !again) "LiveTranslate 持续限流，已停止录音；已有文字已保留" else error
         when (snapshot.state) {
+            SessionState.CONNECTING -> if (recoverInitial && autoReconnect && again) {
+                dropTransport()
+                quiet = true
+                lastCause = cause.detail
+                lastError = error.orEmpty()
+                update { it.copy(state = SessionState.RECONNECTING, status = "正在重新连接…") }
+                attempt(counted = !limited)
+            } else end(failure)
             SessionState.RECORDING -> when {
                 !again || !autoReconnect -> end(failure)
                 cause.kind == EndCause.Kind.NO_RESULT -> renew(cause.detail)
@@ -647,6 +987,16 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
 
     /** Stops sending to the current connection; capture keeps running into the gap buffer. */
     private fun detach() {
+        drain?.cancel()
+        drain = null
+        drainingOldLanguage = false
+        if (awaitingLanguage != null) {
+            // A transport failure during the update is recovered directly in the requested language.
+            config = config.copy(language = awaitingLanguage!!)
+            awaitingLanguage = null
+            languageTimer?.cancel()
+            switchOnReady = true
+        }
         stable?.cancel()
         stable = null
         synchronized(audioLock) {
@@ -714,10 +1064,13 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
             retry = null
             ticker?.cancel()
             ticker = null
-            open()?.let(::end)
+            // The peer may have used the last slot, or received a 1007 while we were waiting.
+            if (earliestOpen() > platform.elapsedMs()) attempt(immediately = true, counted = false)
+            else open()?.let(::end)
         }
         when {
-            at > now + delay -> countdown(at, if (at == limitedUntil) "服务限流" else "连接过于频繁")
+            at > now + delay -> countdown(at, if (at == connectionBudget.limitedUntil) "服务限流" else "连接过于频繁")
+            switchOnReady -> update { it.copy(status = "正在切换译文语言…") }
             quiet -> update { it.copy(status = "长时间无识别结果，正在续接连接…") }
             else -> update { it.copy(status = reconnectStatus()) }
         }
@@ -763,6 +1116,18 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     }
 
     private fun end(error: String?) {
+        languageTimer?.cancel()
+        drain?.cancel()
+        drain = null
+        desiredLanguage = null
+        awaitingLanguage = null
+        debounceComplete = false
+        switchOnReady = false
+        finishAfterHandoff = false
+        settingsReconnect = false
+        drainingOldLanguage = false
+        firstSwitchRow = null
+        switchCandidates.clear()
         giveUp?.cancel()
         giveUp = null
         stable?.cancel()
@@ -796,7 +1161,8 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
     private fun subtitle(row: LiveTranslateEvents.Row): SubtitleRow? {
         val translation = events.translation(row)
         if (row.source.text.isEmpty() && translation.text.isEmpty()) return null
-        return SubtitleRow("$epoch:${row.id}", row.source.text, row.source.done, translation.text, translation.done)
+        return SubtitleRow(sourceRowKey(row.id), row.source.text, row.source.done, translation.text, translation.done,
+            targetLanguage = row.targetLanguage, audioStartMs = row.audioStartMs, languageSwitch = row.languageSwitch)
     }
 
     /**
@@ -813,7 +1179,7 @@ class LiveSession(private val platform: SessionPlatform, private val onChange: (
         }
         // Translations whose source association has not arrived yet.
         val pending = events.unmatchedOutputs.map { (id, part) ->
-            SubtitleRow("$epoch:out:$id", "", frozen && part.done, part.text, part.done)
+            SubtitleRow("$epoch:out:$id", "", frozen && part.done, part.text, part.done, targetLanguage = config.language)
         }
         return rows + pending
     }

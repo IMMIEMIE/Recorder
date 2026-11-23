@@ -4,6 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioRouting.OnRoutingChangedListener
 import android.media.AudioTrack
 import android.os.Handler
 import com.localrecorder.live.LiveTranslateConfig
@@ -34,6 +35,19 @@ class SpeechPlayer(
     private var thread: Thread? = null
     private var onDrained: (() -> Unit)? = null
     private var focus: AudioFocusRequest? = null
+    @Volatile override var microphoneMayHearPlayback: Boolean? = null
+        private set
+    private val routeListener = OnRoutingChangedListener { output ->
+        if (output === track) updateRoute(track)
+    }
+
+    private fun updateRoute(audio: AudioTrack?) {
+        microphoneMayHearPlayback = audio?.routedDevice?.let { !AudioRouting.isHeadphoneOutput(it) }
+    }
+
+    override fun setVolume(volume: Float) {
+        track?.setVolume(volume.coerceIn(0f, 1f))
+    }
 
     override fun start(volume: Float) {
         release()
@@ -56,8 +70,10 @@ class SpeechPlayer(
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
         audio.setVolume(volume.coerceIn(0f, 1f))
-        audio.play()
         track = audio
+        audio.addOnRoutingChangedListener(routeListener, handler)
+        audio.play()
+        updateRoute(audio)
         // A refused request (e.g. during a call) still lets subtitles work; the call silences the output anyway.
         focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
             .setAudioAttributes(attributes)
@@ -106,6 +122,7 @@ class SpeechPlayer(
         }
         thread = null
         track?.let {
+            it.removeOnRoutingChangedListener(routeListener)
             try {
                 it.pause()
                 it.flush()
@@ -114,6 +131,7 @@ class SpeechPlayer(
             it.release()
         }
         track = null
+        microphoneMayHearPlayback = null
         queue.clear()
         queuedBytes.set(0)
     }

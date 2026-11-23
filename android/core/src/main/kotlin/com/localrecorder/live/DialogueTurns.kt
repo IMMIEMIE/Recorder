@@ -14,6 +14,15 @@ data class DialogueTurn(
 
 /** Reconciles a settled window for one fixed pair of languages. Inputs may arrive in any order. */
 object DialogueTurns {
+    const val ALIGNMENT_WINDOW_MS = 250L
+
+    internal fun speaker(a: String?, b: String?, languageA: String, languageB: String): String? =
+        when (listOfNotNull(a, b).distinct().singleOrNull()) {
+            languageA -> "A"
+            languageB -> "B"
+            else -> null
+        }
+
     fun align(a: List<DialogueUtterance>, b: List<DialogueUtterance>, languageA: String, languageB: String): List<DialogueTurn> {
         require(languageA != languageB)
         val left = a.sortedBy { it.startMs }
@@ -29,13 +38,13 @@ object DialogueTurns {
                 val other = if (takeLeft) y else x
                 val next = if (takeLeft) left.getOrNull(i + 1) else right.getOrNull(j + 1)
                 val distance = other?.let { it.startMs - first.startMs }
-                val match = distance != null && distance <= 250 &&
+                val match = distance != null && distance <= ALIGNMENT_WINDOW_MS &&
                     (next == null || kotlin.math.abs(next.startMs - other.startMs) >= distance)
                 val fromA = if (takeLeft || match) x else null
                 val fromB = if (!takeLeft || match) y else null
                 val languages = listOfNotNull(fromA?.sourceLanguage, fromB?.sourceLanguage).distinct()
                 val sourceLanguage = languages.singleOrNull()
-                val speaker = when (sourceLanguage) { languageA -> "A"; languageB -> "B"; else -> "unknown" }
+                val speaker = speaker(fromA?.sourceLanguage, fromB?.sourceLanguage, languageA, languageB) ?: "unknown"
                 val own = if (speaker == "B") fromB else fromA
                 val source = own?.source?.takeIf { it.isNotBlank() }
                     ?: listOfNotNull(fromA, fromB).firstOrNull { it.source.isNotBlank() }?.source.orEmpty()

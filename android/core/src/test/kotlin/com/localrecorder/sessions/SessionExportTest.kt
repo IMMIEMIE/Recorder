@@ -1,5 +1,9 @@
 package com.localrecorder.sessions
 
+import com.localrecorder.live.Cancellable
+import com.localrecorder.live.SessionSnapshot
+import com.localrecorder.live.SessionState
+import com.localrecorder.live.SubtitleRow
 import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -48,6 +52,37 @@ class SessionExportTest {
             val expected = File(folder, "expected/${content.key}.${format.extension}").readBytes()
             assertArrayEquals(expected, SessionExport.render(record, format, content, zone).toByteArray())
         }
+    }
+
+    @Test
+    fun liveRecorderProducesDialogueFixtureAndClearsAnUncertainTranslation() {
+        val fixture = SessionRecord.fromJson(File(fixtures, "dialogue/session.json").readText())
+        var now = fixture.createdAtMs
+        var saved: SessionRecord? = null
+        val recorder = SessionRecorder({ now }, { _, _ -> Cancellable {} }, zone, object : SessionRecorder.Sink {
+            override fun save(record: SessionRecord) { saved = record }
+            override fun ended(id: String, record: SessionRecord?) = Unit
+        })
+        recorder.begin(null, fixture.id, "zh")
+        val rows = mutableListOf<SubtitleRow>()
+        for ((i, expected) in fixture.rows.withIndex()) {
+            now = fixture.createdAtMs + expected.offsetMs
+            if (expected.languageSwitch != null) {
+                rows += SubtitleRow("change", "", true, "", true, marker = expected.switchMarker!!, languageChange = true)
+            }
+            if (expected.speaker == "unknown") {
+                rows += SubtitleRow("row$i", expected.source, true, "stale", true,
+                    targetLanguage = "en", sourceLanguage = "zh", speaker = "A")
+                recorder.observe(SessionSnapshot(state = SessionState.RECORDING, rows = rows.toList()))
+                rows.removeAt(rows.lastIndex)
+            }
+            rows += SubtitleRow("row$i", expected.source, true, expected.translation, expected.translation.isNotEmpty(),
+                targetLanguage = expected.targetLanguage, sourceLanguage = expected.sourceLanguage,
+                speaker = expected.speaker, languageSwitch = expected.languageSwitch)
+            recorder.observe(SessionSnapshot(state = SessionState.RECORDING, rows = rows.toList()))
+        }
+        recorder.finish()
+        assertEquals(fixture.rows, SessionRecord.fromJson(saved!!.toJson()).rows)
     }
 
     @Test

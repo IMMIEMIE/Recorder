@@ -11,6 +11,9 @@ class LiveTranslateEvents {
         var source: Part = Part(),
         var seconds: Double = 0.0,
         val outputs: MutableList<String> = mutableListOf(),
+        var audioStartMs: Long? = null,
+        var targetLanguage: String? = null,
+        var languageSwitch: String? = null,
     )
 
     private val rowMap = LinkedHashMap<String, Row>()
