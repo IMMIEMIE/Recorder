@@ -22,5 +22,7 @@ dependencies {
 tasks.test {
     // The WebSocket tests run against tests/mock_livetranslate_server.py from the repository root.
     systemProperty("livetranslate.mock", rootProject.projectDir.resolve("../tests/mock_livetranslate_server.py").absolutePath)
+    // The session export fixtures shared with macOS (docs/SESSIONS.md, scripts/make_session_export_fixtures.py).
+    systemProperty("session.fixtures", rootProject.projectDir.resolve("../tests/fixtures/session_export").absolutePath)
     testLogging { events("passed", "failed"); exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL }
 }
