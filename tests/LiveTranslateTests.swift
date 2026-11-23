@@ -179,7 +179,10 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         try check(menu != TranslationMenu(model: model), "a new target updates the checkmark even with translation off")
         model.setTranslationTarget(target)
         model.translatorState = "warming"
-        try check(menu != TranslationMenu(model: model), "warming disables the ordinary translation toggle")
+        let warmingMenu = TranslationMenu(model: model)
+        try check(menu != warmingMenu, "warming disables the ordinary translation toggle")
+        model.translatorState = "downloading"
+        try check(warmingMenu != TranslationMenu(model: model), "a changed tooltip refreshes an otherwise identical menu")
         model.translatorState = "idle"
 
         var events = LiveTranslateEvents()

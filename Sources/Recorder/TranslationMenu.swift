@@ -5,7 +5,7 @@ struct TranslationMenu: View, Equatable {
         case standard(target: String, enabled: Bool, busy: Bool)
         case live(language: String)
 
-        var title: String {
+        var title: LocalizedStringKey {
             switch self {
             case let .standard(target, enabled, _): return enabled ? "译为\(target)" : "翻译"
             case let .live(language): return "译为\(language)"
@@ -16,7 +16,7 @@ struct TranslationMenu: View, Equatable {
     // Snapshot the menu inputs so audio levels, partials and translation tokens can
     // redraw MainView without rebuilding the menu while someone is choosing a language.
     private let mode: Mode
-    private let summary: String
+    private let summary: Text
     private let model: AppModel
 
     init(model: AppModel) {
@@ -24,7 +24,7 @@ struct TranslationMenu: View, Equatable {
         mode = model.liveEnabled
             ? .live(language: model.liveConfiguration.languageName)
             : .standard(target: model.translationTarget, enabled: model.translationEnabled, busy: model.translatorBusy)
-        summary = model.translationSummary
+        summary = Text(model.translationSummary)
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
