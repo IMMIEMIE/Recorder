@@ -87,6 +87,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -167,7 +168,7 @@ private fun MainScreen(controller: SessionController, ui: UiState, onSettings: (
         pendingDocument = null
         if (uri != null && text != null) {
             controller.writeDocument(uri, text) { ok ->
-                Toast.makeText(context, if (ok) "已保存" else "保存失败，请重试或换一个位置", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, if (ok) R.string.saved else R.string.save_failed, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -180,7 +181,7 @@ private fun MainScreen(controller: SessionController, ui: UiState, onSettings: (
         export = { id ->
             controller.exportRecord(id) { record ->
                 if (record == null) {
-                    Toast.makeText(context, "无法读取该会话", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, R.string.read_failed, Toast.LENGTH_SHORT).show()
                 } else {
                     action = SessionAction.Export(record)
                 }
@@ -224,9 +225,9 @@ private fun MainScreen(controller: SessionController, ui: UiState, onSettings: (
             action = null
         }
         is SessionAction.Delete -> ConfirmDialog(
-            title = "删除会话？",
-            text = "「${current.title}」的原文和译文将从本机永久删除，无法恢复。",
-            confirm = "删除",
+            title = stringResource(R.string.delete_session_question),
+            text = stringResource(R.string.delete_session_detail, current.title),
+            confirm = stringResource(R.string.delete),
             onDismiss = { action = null },
         ) {
             controller.delete(current.id)
@@ -237,14 +238,14 @@ private fun MainScreen(controller: SessionController, ui: UiState, onSettings: (
             onDismiss = { action = null },
             onShare = { name, text ->
                 if (text.length > MAX_SHARE_CHARS) {
-                    Toast.makeText(context, "内容较长，无法通过分享发送，请使用「保存到文件」", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, R.string.share_too_long, Toast.LENGTH_LONG).show()
                 } else {
                     val send = Intent(Intent.ACTION_SEND)
                         .setType("text/plain")
                         .putExtra(Intent.EXTRA_TEXT, text)
                         .putExtra(Intent.EXTRA_SUBJECT, name.substringBeforeLast('.'))
                         .putExtra(Intent.EXTRA_TITLE, name)
-                    context.startActivity(Intent.createChooser(send, "分享会话"))
+                    context.startActivity(Intent.createChooser(send, context.getString(R.string.share_session)))
                     action = null
                 }
             },
@@ -255,12 +256,12 @@ private fun MainScreen(controller: SessionController, ui: UiState, onSettings: (
                     action = null
                 } catch (_: Exception) {
                     pendingDocument = null
-                    Toast.makeText(context, "本机没有可用的文件选择器", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, R.string.no_file_picker, Toast.LENGTH_LONG).show()
                 }
             },
             onCopy = { text ->
-                context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("声笺", text))
-                Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText(context.getString(R.string.app_name), text))
+                Toast.makeText(context, R.string.copied, Toast.LENGTH_SHORT).show()
                 action = null
             },
         )
@@ -278,10 +279,10 @@ private fun ColumnScope.SessionList(ui: UiState, menu: SessionMenu, onSelect: (S
     Button(
         onClick = { onSelect(null) },
         modifier = Modifier.fillMaxWidth().padding(16.dp),
-    ) { Text("新建会话") }
+    ) { Text(stringResource(R.string.new_session)) }
     if (!ui.options.saveSessions) {
         Text(
-            "「保存会话记录」已关闭：新内容只保留到应用退出。",
+            stringResource(R.string.history_off),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp),
@@ -289,7 +290,7 @@ private fun ColumnScope.SessionList(ui: UiState, menu: SessionMenu, onSelect: (S
     }
     if (ui.sessions.isEmpty()) {
         Text(
-            "还没有会话记录",
+            stringResource(R.string.empty_history),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(16.dp),
@@ -303,7 +304,12 @@ private fun ColumnScope.SessionList(ui: UiState, menu: SessionMenu, onSelect: (S
         for ((group, sessions) in groups) {
             item(key = "group:${group.name}", contentType = 0) {
                 Text(
-                    group.label,
+                    stringResource(when (group) {
+                        SessionGroup.TODAY -> R.string.today
+                        SessionGroup.YESTERDAY -> R.string.yesterday
+                        SessionGroup.WEEK -> R.string.last_week
+                        SessionGroup.EARLIER -> R.string.earlier
+                    }),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 28.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
@@ -333,7 +339,7 @@ private fun SessionItem(session: SessionSummary, time: String, selected: Boolean
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(24.dp))
                 .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
-                .combinedClickable(onLongClick = { expanded = true }, onLongClickLabel = "会话操作", onClick = onClick)
+                .combinedClickable(onLongClick = { expanded = true }, onLongClickLabel = stringResource(R.string.session_actions), onClick = onClick)
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -344,15 +350,15 @@ private fun SessionItem(session: SessionSummary, time: String, selected: Boolean
             if (recording) RecordingBadge()
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            DropdownMenuItem(text = { Text("重命名") }, onClick = {
+            DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = {
                 expanded = false
                 menu.rename(session.id, session.title)
             })
-            DropdownMenuItem(text = { Text("导出") }, onClick = {
+            DropdownMenuItem(text = { Text(stringResource(R.string.export)) }, onClick = {
                 expanded = false
                 menu.export(session.id)
             })
-            DropdownMenuItem(text = { Text(if (recording) "删除（录制中不可删除）" else "删除") }, enabled = !recording, onClick = {
+            DropdownMenuItem(text = { Text(stringResource(if (recording) R.string.cannot_delete_recording else R.string.delete)) }, enabled = !recording, onClick = {
                 expanded = false
                 menu.delete(session.id, session.title)
             })
@@ -363,7 +369,7 @@ private fun SessionItem(session: SessionSummary, time: String, selected: Boolean
 @Composable
 private fun RecordingBadge() {
     Text(
-        "录制中",
+        stringResource(R.string.recording),
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onError,
         modifier = Modifier
@@ -394,7 +400,7 @@ private fun TranscriptScreen(
     }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if (result[Manifest.permission.RECORD_AUDIO] == true) controller.start()
-        else Toast.makeText(context, "需要麦克风权限才能实时翻译", Toast.LENGTH_LONG).show()
+        else Toast.makeText(context, R.string.mic_permission_required, Toast.LENGTH_LONG).show()
     }
     fun requestStart() {
         val needed = buildList {
@@ -405,18 +411,18 @@ private fun TranscriptScreen(
     }
 
     val selectedId = ui.selectedId
-    val title = ui.selectedTitle ?: "新会话"
+    val title = ui.selectedTitle ?: stringResource(R.string.new_session_title)
     val rows: List<SubtitleRow> = when {
         ui.viewingRecording -> ui.recordingPrefix + session.rows
         selectedId == null -> emptyList()
         else -> remember(ui.viewed) { ui.viewed?.subtitleRows(zone).orEmpty() }
     }
     val emptyText = when {
-        ui.viewingRecording || (selectedId == null && !active) -> "点击下方按钮开始说话，原文和译文会实时显示在这里。"
-        selectedId == null -> "正在录制另一个会话；新内容会写入那个会话。"
+        ui.viewingRecording || (selectedId == null && !active) -> stringResource(R.string.start_hint)
+        selectedId == null -> stringResource(R.string.other_recording)
         ui.viewError.isNotEmpty() -> ui.viewError
-        ui.viewed == null -> "正在读取…"
-        else -> "这个会话没有已定稿的文字。"
+        ui.viewed == null -> stringResource(R.string.loading_session)
+        else -> stringResource(R.string.empty_session)
     }
 
     Scaffold(
@@ -424,27 +430,27 @@ private fun TranscriptScreen(
             TopAppBar(
                 title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
-                    if (onOpenList != null) TextButton(onClick = onOpenList) { Text("会话") }
+                    if (onOpenList != null) TextButton(onClick = onOpenList) { Text(stringResource(R.string.sessions)) }
                 },
                 actions = {
                     if (selectedId != null) {
-                        TextButton(onClick = { menu.export(selectedId) }) { Text("导出") }
+                        TextButton(onClick = { menu.export(selectedId) }) { Text(stringResource(R.string.export)) }
                         var expanded by remember { mutableStateOf(false) }
                         Box {
-                            TextButton(onClick = { expanded = true }) { Text("更多") }
+                            TextButton(onClick = { expanded = true }) { Text(stringResource(R.string.more)) }
                             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                                DropdownMenuItem(text = { Text("重命名") }, onClick = {
+                                DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = {
                                     expanded = false
                                     menu.rename(selectedId, title)
                                 })
-                                DropdownMenuItem(text = { Text("删除") }, enabled = selectedId != ui.recordingId, onClick = {
+                                DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, enabled = selectedId != ui.recordingId, onClick = {
                                     expanded = false
                                     menu.delete(selectedId, title)
                                 })
                             }
                         }
                     }
-                    TextButton(onClick = onSettings, enabled = !active) { Text("设置") }
+                    TextButton(onClick = onSettings, enabled = !active) { Text(stringResource(R.string.settings)) }
                 },
             )
         },
@@ -455,36 +461,36 @@ private fun TranscriptScreen(
                     when {
                         active && !ui.viewingRecording -> {
                             OutlinedButton(onClick = { controller.select(ui.recordingId) }, modifier = wide) {
-                                Text("返回录制中的会话", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(stringResource(R.string.return_to_recording), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             Button(
                                 onClick = controller::stop,
                                 enabled = session.state != SessionState.FINISHING,
                                 modifier = Modifier.height(56.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                            ) { Text("停止") }
+                            ) { Text(stringResource(R.string.stop)) }
                         }
                         active -> RecordingControls(session.state, controller, wide)
-                        selectedId == null -> Button(onClick = { requestStart() }, modifier = wide) { Text("开始实时翻译") }
-                        else -> Button(onClick = { requestStart() }, enabled = ui.viewed != null, modifier = wide) { Text("继续录制") }
+                        selectedId == null -> Button(onClick = { requestStart() }, modifier = wide) { Text(stringResource(R.string.start_live)) }
+                        else -> Button(onClick = { requestStart() }, enabled = ui.viewed != null, modifier = wide) { Text(stringResource(R.string.resume_recording)) }
                     }
-                    if (session.playing) OutlinedButton(onClick = controller::stopPlayback) { Text("停播") }
+                    if (session.playing) OutlinedButton(onClick = controller::stopPlayback) { Text(stringResource(R.string.stop_playback)) }
                 }
             }
         },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             Text(
-                ui.status, style = MaterialTheme.typography.labelLarge,
+                session.status.ifEmpty { stringResource(R.string.ready_target, ui.config.languageName) }, style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
             if (!ui.hasKey && !active) {
-                Message("尚未保存 LiveTranslate API Key，请先在“设置”中配置。", MaterialTheme.colorScheme.secondaryContainer, onSettings)
+                Message(stringResource(R.string.configure_key), MaterialTheme.colorScheme.secondaryContainer, onSettings)
             }
             if (session.error.isNotEmpty()) Message(session.error, MaterialTheme.colorScheme.errorContainer, controller::dismissMessages)
             if (session.notice.isNotEmpty()) Message(session.notice, MaterialTheme.colorScheme.tertiaryContainer, controller::dismissMessages)
-            if (session.slowNetwork) Message("网络较慢，音频发送有积压，暂停上传期间的语音不会翻译。", MaterialTheme.colorScheme.tertiaryContainer) {}
+            if (session.slowNetwork) Message(stringResource(R.string.slow_network), MaterialTheme.colorScheme.tertiaryContainer) {}
             Subtitles(rows, trimmed = ui.viewingRecording && session.trimmed, emptyText = emptyText, modifier = Modifier.weight(1f))
         }
     }
@@ -497,20 +503,20 @@ private fun RecordingControls(state: SessionState, controller: SessionController
         SessionState.CONNECTING -> OutlinedButton(onClick = controller::stop, modifier = modifier) {
             CircularProgressIndicator(Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
             Spacer(Modifier.width(8.dp))
-            Text("连接中，点击取消")
+            Text(stringResource(R.string.connecting_cancel))
         }
         SessionState.RECONNECTING -> OutlinedButton(onClick = controller::stop, modifier = modifier) {
             CircularProgressIndicator(Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
             Spacer(Modifier.width(8.dp))
-            Text("重新连接中，点击停止")
+            Text(stringResource(R.string.reconnecting_stop))
         }
         SessionState.RECORDING -> Button(
             onClick = controller::stop,
             modifier = modifier,
             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-        ) { Text("停止") }
+        ) { Text(stringResource(R.string.stop)) }
         SessionState.FINISHING -> OutlinedButton(onClick = {}, enabled = false, modifier = modifier) {
-            Text("正在收尾…")
+            Text(stringResource(R.string.finishing))
         }
     }
 }
@@ -573,14 +579,14 @@ private fun Subtitles(rows: List<SubtitleRow>, trimmed: Boolean, emptyText: Stri
                 }
             }
             if (trimmed) {
-                item(key = "trimmed", contentType = 1) { Marker("较早的字幕已不在屏幕上（最多显示约 1000 条），已定稿的内容仍保存在会话中") }
+                item(key = "trimmed", contentType = 1) { Marker(stringResource(R.string.earlier_captions)) }
             }
         }
         if (!following) {
             FilledTonalButton(
                 onClick = { scope.launch { list.animateScrollToItem(0) } },
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
-            ) { Text("回到最新") }
+            ) { Text(stringResource(R.string.latest)) }
         }
     }
 }
@@ -602,18 +608,18 @@ private fun RenameDialog(current: String, onDismiss: () -> Unit, onRename: (Stri
     var title by rememberSaveable { mutableStateOf(current) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("重命名会话") },
+        title = { Text(stringResource(R.string.rename_session)) },
         text = {
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
                 singleLine = true,
-                supportingText = { Text("留空则恢复自动标题") },
+                supportingText = { Text(stringResource(R.string.automatic_title)) },
                 modifier = Modifier.fillMaxWidth(),
             )
         },
-        confirmButton = { TextButton(onClick = { onRename(title) }) { Text("确定") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        confirmButton = { TextButton(onClick = { onRename(title) }) { Text(stringResource(R.string.ok)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
     )
 }
 
@@ -626,7 +632,7 @@ private fun ConfirmDialog(title: String, text: String, confirm: String, onDismis
         confirmButton = {
             TextButton(onClick = onConfirm, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text(confirm) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
     )
 }
 
@@ -645,23 +651,30 @@ private fun ExportDialog(
     fun name() = SessionExport.fileName(record, format, zone)
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("导出会话") },
+        title = { Text(stringResource(R.string.export_session)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("格式", style = MaterialTheme.typography.titleSmall)
+                Text(stringResource(R.string.format), style = MaterialTheme.typography.titleSmall)
                 ExportFormat.entries.forEach { option -> Choice(option.label, selected = format == option) { format = option } }
-                Text("内容", style = MaterialTheme.typography.titleSmall)
-                ExportContent.entries.forEach { option -> Choice(option.label, selected = content == option) { content = option } }
-                Text("只包含已定稿的文字，不含服务地址和 API Key。", style = MaterialTheme.typography.bodySmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
-                    Button(onClick = { onShare(name(), text()) }) { Text("分享") }
-                    OutlinedButton(onClick = { onSave(format, name(), text()) }) { Text("保存到文件") }
+                Text(stringResource(R.string.content), style = MaterialTheme.typography.titleSmall)
+                ExportContent.entries.forEach { option ->
+                    val label = when (option) {
+                        ExportContent.BILINGUAL -> R.string.bilingual
+                        ExportContent.SOURCE -> R.string.source_only
+                        ExportContent.TRANSLATION -> R.string.translation_only
+                    }
+                    Choice(stringResource(label), selected = content == option) { content = option }
                 }
-                TextButton(onClick = { onCopy(text()) }) { Text("复制到剪贴板") }
+                Text(stringResource(R.string.export_hint), style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) {
+                    Button(onClick = { onShare(name(), text()) }) { Text(stringResource(R.string.share)) }
+                    OutlinedButton(onClick = { onSave(format, name(), text()) }) { Text(stringResource(R.string.save_to_file)) }
+                }
+                TextButton(onClick = { onCopy(text()) }) { Text(stringResource(R.string.copy)) }
             }
         },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
     )
 }
 
@@ -685,8 +698,8 @@ private fun SettingsScreen(controller: SessionController, ui: UiState, onBack: (
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("LiveTranslate 设置") },
-                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } },
+                title = { Text(stringResource(R.string.live_settings)) },
+                navigationIcon = { TextButton(onClick = onBack) { Text(stringResource(R.string.back)) } },
             )
         },
     ) { padding ->
@@ -694,12 +707,12 @@ private fun SettingsScreen(controller: SessionController, ui: UiState, onBack: (
             Modifier.padding(padding).imePadding().fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("由 Qwen3.8 LiveTranslate 同时生成原文和译文，所有识别与翻译都通过云端 API 完成。", style = MaterialTheme.typography.bodyMedium)
-            Text("模型：${LiveTranslateConfig.MODEL}", style = MaterialTheme.typography.bodySmall)
+            Text(stringResource(R.string.live_intro), style = MaterialTheme.typography.bodyMedium)
+            Text(stringResource(R.string.model, LiveTranslateConfig.MODEL), style = MaterialTheme.typography.bodySmall)
             OutlinedTextField(
                 value = endpoint,
                 onValueChange = { endpoint = it; key = "" },
-                label = { Text("服务地址") },
+                label = { Text(stringResource(R.string.endpoint)) },
                 placeholder = { Text("wss://…/api-ws/v1/realtime") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
@@ -708,49 +721,50 @@ private fun SettingsScreen(controller: SessionController, ui: UiState, onBack: (
             OutlinedTextField(
                 value = key,
                 onValueChange = { key = it },
-                label = { Text("专用 API Key") },
-                placeholder = { Text(if (keySaved) "已保存；留空则保留" else "尚未保存") },
+                label = { Text(stringResource(R.string.api_key)) },
+                placeholder = { Text(stringResource(if (keySaved) R.string.key_saved else R.string.key_missing)) },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 modifier = Modifier.fillMaxWidth(),
             )
-            Text("目标语言", style = MaterialTheme.typography.titleSmall)
+            Text(stringResource(R.string.target_language), style = MaterialTheme.typography.titleSmall)
             LiveTranslateConfig.LANGUAGES.forEach { (code, name) ->
                 Choice(name, selected = language == code) { language = code }
             }
             HorizontalDivider()
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("播放译音", Modifier.weight(1f))
+                Text(stringResource(R.string.play_translation), Modifier.weight(1f))
                 Switch(checked = audioOutput, onCheckedChange = { audioOutput = it })
             }
             if (audioOutput) {
                 PlaybackTiming.entries.forEach { option ->
-                    Choice(option.title, selected = timing == option) { timing = option }
+                    val label = if (option == PlaybackTiming.STREAMING) R.string.streaming_playback else R.string.final_playback
+                    Choice(stringResource(label), selected = timing == option) { timing = option }
                 }
                 Text(
-                    if (timing == PlaybackTiming.STREAMING) "译音生成后立即播放，可一边说话一边听翻译。"
-                    else "按句等待原文和译文定稿、该句译音生成完整后再播放。",
+                    if (timing == PlaybackTiming.STREAMING) stringResource(R.string.streaming_hint)
+                    else stringResource(R.string.final_hint),
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("音量")
+                    Text(stringResource(R.string.volume))
                     Slider(value = volume, onValueChange = { volume = it }, modifier = Modifier.weight(1f).padding(horizontal = 8.dp))
                     Text("${(volume * 100).toInt()}%")
                 }
-                Text("建议佩戴耳机；未检测到耳机时会启用回声消除，但外放的译音仍可能被麦克风再次收录。音频输出可能增加服务费用。", style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(R.string.headphones_hint), style = MaterialTheme.typography.bodySmall)
             }
             HorizontalDivider()
-            Toggle("断线自动重连", "连接中断或切换网络后自动建立新会话，保留已有字幕并标出断点。", autoReconnect) { autoReconnect = it }
-            Toggle("使用蓝牙耳机麦克风", "连接了蓝牙耳机时用它收音，音质通常不如手机麦克风；未连接时使用手机麦克风。", bluetoothMicrophone) { bluetoothMicrophone = it }
+            Toggle(stringResource(R.string.auto_reconnect), stringResource(R.string.auto_reconnect_hint), autoReconnect) { autoReconnect = it }
+            Toggle(stringResource(R.string.bluetooth_microphone), stringResource(R.string.bluetooth_hint), bluetoothMicrophone) { bluetoothMicrophone = it }
             Toggle(
-                "保存会话记录",
-                "把已定稿的原文和译文保存在本机，可在会话列表中查看和导出；不保存录音和未定稿内容。关闭后新内容只保留到应用退出，已有会话仍可查看、导出和删除。",
+                stringResource(R.string.save_history),
+                stringResource(R.string.save_history_hint),
                 saveSessions,
             ) { saveSessions = it }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = { if (controller.saveSettings(draft, key, draftOptions)) key = "" }) { Text("保存") }
-                OutlinedButton(onClick = { controller.testConnection(draft, key) }, enabled = !ui.testing) { Text("测试连接") }
+                Button(onClick = { if (controller.saveSettings(draft, key, draftOptions)) key = "" }) { Text(stringResource(R.string.save)) }
+                OutlinedButton(onClick = { controller.testConnection(draft, key) }, enabled = !ui.testing) { Text(stringResource(R.string.test_connection)) }
                 if (ui.testing) CircularProgressIndicator(Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
             }
             if (ui.settingsMessage.isNotEmpty()) Text(ui.settingsMessage, style = MaterialTheme.typography.bodyMedium)
@@ -759,13 +773,10 @@ private fun SettingsScreen(controller: SessionController, ui: UiState, onBack: (
                 onClick = { confirmClear = true },
                 enabled = ui.sessions.isNotEmpty() && ui.recordingId == null,
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-            ) { Text("清空全部会话") }
+            ) { Text(stringResource(R.string.delete_sessions)) }
             HorizontalDivider()
             Text(
-                "地址、目标语言和译音设置保存在本机；API Key 使用 Android Keystore 加密保存，按服务地址区分。" +
-                    "开始翻译后，麦克风音频会发送到该云端服务，可能产生费用；应用不保存录音。" +
-                    "开启「保存会话记录」时，已定稿的原文和译文保存在本机，不上传、不参与系统备份和设备迁移。" +
-                    "测试连接只建立会话，不采集或发送音频。",
+                stringResource(R.string.privacy),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -773,9 +784,9 @@ private fun SettingsScreen(controller: SessionController, ui: UiState, onBack: (
     }
     if (confirmClear) {
         ConfirmDialog(
-            title = "清空全部会话？",
-            text = "本机保存的所有会话记录都将被永久删除，无法恢复。",
-            confirm = "全部删除",
+            title = stringResource(R.string.delete_all_question),
+            text = stringResource(R.string.delete_all_detail),
+            confirm = stringResource(R.string.delete_all),
             onDismiss = { confirmClear = false },
         ) {
             controller.deleteAll()

@@ -55,7 +55,6 @@ data class UiState(
     /** Earlier segments of the session being recorded, shown above the live rows. */
     val recordingPrefix: List<SubtitleRow> = emptyList(),
 ) {
-    val status: String get() = session.status.ifEmpty { "就绪 · 目标语言 ${config.languageName}" }
     val viewingRecording: Boolean get() = recordingId != null && selectedId == recordingId
     val selectedTitle: String? get() = selectedId?.let { id -> sessions.firstOrNull { it.id == id }?.title ?: viewed?.title }
 }
