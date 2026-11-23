@@ -46,6 +46,11 @@ class LiveTranslateClient(
     private val finishTimeoutMs: Long = 30_000,
     private val allowLocalhost: Boolean = false,
     private val httpClient: OkHttpClient = sharedHttpClient,
+    /**
+     * Transport detail behind a disconnect (exception class and message, close code), for diagnostics only:
+     * the user-facing error stays the generic Chinese text. Never contains the key. Runs on the client's queue.
+     */
+    private val diagnostic: (String) -> Unit = {},
 ) : LiveTransport {
     interface Listener {
         fun onReady()
@@ -246,12 +251,18 @@ class LiveTranslateClient(
     private inner class SocketListener : WebSocketListener() {
         override fun onMessage(webSocket: WebSocket, text: String) = post { handle(text) }
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) = post { handle(bytes.utf8()) }
-        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) = post { disconnected() }
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) = post {
+            // Only for a connection still in use: a socket this client already closed reports nothing.
+            if (!closed) diagnostic("server closing: code=$code reason=${reason.take(200)}")
+            disconnected()
+        }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = post { disconnected() }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             val status = response?.code
+            val detail = "failure: ${t.javaClass.simpleName}: ${t.message?.take(300)}" + (status?.let { " (HTTP $it)" } ?: "")
             response?.close()
             post {
+                if (!closed) diagnostic(detail)
                 httpStatus = status
                 disconnected()
             }
