@@ -45,6 +45,7 @@ class LiveTranslateClientTest {
     private val callbacks = Executors.newSingleThreadExecutor()
 
     private inner class Probe(timeoutMs: Long = 30_000) : LiveTransport.Listener {
+        @Volatile var changed: Pair<String, Boolean>? = null
         @Volatile var ready = false
         @Volatile var ended = false
         @Volatile var error: String? = null
@@ -60,6 +61,7 @@ class LiveTranslateClientTest {
         })
 
         override fun onReady() { ready = true; callbackCount++ }
+        override fun onLanguageUpdate(language: String, confirmed: Boolean) { changed = language to confirmed }
         override fun onEvent(event: LiveSessionEvent) {
             callbackCount++
             events.apply(event)
@@ -106,6 +108,23 @@ class LiveTranslateClientTest {
             assertEquals("你好，世界🌏。", translated.text)
             assertTrue(translated.done)
             assertEquals(1.2, row.seconds, 0.0)
+        }
+    }
+
+    @Test
+    fun productionTransportRequiresAcknowledgedLanguageAndKeepsSocketForFallback() {
+        for (route in listOf("ok", "reject", "mismatch")) {
+            val p = Probe()
+            val profile = LiveServiceProfile(endpoint = "$base/dialogue/$route", turnDetection = "speaker_detection")
+            p.client.connect(LiveTranslateConfig(catalog = LiveServiceCatalog(profile)), "mock-only")
+            p.waitFor { p.ready }
+            assertTrue(p.client.updateLanguage("ja"))
+            p.waitFor { p.changed != null || p.ended }
+            assertEquals("ja" to (route == "ok"), p.changed)
+            assertFalse(p.ended)
+            p.client.finish()
+            p.waitFor { p.ended }
+            assertNull(p.error)
         }
     }
 

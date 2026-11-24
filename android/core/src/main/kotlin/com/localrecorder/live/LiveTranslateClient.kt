@@ -38,6 +38,8 @@ data class EndCause(val kind: Kind = Kind.OTHER, val detail: String = "") {
 interface LiveTransport {
     interface Listener {
         fun onReady()
+        /** Result of an in-session language change. A rejection leaves the connection available for handoff. */
+        fun onLanguageUpdate(language: String, confirmed: Boolean) {}
         fun onEvent(event: LiveSessionEvent)
 
         /**
@@ -48,6 +50,9 @@ interface LiveTransport {
     }
 
     fun connect(configuration: LiveTranslateConfig, key: String)
+
+    /** False if this transport has no in-session update support. */
+    fun updateLanguage(language: String): Boolean = false
 
     /** Queues 16 kHz mono PCM16: FULL when the outgoing queue is at its limit, CLOSED when not ready, finishing or ended. */
     fun append(pcm: ByteArray): AppendResult
@@ -135,6 +140,7 @@ class LiveTranslateClient(
     private var finishing = false
     private var closed = false
     private var configured = false
+    private var changingTo: String? = null
     private var started = false
     private var httpStatus: Int? = null
     private var deadline: ScheduledFuture<*>? = null
@@ -160,6 +166,19 @@ class LiveTranslateClient(
             socket = httpClient.newWebSocket(request, SocketListener())
             armTimeout(20_000, "LiveTranslate 连接或会话配置超时，请检查网络和服务地址", recoverable = true, detail = "连接超时：20 秒内未完成会话配置")
         }
+    }
+
+    override fun updateLanguage(language: String): Boolean = runSync {
+        val current = configuration ?: return@runSync false
+        if (!ready || finishing || closed || changingTo != null) return@runSync false
+        changingTo = language
+        send(current.copy(language = language).sessionUpdate())
+    } ?: false
+
+    private fun completeLanguageUpdate(language: String, confirmed: Boolean) {
+        changingTo = null
+        if (confirmed) configuration = configuration?.copy(language = language)
+        callbackExecutor.execute { listener.onLanguageUpdate(language, confirmed) }
     }
 
     override fun append(pcm: ByteArray): AppendResult {
@@ -233,6 +252,13 @@ class LiveTranslateClient(
                 val session = event.optJSONObject("session")
                 val modalities = session?.optJSONArray("output_modalities").toStringSet()
                 val language = session?.optJSONObject("translation")?.optStringOrNull("language")
+                val requested = changingTo
+                if (ready && requested != null) {
+                    // Partial acknowledgements sometimes omit unchanged modalities, but the language itself must match.
+                    val confirmed = language == requested && (modalities.isEmpty() || modalities == configuration.outputModalities.toSet())
+                    completeLanguageUpdate(requested, confirmed)
+                    return
+                }
                 if (session == null || modalities != configuration.outputModalities.toSet() || language != configuration.language) {
                     end("LiveTranslate 未确认所选输出方式及目标语言，请检查模型和接口兼容性"); return
                 }
@@ -272,6 +298,7 @@ class LiveTranslateClient(
                         note("服务限流")
                         end(RATE_LIMITED_ERROR, recoverable = true, kind = EndCause.Kind.RATE_LIMITED)
                     }
+                    type == "error" && changingTo != null -> completeLanguageUpdate(changingTo!!, false)
                     else -> end(serviceError(code))
                 }
                 return

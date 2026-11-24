@@ -11,7 +11,7 @@ class AudioRouting(private val manager: AudioManager) {
 
     /** With headphones, translated speech cannot reach the microphone. */
     fun hasHeadphones(): Boolean =
-        manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in HEADPHONES }
+        manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { isHeadphoneOutput(it) }
 
     /**
      * Routes capture (and voice playback) to a connected Bluetooth headset. Returns its input
@@ -62,8 +62,10 @@ class AudioRouting(private val manager: AudioManager) {
         type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
             (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && type == AudioDeviceInfo.TYPE_BLE_HEADSET)
 
-    private companion object {
-        val HEADPHONES = buildSet {
+    companion object {
+        internal fun isHeadphoneOutput(device: AudioDeviceInfo): Boolean = device.type in HEADPHONES
+
+        private val HEADPHONES = buildSet {
             add(AudioDeviceInfo.TYPE_WIRED_HEADSET)
             add(AudioDeviceInfo.TYPE_WIRED_HEADPHONES)
             add(AudioDeviceInfo.TYPE_USB_HEADSET)

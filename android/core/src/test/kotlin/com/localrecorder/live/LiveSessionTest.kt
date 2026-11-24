@@ -19,6 +19,8 @@ class LiveSessionTest {
         var connected = false
         var finished = false
         var cancelled = false
+        var acceptsLanguageUpdate = true
+        val updatedLanguages = mutableListOf<String>()
         var result = AppendResult.SENT
         val audio = mutableListOf<ByteArray>()
         override var queuedAudioBytes = 0
@@ -34,6 +36,10 @@ class LiveSessionTest {
             return result
         }
 
+        override fun updateLanguage(language: String): Boolean {
+            updatedLanguages.add(language)
+            return acceptsLanguageUpdate
+        }
         override fun finish() { finished = true }
         override fun cancel() { cancelled = true }
     }
@@ -53,7 +59,7 @@ class LiveSessionTest {
         override fun stop() { stopped = true }
     }
 
-    private class Device : SessionPlatform {
+    private class Device(budget: LiveConnectionBudget = LiveConnectionBudget()) : SessionPlatform {
         private class Timer(val at: Long, val block: () -> Unit, var cancelled: Boolean = false)
 
         private val posted = ArrayDeque<() -> Unit>()
@@ -69,7 +75,7 @@ class LiveSessionTest {
         var active = false
         val snapshots = mutableListOf<SessionSnapshot>()
         val observers = mutableListOf<(SessionSnapshot) -> Unit>()
-        val session = LiveSession(this) { snapshot -> snapshots.add(snapshot); observers.forEach { it(snapshot) } }
+        val session = LiveSession(this, budget) { snapshot -> snapshots.add(snapshot); observers.forEach { it(snapshot) } }
 
         val transport get() = transports.last()
         val state get() = session.snapshot.state
@@ -140,6 +146,191 @@ class LiveSessionTest {
 
         /** 100 ms of 16 kHz PCM16, the microphone's chunk size. */
         const val CHUNK = 3200
+    }
+
+    @Test
+    fun hotLanguageSwitchCoalescesAndKeepsOldUtteranceInTheConfirmedLanguage() {
+        val device = Device()
+        device.record()
+        val original = device.transport
+        val listener = original.listener
+        device.speak()
+        listener.onEvent(LiveSessionEvent.SpeechStart("old", 0, null))
+        device.session.setTargetLanguage("en")
+        device.advance(700)
+        device.session.setTargetLanguage("fr")
+        device.advance(2_000)
+        assertTrue(original.updatedLanguages.isEmpty())
+        listener.onEvent(LiveSessionEvent.SpeechEnd(100, null))
+        assertEquals(listOf("fr"), original.updatedLanguages)
+        device.speak(fill = 2)
+        assertEquals(1, original.audio.size)
+        listener.onLanguageUpdate("fr", true)
+        assertEquals(2, original.audio.size)
+        device.utter("old", "before", "之前")
+        listener.onEvent(LiveSessionEvent.SpeechStart("noise", 0, null))
+        listener.onEvent(LiveSessionEvent.SpeechEnd(0, null, "noise"))
+        device.utter("new", "after", "après")
+        val rows = device.session.snapshot.rows
+        assertEquals(listOf("zh", "fr"), rows.filter { it.marker.isEmpty() }.map { it.targetLanguage })
+        assertEquals("fr", rows.single { it.languageChange }.targetLanguage)
+        assertEquals("Français", rows.last().languageSwitch)
+        assertEquals(1, device.transports.size)
+    }
+
+    @Test
+    fun rejectedOrUnacknowledgedUpdateReopensWithoutRestartingCaptureOrBreakingHistory() {
+        for (timeout in listOf(false, true)) {
+            val device = Device()
+            device.record()
+            val old = device.transport
+            device.utter("old")
+            device.session.setTargetLanguage("en")
+            device.advance(LiveSession.LANGUAGE_DEBOUNCE_MS)
+            repeat(65) { device.speak(fill = it) }
+            if (timeout) device.advance(LiveSession.LANGUAGE_ACK_MS)
+            else old.listener.onLanguageUpdate("en", false)
+            device.advance(0)
+            assertEquals("en", device.transport.config?.language)
+            device.transport.listener.onReady()
+            assertEquals("only one 100ms frame sent on reconnect", 1, device.transport.audio.size)
+            // Stopping while 4.9 s of retained audio still waits must send it before session.finish.
+            device.session.stop()
+            assertNull(device.onChunk)
+            assertFalse(device.transport.finished)
+            device.advance(4_000)
+            assertTrue(device.transport.finished)
+            assertEquals((15..64).toList(), device.transport.audio.map { it.first().toInt() })
+            device.utter("new")
+            val rows = device.session.snapshot.rows
+            assertEquals(listOf("zh", "en"), rows.filter { it.marker.isBlank() }.map { it.targetLanguage })
+            assertFalse(rows.any { it.marker == BREAK })
+            assertEquals(1, device.captureStarts)
+        }
+    }
+
+    @Test
+    fun languageFallbackCollectsLastTranslationBeforeRetiringOldSocket() {
+        val d = Device()
+        d.record()
+        val old = d.transport
+        old.listener.onEvent(LiveSessionEvent.SpeechStart("tail", 0, null))
+        old.listener.onEvent(LiveSessionEvent.Text("tail", "original", true, true, null))
+        d.session.setTargetLanguage("en")
+        d.advance(1_000)
+        old.listener.onEvent(LiveSessionEvent.SpeechEnd(100, null))
+        old.listener.onLanguageUpdate("en", false)
+        assertTrue(old.finished)
+        assertFalse(old.cancelled)
+        d.utter("tail", "original", "尾句")
+        old.listener.onEnd(null, false)
+        d.advance(0)
+        d.transport.listener.onReady()
+        assertEquals("尾句", d.session.snapshot.rows.first().translation)
+        assertEquals(1, d.captureStarts)
+    }
+
+    @Test
+    fun capturePositionsAccountForRecoveryAndForShedAudio() {
+        val d = Device()
+        d.record()
+        d.advance(100)
+        d.speak()
+        d.transport.listener.onEvent(LiveSessionEvent.SpeechStart("a", 0, null))
+        d.utter("a")
+        assertEquals(0L, d.session.snapshot.rows.first().audioStartMs)
+        d.transport.queuedAudioBytes = LiveSession.SHED_AUDIO_BYTES + 1
+        d.speak()
+        d.transport.queuedAudioBytes = 0
+        d.speak()
+        d.transport.listener.onEvent(LiveSessionEvent.SpeechStart("b", 100, null))
+        d.utter("b")
+        assertEquals(200L, d.session.snapshot.rows.last().audioStartMs)
+        d.transport.listener.onEnd(LOST, true)
+        repeat(20) { d.speak() }
+        d.advance(500)
+        d.transport.listener.onReady()
+        d.transport.listener.onEvent(LiveSessionEvent.SpeechStart("c", 0, null))
+        d.utter("c")
+        assertEquals(1300L, d.session.snapshot.rows.last().audioStartMs)
+    }
+
+    @Test
+    fun twoLanesShareTheRateLimitWindowAndPlannedStartWaitsForItsSlot() {
+        val budget = LiveConnectionBudget()
+        val a = Device(budget)
+        val b = Device(budget)
+        a.record()
+        repeat(LiveSession.MAX_CONNECTIONS_PER_WINDOW - 1) {
+            a.transport.listener.onEnd(LiveTranslateClient.NO_RESULT_ERROR, true, NO_RESULT)
+            a.advance(0)
+            a.transport.listener.onReady()
+        }
+        b.session.start(LiveTranslateConfig(language = "en"), "mock-only", plannedHandoff = true)
+        assertEquals(SessionState.CONNECTING, b.state)
+        assertTrue(b.transports.isEmpty())
+        b.speak()
+        b.advance(LiveSession.CONNECTION_WINDOW_MS)
+        b.transport.listener.onReady()
+        assertEquals(1, b.transport.audio.size)
+        b.transport.listener.onEnd(LiveTranslateClient.RATE_LIMITED_ERROR, true, RATE_LIMITED)
+        a.advance(LiveSession.CONNECTION_WINDOW_MS)
+        a.transport.listener.onEnd(LOST, true)
+        a.advance(1_000)
+        assertEquals(LiveSession.MAX_CONNECTIONS_PER_WINDOW, a.transports.size)
+        assertTrue(a.session.snapshot.status.contains("限流"))
+    }
+
+    @Test
+    fun stoppingDuringAQuotaDelayedHandoffReleasesTheMicrophoneImmediately() {
+        val budget = LiveConnectionBudget().apply { limit(60_000L) }
+        val d = Device(budget)
+        d.session.start(LiveTranslateConfig(), "mock-only", plannedHandoff = true)
+        d.speak()
+        d.session.stop()
+        assertEquals(SessionState.IDLE, d.state)
+        assertNull(d.onChunk)
+        assertFalse(d.active)
+        d.advance(60_000)
+        assertTrue(d.transports.isEmpty())
+    }
+
+    @Test
+    fun aRateLimitedDialogueLaneRetriesItsInitialHandshakeWithoutAbortingItsPeer() {
+        val d = Device()
+        d.session.start(LiveTranslateConfig(), "mock-only", recoverInitial = true)
+        d.transport.listener.onEnd(LiveTranslateClient.RATE_LIMITED_ERROR, true, RATE_LIMITED)
+        assertEquals(SessionState.RECONNECTING, d.state)
+        d.advance(LiveSession.RATE_LIMIT_DELAYS_MS.first() - 1)
+        assertEquals(1, d.transports.size)
+        d.advance(1)
+        d.transport.listener.onReady()
+        assertEquals(SessionState.RECORDING, d.state)
+        assertTrue(d.session.snapshot.rows.isEmpty())
+        assertEquals(1, d.captureStarts)
+    }
+
+    @Test
+    fun editableLocalPreferencesKeepTheSocketAndNegotiatedSettingsHandoffQuietly() {
+        val d = Device()
+        val config = LiveTranslateConfig()
+        d.record(config)
+        d.utter("a")
+        val renamed = config.copy(catalog = config.catalog.using(config.profile.copy(name = "Meetings")))
+        d.session.setPreferences(renamed, false)
+        d.advance(0)
+        assertEquals(1, d.transports.size)
+        val audio = renamed.copy(audioOutput = true)
+        d.session.setPreferences(audio, false)
+        d.speak()
+        d.advance(0)
+        d.transport.listener.onReady()
+        assertTrue(d.transport.config!!.audioOutput)
+        assertTrue(d.session.snapshot.playing)
+        assertFalse(d.session.snapshot.rows.any { it.marker == BREAK })
+        assertEquals(1, d.captureStarts)
+        d.transport.listener.onEnd(LOST, true)
+        assertEquals(SessionState.IDLE, d.state)
     }
 
     @Test
@@ -929,7 +1120,7 @@ class LiveSessionTest {
         device.advance(60_000)
         recorder.begin(first, "unused", "ja")
         device.session.clear()
-        device.record()
+        device.record(LiveTranslateConfig(language = "ja"))
         device.session.stop()
         device.transport.listener.onEnd(null, false)
         assertEquals(first, ended.last().second)
@@ -937,7 +1128,7 @@ class LiveSessionTest {
 
         recorder.begin(first, "unused", "ja")
         device.session.clear()
-        device.record()
+        device.record(LiveTranslateConfig(language = "ja"))
         device.utter("e", "Day two.", "二日目。")
         device.session.stop()
         device.transport.listener.onEnd(null, false)

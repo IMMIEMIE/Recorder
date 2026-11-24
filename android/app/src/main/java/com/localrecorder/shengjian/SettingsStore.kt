@@ -19,6 +19,17 @@ class SettingsStore(context: Context) {
 
     fun load(): LiveTranslateConfig = LiveTranslateConfig.fromJson(prefs.getString(KEY, null))
 
+    fun loadDialogueLanguages(): Pair<String, String> {
+        val a = prefs.getString("dialogue.languageA", "zh")
+        val b = prefs.getString("dialogue.languageB", "en")
+        val supported = LiveTranslateConfig.LANGUAGES.map { it.first }
+        return if (a != null && b != null && a != b && a in supported && b in supported) a to b else "zh" to "en"
+    }
+
+    fun saveDialogueLanguages(a: String, b: String) {
+        prefs.edit().putString("dialogue.languageA", a).putString("dialogue.languageB", b).apply()
+    }
+
     /** Validates and normalizes before saving; throws LiveTranslateException on invalid input. */
     fun save(config: LiveTranslateConfig, allowLocalhost: Boolean = false): LiveTranslateConfig {
         val normalized = config.normalized(allowLocalhost)

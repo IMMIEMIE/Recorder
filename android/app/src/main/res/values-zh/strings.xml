@@ -155,4 +155,23 @@
     <string name="live_notification_recording">声笺正在实时翻译</string>
     <string name="live_notification_audio">麦克风音频正发送到 LiveTranslate 云端服务</string>
     <string name="live_notification_reconnecting">声笺正在重新连接…</string>
+    <string name="dialogue_mode">双人对话</string>
+    <string name="dialogue_cost">双人对话会将麦克风语音发给两路翻译服务，每种语言一路。语音输入用量约为普通翻译的两倍。</string>
+    <string name="dialogue_enter">进入对话</string>
+    <string name="dialogue_exit">退出对话</string>
+    <string name="dialogue_swap">互换双方语言</string>
+    <string name="dialogue_face">面对面显示</string>
+    <string name="dialogue_side_by_side">同向显示</string>
+    <string name="dialogue_seat">%1$s 方 · %2$s ▾</string>
+    <string name="dialogue_speaker">说话方 %1$s</string>
+    <string name="dialogue_unknown">语种未识别</string>
+    <string name="dialogue_waiting">译为%1$s的内容会显示在这里。</string>
+    <string name="dialogue_start">开始</string>
+    <string name="dialogue_speech_on">开启译音</string>
+    <string name="dialogue_speech_off">关闭译音</string>
+    <string name="dialogue_service_locked">停止录制后可更改服务地址和密钥。</string>
+    <string name="bluetooth_next_start">麦克风设置将在下次开始录制时生效。</string>
+    <string name="target_button">译为%1$s ▾</string>
+    <string name="connecting">正在连接…</string>
+    <string name="dialogue_playback_timing">每句定稿并识别出说话方后，会播放给对方的译音。</string>
 </resources>

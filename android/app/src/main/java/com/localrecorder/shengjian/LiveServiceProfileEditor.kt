@@ -24,11 +24,12 @@ internal val profileSaver = Saver<LiveServiceProfile, String>(
 
 @Composable
 internal fun LiveServiceProfileEditor(profile: LiveServiceProfile, saved: LiveTranslateConfig, testing: Boolean,
-                                     onEdit: (LiveServiceProfile) -> Unit, onSelect: (LiveServiceProfile) -> Unit) {
+                                     onEdit: (LiveServiceProfile) -> Unit, onSelect: (LiveServiceProfile) -> Unit,
+                                     recording: Boolean = false) {
     var open by remember { mutableStateOf(false) }
     val newName = stringResource(R.string.new_profile_name)
-    OutlinedButton(onClick = { open = true }, enabled = !testing) { Text(stringResource(R.string.profile_title, profile.name)) }
-    DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+    OutlinedButton(onClick = { open = true }, enabled = !testing && !recording) { Text(stringResource(R.string.profile_title, profile.name)) }
+    DropdownMenu(expanded = open && !recording, onDismissRequest = { open = false }) {
         saved.catalog.profiles.forEach { item ->
             DropdownMenuItem(text = { Text(item.name + " · " + item.modelID) }, onClick = { open = false; onSelect(item) })
         }
@@ -39,7 +40,7 @@ internal fun LiveServiceProfileEditor(profile: LiveServiceProfile, saved: LiveTr
     }
     ProfileField(stringResource(R.string.profile_name), profile.name, !testing) { onEdit(profile.copy(name = it)) }
     Text(stringResource(R.string.protocol_detail, profile.protocolID, profile.version))
-    ProfileField(stringResource(R.string.endpoint), profile.endpoint, !testing) { onEdit(profile.copy(endpoint = it)) }
+    ProfileField(stringResource(R.string.endpoint), profile.endpoint, !testing && !recording) { onEdit(profile.copy(endpoint = it)) }
     ProfileField(stringResource(R.string.model_id), profile.modelID, !testing) { onEdit(profile.copy(modelID = it)) }
     var advanced by remember { mutableStateOf(false) }
     TextButton(onClick = { advanced = !advanced }) { Text(stringResource(R.string.profile_advanced)) }

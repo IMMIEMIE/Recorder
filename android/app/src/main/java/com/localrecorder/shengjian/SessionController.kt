@@ -13,7 +13,8 @@ import android.os.Looper
 import android.os.SystemClock
 import com.localrecorder.live.Cancellable
 import com.localrecorder.live.EndCause
-import com.localrecorder.live.LiveSession
+import com.localrecorder.live.ConversationSession
+import com.localrecorder.live.DialogueTurns
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.live.LiveTranslateException
 import com.localrecorder.live.LiveTransport
@@ -36,6 +37,7 @@ import java.io.File
 import java.time.ZoneId
 import java.util.UUID
 import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 
 data class UiState(
     val session: SessionSnapshot = SessionSnapshot(),
@@ -55,13 +57,16 @@ data class UiState(
     val recordingId: String? = null,
     /** Earlier segments of the session being recorded, shown above the live rows. */
     val recordingPrefix: List<SubtitleRow> = emptyList(),
+    val dialogueMode: Boolean = false,
+    val dialogueLanguageA: String = "zh",
+    val dialogueLanguageB: String = "en",
 ) {
     val viewingRecording: Boolean get() = recordingId != null && selectedId == recordingId
     val selectedTitle: String? get() = selectedId?.let { id -> sessions.firstOrNull { it.id == id }?.title ?: viewed?.title }
 }
 
 /**
- * The Android side of [LiveSession] (microphone, speech player, foreground service, network and
+ * The Android side of [ConversationSession] (microphone, speech player, foreground service, network and
  * audio-routing callbacks) plus settings and saved sessions. Everything runs on the main thread; the
  * session logic itself lives in `:core` and is tested there.
  */
@@ -82,7 +87,21 @@ class SessionController(private val context: Context) : SessionPlatform {
 
     private var config = settings.load()
     private var options = settings.loadOptions()
-    private val engine = LiveSession(this, ::render)
+    private val languageWorker = Executors.newSingleThreadExecutor { Thread(it, "dialogue-language") }
+    private val engine = ConversationSession(
+        this,
+        identifyLanguage = { text, a, b, done ->
+            languageWorker.execute {
+                val result = try {
+                    dialogueLanguage(context, text, a, b)
+                } catch (_: RuntimeException) {
+                    DialogueTurns.scriptLanguage(text, a, b)
+                }
+                main.post { done(result) }
+            }
+        },
+        onChange = ::render,
+    )
     private val zone: ZoneId get() = ZoneId.systemDefault()
     private val library = SessionLibrary(File(context.filesDir, "sessions"), main) { message -> engine.notice(message) }
     private val recorder = SessionRecorder({ System.currentTimeMillis() }, ::schedule, ZoneId.systemDefault(), object : SessionRecorder.Sink {
@@ -106,7 +125,10 @@ class SessionController(private val context: Context) : SessionPlatform {
     }
 
     init {
-        _ui.update { it.copy(config = config, options = options, hasKey = secrets.has(config.keyAccount)) }
+        val (a, b) = settings.loadDialogueLanguages()
+        _ui.update { it.copy(config = config, options = options, hasKey = secrets.has(config.keyAccount),
+            dialogueLanguageA = a, dialogueLanguageB = b) }
+        configureMode()
         library.onChange = ::publishSessions
     }
 
@@ -196,10 +218,34 @@ class SessionController(private val context: Context) : SessionPlatform {
     fun stopPlayback() = engine.stopPlayback()
     fun dismissMessages() = engine.dismissMessages()
 
+    fun setDialogueMode(enabled: Boolean) {
+        if (_ui.value.dialogueMode == enabled || engine.snapshot.state == SessionState.FINISHING) return
+        _ui.update { it.copy(dialogueMode = enabled) }
+        configureMode()
+    }
+
+    fun setDialogueLanguages(a: String, b: String) {
+        if (engine.snapshot.state == SessionState.FINISHING || a == b ||
+            listOf(a, b).any { code -> LiveTranslateConfig.LANGUAGES.none { it.first == code } }) return
+        settings.saveDialogueLanguages(a, b)
+        _ui.update { it.copy(dialogueLanguageA = a, dialogueLanguageB = b) }
+        configureMode()
+    }
+
+    fun setTargetLanguage(language: String) {
+        if (config.language != language) saveSettings(config.copy(language = language), "", options)
+    }
+
+    private fun configureMode() {
+        val state = _ui.value
+        engine.configure(state.dialogueMode, state.dialogueLanguageA, state.dialogueLanguageB, config.language)
+    }
+
     /** Saves settings; a blank key keeps the key already saved for this endpoint. */
     fun saveSettings(draft: LiveTranslateConfig, key: String, draftOptions: AppOptions): Boolean {
-        if (engine.snapshot.state != SessionState.IDLE) {
-            _ui.update { it.copy(settingsMessage = "转写进行中，停止后再修改设置") }
+        val active = engine.snapshot.state != SessionState.IDLE
+        if (active && (key.isNotBlank() || draft.profile.id != config.profile.id || draft.endpoint != config.endpoint)) {
+            _ui.update { it.copy(settingsMessage = context.getString(R.string.dialogue_service_locked)) }
             return false
         }
         return try {
@@ -207,11 +253,14 @@ class SessionController(private val context: Context) : SessionPlatform {
             if (key.isNotBlank()) secrets.put(saved.keyAccount, key.trim())
             settings.save(saved, allowLocalhost)
             settings.saveOptions(draftOptions)
+            val targetChanged = config.language != saved.language
             config = saved
             options = draftOptions
             _ui.update {
                 it.copy(config = saved, options = draftOptions, hasKey = secrets.has(saved.keyAccount), settingsMessage = context.getString(R.string.saved), testSucceeded = null)
             }
+            if (active) engine.updatePreferences(saved, draftOptions.autoReconnect)
+            if (targetChanged) configureMode()
             true
         } catch (e: LiveTranslateException) {
             _ui.update { it.copy(settingsMessage = e.message.orEmpty()) }

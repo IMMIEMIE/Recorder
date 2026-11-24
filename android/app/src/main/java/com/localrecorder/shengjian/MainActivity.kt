@@ -166,6 +166,7 @@ private fun MainScreen(controller: SessionController, ui: UiState, onSettings: (
         BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
         ModalNavigationDrawer(
             drawerState = drawer,
+            gesturesEnabled = !ui.dialogueMode || drawer.isOpen,
             drawerContent = {
                 ModalDrawerSheet(Modifier.width(320.dp)) {
                     SessionList(ui, menu, onSettings, onSelect = { id ->
@@ -239,7 +240,7 @@ private class SessionMenu(
 private fun ColumnScope.SessionList(ui: UiState, menu: SessionMenu, onSettings: () -> Unit, onSelect: (String?) -> Unit) {
     Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = Design.spaceXs), verticalAlignment = Alignment.CenterVertically) {
         Text(stringResource(R.string.session_history), Modifier.weight(1f), style = Design.title)
-        Tool(R.drawable.ic_settings, stringResource(R.string.settings), enabled = ui.session.state == SessionState.IDLE, click = onSettings)
+        Tool(R.drawable.ic_settings, stringResource(R.string.settings), click = onSettings)
     }
     FilledTonalButton(onClick = { onSelect(null) }, modifier = Modifier.padding(horizontal = Design.spaceMd, vertical = Design.spaceSm)) {
         Glyph(R.drawable.ic_add)
@@ -401,11 +402,54 @@ private fun TranscriptScreen(
             controller.dismissMessages()
         }
     }
+    val startEnabled = session.state != SessionState.FINISHING && (active || selectedId == null || ui.viewed != null)
+    val toggleRecording = { if (active) controller.stop() else if (!ui.hasKey) onSettings() else requestStart() }
+    fun enterDialogue() {
+        if (active && !ui.viewingRecording) controller.select(ui.recordingId)
+        controller.setDialogueMode(true)
+    }
+    var showDialogueCost by rememberSaveable { mutableStateOf(false) }
+    val appearance = remember(context) { context.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
+    if (showDialogueCost) AlertDialog(
+        onDismissRequest = { showDialogueCost = false },
+        title = { Text(stringResource(R.string.dialogue_mode)) },
+        text = { Text(stringResource(R.string.dialogue_cost)) },
+        confirmButton = { TextButton({
+            appearance.edit().putBoolean("dialogueCostSeen", true).apply()
+            showDialogueCost = false
+            enterDialogue()
+        }) { Text(stringResource(R.string.dialogue_enter)) } },
+        dismissButton = { TextButton({ showDialogueCost = false }) { Text(stringResource(R.string.cancel)) } },
+    )
+    if (ui.dialogueMode && (!active || ui.viewingRecording)) {
+        var facing by remember { mutableStateOf(appearance.getBoolean("dialogueFacing", true)) }
+        val exit = { controller.setDialogueMode(false) }
+        BackHandler(enabled = session.state != SessionState.FINISHING, onBack = exit)
+        DialogueScreen(rows, ui.dialogueLanguageA, ui.dialogueLanguageB, session.state, startEnabled,
+            ui.config.audioOutput, session.playing,
+            when {
+                session.slowNetwork || session.slowService || session.state == SessionState.RECONNECTING -> session.status
+                session.state == SessionState.CONNECTING -> stringResource(R.string.connecting)
+                session.state == SessionState.RECORDING -> stringResource(R.string.recording)
+                else -> ""
+            },
+            messages, facing, toggleFacing = {
+                facing = !facing
+                appearance.edit().putBoolean("dialogueFacing", facing).apply()
+            },
+            setLanguages = controller::setDialogueLanguages, record = toggleRecording, exit = exit,
+            onSpeech = { controller.saveSettings(ui.config.copy(audioOutput = !ui.config.audioOutput), "", ui.options) },
+            stopPlayback = controller::stopPlayback, settings = onSettings)
+        return
+    }
     Scaffold(
         snackbarHost = { SnackbarHost(messages) },
         topBar = {
             Column(Modifier.statusBarsPadding().displayCutoutPadding()) {
                 SessionHeader(title, onOpenList) {
+                    TextButton({
+                        if (appearance.getBoolean("dialogueCostSeen", false)) enterDialogue() else showDialogueCost = true
+                    }, enabled = session.state != SessionState.FINISHING) { Text(stringResource(R.string.dialogue_mode)) }
                     var expanded by remember { mutableStateOf(false) }
                     Box {
                         Tool(R.drawable.ic_more_vert, stringResource(R.string.more_actions)) { expanded = true }
@@ -416,11 +460,14 @@ private fun TranscriptScreen(
                                 DropdownMenuItem(text = { Text(stringResource(R.string.delete_session)) }, enabled = selectedId != ui.recordingId,
                                     onClick = { expanded = false; menu.delete(selectedId, title) })
                             }
-                            DropdownMenuItem(text = { Text(stringResource(R.string.settings)) }, enabled = !active, onClick = { expanded = false; onSettings() })
+                            DropdownMenuItem(text = { Text(stringResource(R.string.settings)) }, onClick = { expanded = false; onSettings() })
                         }
                     }
                 }
-                SessionStatus(session, ui.config.languageName, selectedId != null)
+                SessionStatus(session, ui.config.languageName, selectedId != null) {
+                    LanguageChoice(stringResource(R.string.target_button, ui.config.languageName), ui.config.language,
+                        controller::setTargetLanguage, enabled = session.state != SessionState.FINISHING)
+                }
                 if (session.slowService || session.slowNetwork) {
                     Column(Modifier.padding(horizontal = Design.spaceMd)) {
                         if (session.slowService) Text(stringResource(R.string.slow_service, ui.config.profile.name), style = Design.caption)
@@ -434,7 +481,7 @@ private fun TranscriptScreen(
             Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
                 Column(Modifier.fillMaxWidth().navigationBarsPadding().displayCutoutPadding()
                     .padding(horizontal = Design.spaceMd, vertical = Design.spaceSm)) {
-                    SpeechToggle(ui.config.audioOutput, !active, { enabled ->
+                    SpeechToggle(ui.config.audioOutput, session.state != SessionState.FINISHING, { enabled ->
                         controller.saveSettings(ui.config.copy(audioOutput = enabled), "", ui.options)
                     }, if (session.playing) controller::stopPlayback else null)
                     if (active && !ui.viewingRecording) {
@@ -448,8 +495,8 @@ private fun TranscriptScreen(
                         SessionState.IDLE -> if (selectedId == null) stringResource(R.string.start_live) else stringResource(R.string.resume_recording)
                     }
                     Button(
-                        onClick = { if (active) controller.stop() else if (!ui.hasKey) onSettings() else requestStart() },
-                        enabled = session.state != SessionState.FINISHING && (active || selectedId == null || ui.viewed != null),
+                        onClick = toggleRecording,
+                        enabled = startEnabled,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = MaterialTheme.shapes.medium,
                     ) {
                         Glyph(if (active) R.drawable.ic_stop else R.drawable.ic_mic)

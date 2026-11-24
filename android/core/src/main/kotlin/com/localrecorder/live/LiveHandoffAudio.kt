@@ -10,7 +10,8 @@ class LiveHandoffAudio(reason: Reason) {
     private val planned = reason == Reason.LANGUAGE_SWITCH
     private val capacity = if (planned) 5 * 16_000 * 2 else LiveSession.CATCH_UP_AUDIO_BYTES
     private val chunks = ArrayDeque<ByteArray>()
-    private var size = 0
+    var size = 0
+        private set
     private var nextSendMs = 0L
 
     fun append(pcm: ByteArray) {
@@ -41,6 +42,12 @@ class LiveHandoffAudio(reason: Reason) {
         val next = take(if (planned) minOf(3200, chunks.first().size) else chunks.first().size)
         if (planned) nextSendMs = nowMs + (next.size + 39) / 40 // 40 bytes/ms = 1.25x
         return next
+    }
+
+    /** The transport stopped accepting audio after poll; keep the unsent prefix for the next attempt. */
+    fun restoreFront(pcm: ByteArray) {
+        chunks.addFirst(pcm)
+        size += pcm.size
     }
 
     fun clear() {

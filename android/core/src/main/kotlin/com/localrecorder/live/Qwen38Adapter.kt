@@ -41,7 +41,7 @@ internal object Qwen38Adapter {
         }
         item ?: return null
         return when (type) {
-            "input_audio_buffer.speech_stopped" -> LiveSessionEvent.SpeechEnd(event.optInt("audio_end_ms"), eventID)
+            "input_audio_buffer.speech_stopped" -> LiveSessionEvent.SpeechEnd(event.optInt("audio_end_ms"), eventID, item)
             "input_audio_buffer.speech_started" -> LiveSessionEvent.SpeechStart(item, event.optInt("audio_start_ms"), eventID)
             "conversation.item.input_audio_transcription.delta" -> LiveSessionEvent.Text(item, event.optString("delta"), true, false, eventID)
             "conversation.item.input_audio_transcription.completed" -> LiveSessionEvent.Text(item, event.optString("transcript"), true, true, eventID)

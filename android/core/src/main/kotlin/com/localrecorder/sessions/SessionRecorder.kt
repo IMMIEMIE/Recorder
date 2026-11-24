@@ -168,12 +168,20 @@ class SessionRecorder(
 
     private fun stored(row: SubtitleRow, firstSeenMs: Long, existing: SessionRow?): SessionRow? {
         val offset = (firstSeenMs - segmentStart).coerceAtLeast(0)
+        // The on-screen switch marker is saved on the first utterance in the new language.
+        if (row.languageChange) return null
         if (row.marker.isNotEmpty()) return existing ?: SessionRow(segment, SessionRow.KIND_BREAK, offset)
         if (!row.sourceDone) return existing
-        val translation = if (row.translationDone) row.translation else existing?.translation.orEmpty()
+        val target = if (row.speaker == null) row.targetLanguage ?: record?.segments?.get(segment)?.targetLanguage else row.targetLanguage
+        val translation = when {
+            row.translationDone -> row.translation
+            existing?.speaker == row.speaker && existing?.targetLanguage == target -> existing?.translation.orEmpty()
+            else -> ""
+        }
         if (row.source.isEmpty() && translation.isEmpty()) return existing
         return SessionRow(segment, SessionRow.KIND_TEXT, existing?.offsetMs ?: offset, row.source, translation,
-            targetLanguage = record?.segments?.get(segment)?.targetLanguage)
+            targetLanguage = target,
+            sourceLanguage = row.sourceLanguage, speaker = row.speaker, languageSwitch = row.languageSwitch)
     }
 
     private fun reindex() {
