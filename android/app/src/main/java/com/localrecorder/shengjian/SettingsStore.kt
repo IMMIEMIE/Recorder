@@ -46,7 +46,7 @@ class SettingsStore(context: Context) {
         InterfaceLanguage.of(prefs.getString(InterfaceLanguage.PREFERENCE_KEY, null))
 
     fun saveInterfaceLanguage(language: InterfaceLanguage) {
-        prefs.edit().putString(InterfaceLanguage.PREFERENCE_KEY, language.tag).commit()
+        prefs.edit().putString(InterfaceLanguage.PREFERENCE_KEY, language.tag).apply()
     }
 
     fun loadOptions(): AppOptions = try {

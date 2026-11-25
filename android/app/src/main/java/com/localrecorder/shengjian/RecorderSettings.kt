@@ -1,6 +1,5 @@
 package com.localrecorder.shengjian
 
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -39,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localrecorder.live.InterfaceLanguage
 import com.localrecorder.live.LiveServiceProfile
 import com.localrecorder.live.LiveTranslateConfig
@@ -87,8 +87,8 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
     }
 
     val context = LocalContext.current
-    val activity = context as? ComponentActivity
-    val interfaceLanguage = remember(context) { AppLocale.currentLanguage(context) }
+    val activity = context.findComponentActivity()
+    val interfaceLanguage by AppLocale.language.collectAsStateWithLifecycle()
     val recording = ui.session.state != SessionState.IDLE
     SettingsLayout(back = ::leave, recording = recording, service = {
         if (recording) {

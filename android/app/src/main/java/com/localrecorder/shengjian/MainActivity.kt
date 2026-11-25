@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -43,6 +44,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -93,15 +95,32 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        setTheme(R.style.Base_Theme_Shengjian)
         super.onCreate(savedInstanceState)
         window.setBackgroundDrawableResource(R.color.background)
         enableEdgeToEdge()
+        AppLocale.syncFromSystem(this)
         val controller = (application as ShengjianApp).controller
         setContent {
-            ShengjianTheme {
-                App(controller)
+            LocalizedApp(activity = this) {
+                ShengjianTheme {
+                    App(controller)
+                }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (AppLocale.syncFromSystem(this)) {
+            (application as ShengjianApp).controller.onInterfaceLanguageChanged()
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        AppLocale.syncFromSystem(this)
+        (application as ShengjianApp).controller.onInterfaceLanguageChanged()
     }
 
     override fun onStop() {
@@ -113,6 +132,25 @@ class MainActivity : ComponentActivity() {
     fun keepScreenOn(on: Boolean) {
         if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+}
+
+@Composable
+private fun LocalizedApp(activity: ComponentActivity, content: @Composable () -> Unit) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        content()
+        return
+    }
+    val language by AppLocale.language.collectAsStateWithLifecycle()
+    val baseConfig = LocalConfiguration.current
+    val (localizedConfig, localizedContext) = remember(baseConfig, language) {
+        AppLocale.localizedOverlay(activity, baseConfig, language)
+    }
+    CompositionLocalProvider(
+        LocalConfiguration provides localizedConfig,
+        LocalContext provides localizedContext,
+    ) {
+        content()
     }
 }
 
@@ -537,7 +575,7 @@ private fun TranscriptScreen(
     onOpenList: (() -> Unit)?,
 ) {
     val context = LocalContext.current
-    val activity = context as? MainActivity
+    val activity = context.findMainActivity()
     val session = ui.session
     val active = session.state != SessionState.IDLE
     val zone = remember { ZoneId.systemDefault() }
@@ -572,10 +610,11 @@ private fun TranscriptScreen(
         else -> stringResource(R.string.empty_session)
     }
 
+    val config = LocalConfiguration.current
     val messages = remember { SnackbarHostState() }
-    val errorText = remember(session.error, session.errorMessage, context) { context.formatError(session) }
-    val noticeText = remember(session.notice, session.noticeMessage, context) { context.formatNotice(session) }
-    val statusText = remember(session.status, session.statusMessage, context) { context.formatStatus(session) }
+    val errorText = remember(session.error, session.errorMessage, context, config) { context.formatError(session) }
+    val noticeText = remember(session.notice, session.noticeMessage, context, config) { context.formatNotice(session) }
+    val statusText = remember(session.status, session.statusMessage, context, config) { context.formatStatus(session) }
     val message = errorText.ifBlank { noticeText }
     LaunchedEffect(message) {
         if (message.isNotEmpty()) {

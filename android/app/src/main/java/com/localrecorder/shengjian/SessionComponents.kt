@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.colorResource
@@ -61,6 +62,7 @@ import com.localrecorder.live.SessionState
 import com.localrecorder.live.SubtitleRow
 import com.localrecorder.shengjian.ui.theme.Design
 import com.localrecorder.shengjian.ui.theme.LocalStatusColors
+import kotlinx.coroutines.launch
 
 @Composable
 internal fun Glyph(@DrawableRes id: Int, modifier: Modifier = Modifier, tint: Color = LocalContentColor.current) =
@@ -160,7 +162,8 @@ internal fun StatusPill(snapshot: SessionSnapshot, hasSession: Boolean, modifier
     val status = LocalStatusColors.current
     val colors = MaterialTheme.colorScheme
     val context = LocalContext.current
-    val statusText = remember(snapshot.status, snapshot.statusMessage, context) { context.formatStatus(snapshot) }
+    val config = LocalConfiguration.current
+    val statusText = remember(snapshot.status, snapshot.statusMessage, context, config) { context.formatStatus(snapshot) }
     val key = when {
         snapshot.error.isNotBlank() || snapshot.errorMessage != null -> 0
         snapshot.slowNetwork -> 1
@@ -777,7 +780,14 @@ internal fun InterfaceLanguagePickerSheet(
     onDismiss: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = colors.surfaceContainerLow) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    var closing by remember { mutableStateOf(false) }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = colors.surfaceContainerLow,
+    ) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -796,8 +806,18 @@ internal fun InterfaceLanguagePickerSheet(
                 val label = option.nativeName ?: stringResource(R.string.follow_system)
                 Surface(
                     onClick = {
-                        onSelect(option)
-                        onDismiss()
+                        if (closing) return@Surface
+                        closing = true
+                        scope.launch {
+                            try {
+                                sheetState.hide()
+                            } finally {
+                                onDismiss()
+                            }
+                            if (option != selected) {
+                                onSelect(option)
+                            }
+                        }
                     },
                     shape = RoundedCornerShape(Design.radiusButton),
                     color = if (isSelected) colors.primaryContainer else colors.surfaceContainerLowest,
