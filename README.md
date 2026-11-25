@@ -90,8 +90,8 @@ open "dist/声笺.app"
 4. Stop to process the final phrase; then copy or export the transcript.
    停止后会处理尾句；随后可复制或导出文本。
 
-On macOS, open **Settings → Transcription → Interface language** to follow the system or select English or Simplified Chinese. Android follows the device language. On Android 13 and later you can also choose a language in the system’s app language settings.
-在 macOS 的**设置 → 转写 → 界面语言**中，可选择跟随系统、English 或简体中文。Android 默认跟随设备语言，Android 13 及以上也可在系统的应用语言设置中单独选择。
+Both apps follow the system language by default. To choose Simplified Chinese, Traditional Chinese, English, Japanese, Korean, Spanish, French, German, or Tamil, open **Settings → Transcription → Interface language** on macOS or **Settings → Interface language** on Android. On Android 13 and later, you can also use the system’s app language settings.
+两端默认跟随系统。要选择简体中文、繁体中文、英语、日语、韩语、西班牙语、法语、德语或泰米尔语，请打开 macOS 的**设置 → 转写 → 界面语言**或 Android 的**设置 → 界面语言**。Android 13 及以上也可通过系统的应用语言设置切换。
 
 Each recording belongs to a session in the sidebar (Today / Yesterday / Previous 7 days / Older). Select a past session to read it, then **Continue recording** to append to it; rename, export or delete sessions from the right-click menu. Export writes TXT or Markdown with both languages, source only, or translation only.
 每次录制都属于侧栏中的一个会话（今天 / 昨天 / 7 天内 / 更早）。选中历史会话即可查看，点**继续录制**会在其后追加；右键可重命名、导出或删除。导出支持 TXT 或 Markdown，内容可选双语、仅原文或仅译文。
