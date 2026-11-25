@@ -1,0 +1,4 @@
+"CFBundleDisplayName" = "Shengjian";
+"CFBundleName" = "Shengjian";
+"NSScreenCaptureUsageDescription" = "கணினி ஒலியைத் தேர்ந்தெடுத்து எழுத்துப்பெயர்ப்பைத் தொடங்கும்போது மட்டுமே Shengjian கணினி ஒலியைப் பதிவு செய்யும். திரைப் படங்கள் சேமிக்கப்படாது.";
+"NSMicrophoneUsageDescription" = "எழுத்துப்பெயர்ப்பைத் தொடங்கும்போது மட்டுமே Shengjian மைக்கைப் பயன்படுத்தும். உள்ளூர் அடையாளம் மற்றும் Hy-SimulMT ஒலியை உங்கள் Mac-இல் வைத்திருக்கும்; API மற்றும் கிளவுட் LiveTranslate தேர்ந்தெடுத்த சேவைக்கு அனுப்பும். ஒலிப்பதிவுகள் சேமிக்கப்படாது.";

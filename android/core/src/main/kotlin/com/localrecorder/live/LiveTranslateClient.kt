@@ -22,7 +22,12 @@ enum class AppendResult { SENT, FULL, CLOSED }
  * Why a connection ended, beyond `recoverable`: [kind] picks how a session retries, [detail] is a short
  * category plus transport detail for the reconnecting status (never the key; empty when nothing is known).
  */
-data class EndCause(val kind: Kind = Kind.OTHER, val detail: String = "") {
+data class EndCause(
+    val kind: Kind = Kind.OTHER,
+    val detail: String = "",
+    val detailMessage: LiveMessage? = null,
+    val errorMessage: LiveMessage? = null,
+) {
     enum class Kind {
         OTHER,
 
@@ -117,16 +122,18 @@ class LiveTranslateClient(
                 .build()
         }
 
-        fun serviceError(code: String): String {
+        fun serviceErrorMessage(code: String): LiveMessage {
             val value = code.lowercase()
             if ("auth" in value || "key" in value || "permission" in value) {
-                return "LiveTranslate API Key 无效或无权访问，请核对密钥、区域和工作空间"
+                return LiveMessage.AuthError
             }
             if ("limit" in value || "quota" in value || "balance" in value) {
-                return "LiveTranslate 请求受限或额度不足，请检查账户余额并稍后重试"
+                return LiveMessage.QuotaOrLimitError
             }
-            return "LiveTranslate 服务处理失败，请检查模型权限和会话配置；已有文字已保留"
+            return LiveMessage.ServiceFailed
         }
+
+        fun serviceError(code: String): String = serviceErrorMessage(code).defaultText
     }
 
     private val queue = Executors.newSingleThreadScheduledExecutor { r ->
@@ -146,7 +153,7 @@ class LiveTranslateClient(
     private var deadline: ScheduledFuture<*>? = null
 
     /** The last transport detail, for [EndCause.detail]. */
-    private var cause = ""
+    private var cause: LiveMessage? = null
 
     @Volatile private var acceptingAudio = false
 
@@ -155,8 +162,8 @@ class LiveTranslateClient(
         get() = ((socket?.queueSize() ?: 0L) * 3 / 4).toInt()
 
     override fun connect(configuration: LiveTranslateConfig, key: String) {
-        if (key.isEmpty()) throw LiveTranslateException("请在 LiveTranslate 设置中保存专用 API Key")
-        if (key.any { it.code !in 33..126 }) throw LiveTranslateException("API Key 格式无效，请重新填写")
+        if (key.isEmpty()) throw LiveTranslateException(LiveMessage.MissingApiKey)
+        if (key.any { it.code !in 33..126 }) throw LiveTranslateException(LiveMessage.InvalidApiKeyFormat)
         val url = configuration.url(allowLocalhost)
         val request = Request.Builder().url(url).header("Authorization", "Bearer $key").build()
         runSync {
@@ -164,7 +171,7 @@ class LiveTranslateClient(
             started = true
             this.configuration = configuration
             socket = httpClient.newWebSocket(request, SocketListener())
-            armTimeout(20_000, "LiveTranslate 连接或会话配置超时，请检查网络和服务地址", recoverable = true, detail = "连接超时：20 秒内未完成会话配置")
+            armTimeout(20_000, LiveMessage.ConnectTimeout, recoverable = true, detail = LiveMessage.CauseConnectTimeout)
         }
     }
 
@@ -197,7 +204,7 @@ class LiveTranslateClient(
             if (!ready || closed || finishing) return@post
             finishing = true
             acceptingAudio = false
-            armTimeout(finishTimeoutMs, "LiveTranslate 尾句处理超时，已保留收到的文字，末句可能不完整")
+            armTimeout(finishTimeoutMs, LiveMessage.FinishTimeout)
             send(JSONObject().put("type", "session.finish"))
         }
     }
@@ -206,11 +213,11 @@ class LiveTranslateClient(
         runSync { end(null, notify = false) }
     }
 
-    private fun armTimeout(ms: Long, message: String, recoverable: Boolean = false, detail: String = "") {
+    private fun armTimeout(ms: Long, message: LiveMessage, recoverable: Boolean = false, detail: LiveMessage? = null) {
         deadline?.cancel(false)
         deadline = try {
             queue.schedule({
-                if (detail.isNotEmpty()) note(detail)
+                if (detail != null) note(detail)
                 end(message, recoverable = recoverable)
             }, ms, TimeUnit.MILLISECONDS)
         } catch (_: RejectedExecutionException) {
@@ -237,7 +244,7 @@ class LiveTranslateClient(
         }
         val type = event?.optStringOrNull("type")
         if (event == null || type == null) {
-            end("LiveTranslate 返回无效数据"); return
+            end(LiveMessage.InvalidServerData); return
         }
         val configuration = configuration ?: return
         when (type) {
@@ -247,7 +254,7 @@ class LiveTranslateClient(
             }
             "session.updated" -> {
                 if (!configured) {
-                    end("LiveTranslate 会话配置顺序异常"); return
+                    end(LiveMessage.InvalidSessionOrder); return
                 }
                 val session = event.optJSONObject("session")
                 val modalities = session?.optJSONArray("output_modalities").toStringSet()
@@ -260,12 +267,12 @@ class LiveTranslateClient(
                     return
                 }
                 if (session == null || modalities != configuration.outputModalities.toSet() || language != configuration.language) {
-                    end("LiveTranslate 未确认所选输出方式及目标语言，请检查模型和接口兼容性"); return
+                    end(LiveMessage.UnconfirmedOutputOrLanguage); return
                 }
                 if (configuration.audioOutput) {
                     val format = session.optJSONObject("audio")?.optJSONObject("output")?.optJSONObject("format")
                     if (format?.optStringOrNull("type") != "pcm" || format.optInt("sample_rate") != LiveTranslateConfig.OUTPUT_SAMPLE_RATE) {
-                        end("LiveTranslate 未确认 24 kHz PCM 译音格式"); return
+                        end(LiveMessage.UnconfirmedPcmFormat); return
                     }
                 }
                 if (!ready) {
@@ -280,8 +287,8 @@ class LiveTranslateClient(
                 if (finishing) {
                     end(null)
                 } else {
-                    note("服务端结束会话")
-                    end("LiveTranslate 会话意外结束，已保留收到的文字", recoverable = true)
+                    note(LiveMessage.CauseServerFinished)
+                    end(LiveMessage.SessionEndedUnexpectedly, recoverable = true)
                 }
                 return
             }
@@ -291,21 +298,21 @@ class LiveTranslateClient(
                 val message = error?.optStringOrNull("message") ?: ""
                 when {
                     isNoResult(message) || isNoResult(code) -> {
-                        note("服务端长时间无结果")
-                        end(NO_RESULT_ERROR, recoverable = true, kind = EndCause.Kind.NO_RESULT)
+                        note(LiveMessage.CauseNoResult)
+                        end(LiveMessage.NoResult, recoverable = true, kind = EndCause.Kind.NO_RESULT)
                     }
                     isRateLimit(code) || isRateLimit(message) -> {
-                        note("服务限流")
-                        end(RATE_LIMITED_ERROR, recoverable = true, kind = EndCause.Kind.RATE_LIMITED)
+                        note(LiveMessage.CauseRateLimited)
+                        end(LiveMessage.RateLimited, recoverable = true, kind = EndCause.Kind.RATE_LIMITED)
                     }
                     type == "error" && changingTo != null -> completeLanguageUpdate(changingTo!!, false)
-                    else -> end(serviceError(code))
+                    else -> end(serviceErrorMessage(code))
                 }
                 return
             }
             "response.done" -> {
                 if (event.optJSONObject("response")?.optStringOrNull("status") != "completed") {
-                    end("LiveTranslate 译文未完成，已保留收到的文字"); return
+                    end(LiveMessage.TranslationIncomplete); return
                 }
             }
         }
@@ -316,17 +323,17 @@ class LiveTranslateClient(
         }
     }
 
-    private fun connectionError(): String = when (httpStatus) {
-        401, 403 -> "LiveTranslate API Key 无效或无权访问，请核对密钥、区域和工作空间"
-        429 -> "LiveTranslate 请求受限或额度不足，请稍后重试"
-        else -> "LiveTranslate 连接中断或无法连接，请检查网络、服务地址及 API Key；已有文字已保留"
+    private fun connectionError(): LiveMessage = when (httpStatus) {
+        401, 403 -> LiveMessage.AuthError
+        429 -> LiveMessage.Http429Error
+        else -> LiveMessage.ConnectionLost
     }
 
     /** Transport-level failure: worth a new session unless the server answered with a client error. */
     private fun disconnected() {
         val status = httpStatus
         if (status == 429) {
-            end(RATE_LIMITED_ERROR, recoverable = true, kind = EndCause.Kind.RATE_LIMITED)
+            end(LiveMessage.RateLimited, recoverable = true, kind = EndCause.Kind.RATE_LIMITED)
             return
         }
         end(connectionError(), recoverable = status == null || status >= 500)
@@ -339,26 +346,26 @@ class LiveTranslateClient(
         when {
             // First: the service may use 1007 for this too.
             isNoResult(reason) -> {
-                note("服务端关闭：$code")
-                end(NO_RESULT_ERROR, recoverable = true, kind = EndCause.Kind.NO_RESULT)
+                note(LiveMessage.CauseServerClosed(code))
+                end(LiveMessage.NoResult, recoverable = true, kind = EndCause.Kind.NO_RESULT)
             }
             code == RATE_LIMIT_CLOSE_CODE || isRateLimit(reason) -> {
-                note("服务限流：$code")
-                end(RATE_LIMITED_ERROR, recoverable = true, kind = EndCause.Kind.RATE_LIMITED)
+                note(LiveMessage.CauseRateLimitedCode(code))
+                end(LiveMessage.RateLimited, recoverable = true, kind = EndCause.Kind.RATE_LIMITED)
             }
             else -> {
-                note("服务端关闭：$code")
+                note(LiveMessage.CauseServerClosed(code))
                 disconnected()
             }
         }
     }
 
     /** Records the short cause for [EndCause.detail]; the first one wins (later lines are consequences). */
-    private fun note(detail: String) {
-        if (cause.isEmpty()) cause = detail
+    private fun note(detail: LiveMessage) {
+        if (cause == null) cause = detail
     }
 
-    private fun end(error: String?, notify: Boolean = true, recoverable: Boolean = false, kind: EndCause.Kind = EndCause.Kind.OTHER) {
+    private fun end(error: LiveMessage?, notify: Boolean = true, recoverable: Boolean = false, kind: EndCause.Kind = EndCause.Kind.OTHER) {
         if (closed) return
         closed = true
         ready = false
@@ -368,8 +375,9 @@ class LiveTranslateClient(
         socket?.cancel()
         socket = null
         if (notify) {
-            val ended = EndCause(kind, cause.ifEmpty { if (error != null && recoverable) "连接断开" else "" })
-            callbackExecutor.execute { listener.onEnd(error, recoverable, ended) }
+            val detailMsg = cause ?: if (error != null && recoverable) LiveMessage.CauseDisconnected else null
+            val ended = EndCause(kind, detailMsg?.defaultText.orEmpty(), detailMsg, error)
+            callbackExecutor.execute { listener.onEnd(error?.defaultText, recoverable, ended) }
         }
         queue.shutdown()
     }
@@ -387,7 +395,7 @@ class LiveTranslateClient(
             post {
                 if (!closed) {
                     diagnostic(detail)
-                    note(if (status != null) "握手失败：HTTP $status" else "网络故障：" + t.javaClass.simpleName)
+                    note(if (status != null) LiveMessage.CauseHandshakeFailed(status) else LiveMessage.CauseNetworkFailure(t.javaClass.simpleName))
                 }
                 httpStatus = status
                 disconnected()

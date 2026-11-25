@@ -17,16 +17,18 @@ struct TranslationMenu: View, Equatable {
     // Text can compare unequal on every audio tick even when the help reads the same.
     private let mode: Mode
     private let model: AppModel
+    private let localeIdentifier: String
 
     init(model: AppModel) {
         self.model = model
+        self.localeIdentifier = InterfaceLanguageSettings.shared.locale.identifier
         mode = model.liveEnabled
             ? .live(language: model.liveConfiguration.languageName)
             : .standard(target: model.translationTarget, enabled: model.translationEnabled, busy: model.translatorBusy)
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.model === rhs.model && lhs.mode == rhs.mode
+        lhs.model === rhs.model && lhs.mode == rhs.mode && lhs.localeIdentifier == rhs.localeIdentifier
     }
 
     var body: some View {

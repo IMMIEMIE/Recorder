@@ -19,7 +19,7 @@ struct RecorderApp: App {
                 ScrollView { LiveTranslateSettingsView(model: model).padding(24) }.tabItem { Label("LiveTranslate", systemImage: "globe") }
                 AISettingsView().tabItem { Label("AI 服务", systemImage: "sparkles") }
                 ScrollView { SessionSettingsView(model: model).padding(24) }.tabItem { Label("会话记录", systemImage: "clock.arrow.circlepath") }
-            }.frame(width: 640, height: 600).tint(DesignTokens.primary)
+            }.frame(minWidth: 640, idealWidth: 680, minHeight: 600).tint(DesignTokens.primary)
         }
         .environment(\.locale, interface.locale)
         MenuBarExtra(interface.string("声笺"), systemImage: model.recording ? "mic.fill" : "waveform") {
@@ -149,7 +149,7 @@ struct MainView: View {
                     if !model.error.isEmpty {
                         HStack(alignment: .top) {
                             Image(systemName: "exclamationmark.circle")
-                            Text(model.error).font(.caption).textSelection(.enabled)
+                            Text(verbatim: interface.localizeMessage(model.error)).font(.caption).textSelection(.enabled)
                             Spacer()
                             Button { model.error = "" } label: { Image(systemName:"xmark") }.buttonStyle(.plain)
                         }.foregroundStyle(DesignTokens.onErrorContainer).padding(12).background(DesignTokens.errorContainer, in: RoundedRectangle(cornerRadius: 8))
@@ -163,7 +163,7 @@ struct MainView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(LocalizedStringKey(model.statusTitle)).font(.system(size: 13, weight: .medium))
                             if ["loading", "warming", "connecting", "finalizing"].contains(model.state) || (model.liveEnabled && model.state == "idle") {
-                                Text(LocalizedStringKey(model.detail)).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                                Text(verbatim: interface.localizeMessage(model.detail)).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                             }
                         }
                         Spacer()
@@ -206,6 +206,7 @@ struct MainView: View {
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject private var interface = InterfaceLanguageSettings.shared
     @State private var advanced = false
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -249,7 +250,7 @@ struct SettingsView: View {
                         Button("测试连接") { model.testASRConnection() }.disabled(model.inputBusy)
                         if model.asrTesting { ProgressView().controlSize(.small) }
                     }
-                    if !model.asrConnectionMessage.isEmpty { Text(model.asrConnectionMessage).font(.caption).textSelection(.enabled) }
+                    if !model.asrConnectionMessage.isEmpty { Text(verbatim: interface.localizeMessage(model.asrConnectionMessage)).font(.caption).textSelection(.enabled) }
                     Text("测试只启动识别任务，不发送音频。转写时全部音频会发送到该服务，按音频时长计费；密钥存于钥匙串。")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
@@ -272,7 +273,7 @@ struct SettingsView: View {
                 ProgressView(value: model.progress)
                 HStack { Text(model.progressLabel).font(.caption).lineLimit(1); Spacer(); Button("取消") { model.cancelDownload() } }
             }
-            if !model.error.isEmpty { Text(model.error).font(.caption).foregroundStyle(DesignTokens.error).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
+            if !model.error.isEmpty { Text(verbatim: interface.localizeMessage(model.error)).font(.caption).foregroundStyle(DesignTokens.error).textSelection(.enabled).fixedSize(horizontal: false, vertical: true) }
             Divider()
             Picker("识别语言", selection: $model.language) {
                 Text("自动").tag("auto"); Text("中文").tag("Chinese"); Text("English").tag("English")
@@ -315,6 +316,7 @@ struct SettingsView: View {
 struct TranslationSettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var profiles = AIProfiles.shared
+    @ObservedObject private var interface = InterfaceLanguageSettings.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             if model.liveEnabled { Text("当前由 LiveTranslate 同时完成转写与翻译。请前往 LiveTranslate 页管理；关闭该模式后恢复此处设置。").font(.callout).foregroundStyle(.secondary) }
@@ -362,13 +364,13 @@ struct TranslationSettingsView: View {
                     HStack { Text(model.translatorProgressLabel).font(.caption).lineLimit(1); Spacer(); Button("取消") { model.cancelDownload() } }
                 }
                 if !model.translatorDetail.isEmpty {
-                    Text(model.translatorDetail).font(.caption).foregroundStyle(model.translatorState == "error" ? DesignTokens.error : DesignTokens.onSurfaceVariant)
+                    Text(verbatim: interface.localizeMessage(model.translatorDetail)).font(.caption).foregroundStyle(model.translatorState == "error" ? DesignTokens.error : DesignTokens.onSurfaceVariant)
                         .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
                 Text("下载大小约：Qwen3 4B 2.3 GB，Hunyuan-MT 7B 4.2 GB。识别和翻译模型同时加载时，Qwen3 4B 需约 8 GB 以上可用内存，Hunyuan-MT 7B 需约 10 GB 以上。只有下载模型时联网。Hunyuan-MT 使用腾讯混元社区许可协议，使用前请确认其条款。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if !model.error.isEmpty { Text(model.error).font(.caption).foregroundStyle(DesignTokens.error).textSelection(.enabled) }
+            if !model.error.isEmpty { Text(verbatim: interface.localizeMessage(model.error)).font(.caption).foregroundStyle(DesignTokens.error).textSelection(.enabled) }
             }.disabled(model.liveEnabled)
         }
     }

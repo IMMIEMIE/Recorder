@@ -90,12 +90,12 @@ private fun History(modifier: Modifier, select: () -> Unit, settings: () -> Unit
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("会话记录", style = Design.title)
+                Text(stringResource(R.string.session_history), style = Design.title)
                 Surface(color = colors.surfaceContainer, shape = CircleShape) {
-                    Text("3 段会话", style = Design.caption, color = colors.onSurfaceVariant, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
+                    Text(stringResource(R.string.session_count, 3), style = Design.caption, color = colors.onSurfaceVariant, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
                 }
             }
-            Tool(R.drawable.ic_settings, "设置", click = settings)
+            Tool(R.drawable.ic_settings, stringResource(R.string.settings), click = settings)
         }
         FilledTonalButton(
             onClick = select,
@@ -108,10 +108,10 @@ private fun History(modifier: Modifier, select: () -> Unit, settings: () -> Unit
         ) {
             Glyph(R.drawable.ic_add, Modifier.size(18.dp))
             Spacer(Modifier.width(Design.spaceSm))
-            Text("新建会话", fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.new_session), fontWeight = FontWeight.SemiBold)
         }
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
-            for ((group, titles) in listOf("今天" to listOf("河岸散步", "访谈提纲"), "昨天" to listOf("周末读书会"))) {
+            for ((group, titles) in listOf(stringResource(R.string.today) to listOf("河岸散步", "访谈提纲"), stringResource(R.string.yesterday) to listOf("周末读书会"))) {
                 Text(group, Modifier.padding(horizontal = 12.dp, vertical = Design.spaceSm), style = Design.caption, color = colors.onSurfaceVariant)
                 for (title in titles) {
                     val active = title == "河岸散步"
@@ -138,13 +138,13 @@ private fun History(modifier: Modifier, select: () -> Unit, settings: () -> Unit
                                 if (active) {
                                     val rec = LocalStatusColors.current.recording
                                     Surface(color = rec.copy(alpha = 0.13f), shape = CircleShape) {
-                                        Text("录制中", style = MaterialTheme.typography.labelSmall, color = rec, modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp))
+                                        Text(stringResource(R.string.recording), style = MaterialTheme.typography.labelSmall, color = rec, modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp))
                                     }
                                 }
                             }
                             Text(if (active) "09:41" else if (title == "访谈提纲") "08:15" else "14:20", style = Design.caption, color = colors.onSurfaceVariant)
                         }
-                        Tool(R.drawable.ic_more_vert, "会话操作", tint = colors.onSurfaceVariant, click = select)
+                        Tool(R.drawable.ic_more_vert, stringResource(R.string.session_actions), tint = colors.onSurfaceVariant, click = select)
                     }
                 }
             }
@@ -179,10 +179,10 @@ private fun Transcript(wide: Boolean, recording: Boolean, toggle: () -> Unit, na
                 Text(stringResource(R.string.dialogue_chip), style = Design.caption.copy(fontWeight = FontWeight.SemiBold))
             }
             Box {
-                Tool(R.drawable.ic_more_vert, "更多操作", tint = colors.onSurfaceVariant) { more = true }
+                Tool(R.drawable.ic_more_vert, stringResource(R.string.more_actions), tint = colors.onSurfaceVariant) { more = true }
                 DropdownMenu(more, { more = false }) {
-                    DropdownMenuItem(text = { Text("导出会话") }, onClick = { more = false; navigate(Page.Export) })
-                    DropdownMenuItem(text = { Text("设置") }, onClick = { more = false; navigate(Page.Settings) })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.export_session)) }, onClick = { more = false; navigate(Page.Export) })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.settings)) }, onClick = { more = false; navigate(Page.Settings) })
                 }
             }
         }
@@ -217,7 +217,7 @@ private fun Transcript(wide: Boolean, recording: Boolean, toggle: () -> Unit, na
             playing = recording && speech,
             onStopPlayback = {},
             active = recording,
-            primaryLabel = if (recording) "停止实时翻译" else "开始实时翻译",
+            primaryLabel = stringResource(if (recording) R.string.stop_translation else R.string.start_live),
             primaryEnabled = true,
             onPrimaryClick = toggle,
         )
@@ -331,3 +331,21 @@ private fun DialogueReview(exit: () -> Unit) {
 
 @PreviewTest @Preview(name = "PhoneLargeType", widthDp = 393, heightDp = 780, fontScale = 2f, locale = "zh-rCN")
 @Composable fun LargeTypePreview() = Review()
+
+@PreviewTest @Preview(name = "PhoneLightDe", widthDp = 360, heightDp = 780, locale = "de")
+@Composable fun PhoneLightDe() = Review()
+
+@PreviewTest @Preview(name = "SettingsDe", widthDp = 360, heightDp = 780, locale = "de")
+@Composable fun SettingsDe() = Review(Page.Settings)
+
+@PreviewTest @Preview(name = "DialogueDe", widthDp = 360, heightDp = 780, locale = "de")
+@Composable fun DialogueDe() = Review(Page.Dialogue)
+
+@PreviewTest @Preview(name = "PhoneLightTa", widthDp = 360, heightDp = 780, locale = "ta")
+@Composable fun PhoneLightTa() = Review()
+
+@PreviewTest @Preview(name = "SettingsTa", widthDp = 360, heightDp = 780, locale = "ta")
+@Composable fun SettingsTa() = Review(Page.Settings)
+
+@PreviewTest @Preview(name = "DialogueTa", widthDp = 360, heightDp = 780, locale = "ta")
+@Composable fun DialogueTa() = Review(Page.Dialogue)

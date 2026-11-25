@@ -90,7 +90,7 @@ struct SessionMarker: View {
     var body: some View {
         HStack(spacing: 10) {
             VStack { Divider() }
-            Text(text).font(.caption).foregroundStyle(.secondary).fixedSize()
+            Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(2).multilineTextAlignment(.center)
             VStack { Divider() }
         }.padding(.vertical, 2)
     }
@@ -128,7 +128,7 @@ struct SessionExportSheet: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { model.exportSession(id, format: format, content: content) }
                 }.keyboardShortcut(.defaultAction)
             }
-        }.padding(24).frame(width: 380)
+        }.padding(24).frame(minWidth: 380, idealWidth: 420)
         .onAppear { title = model.sessionForExport(request.sessionID)?.title ?? "" }
     }
 }

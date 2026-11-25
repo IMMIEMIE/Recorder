@@ -134,9 +134,14 @@ internal fun LiveServiceProfileEditor(
             .heightIn(min = 44.dp)
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(stringResource(R.string.profile_advanced), style = Design.caption.copy(fontWeight = FontWeight.Medium), color = colors.onSurfaceVariant)
+        Text(
+            stringResource(R.string.profile_advanced),
+            style = Design.caption.copy(fontWeight = FontWeight.Medium),
+            color = colors.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
         Glyph(
             R.drawable.ic_expand_more,
             Modifier.size(18.dp).graphicsLayer { rotationZ = chevronRotation },

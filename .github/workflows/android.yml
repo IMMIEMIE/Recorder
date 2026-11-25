@@ -2,9 +2,9 @@ name: Android
 
 on:
   push:
-    paths: ["android/**", "design/**", "Sources/Recorder/DesignTokens.swift", "scripts/design_tokens.py", "scripts/make_icon.py", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", "scripts/check_version.sh", "scripts/version.sh", "VERSION", "README.md", ".github/workflows/android.yml"]
+    paths: ["android/**", "assets/localization/**", "design/**", "Sources/Recorder/DesignTokens.swift", "Sources/Recorder/InterfaceLanguage.swift", "scripts/check_localization.py", "scripts/design_tokens.py", "scripts/make_icon.py", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", "scripts/check_version.sh", "scripts/version.sh", "VERSION", "README.md", ".github/workflows/android.yml"]
   pull_request:
-    paths: ["android/**", "design/**", "Sources/Recorder/DesignTokens.swift", "scripts/design_tokens.py", "scripts/make_icon.py", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", "scripts/check_version.sh", "scripts/version.sh", "VERSION", "README.md", ".github/workflows/android.yml"]
+    paths: ["android/**", "assets/localization/**", "design/**", "Sources/Recorder/DesignTokens.swift", "Sources/Recorder/InterfaceLanguage.swift", "scripts/check_localization.py", "scripts/design_tokens.py", "scripts/make_icon.py", "tests/mock_livetranslate_server.py", "scripts/check_android_apk.sh", "scripts/check_version.sh", "scripts/version.sh", "VERSION", "README.md", ".github/workflows/android.yml"]
   workflow_dispatch:
 
 jobs:
@@ -19,6 +19,9 @@ jobs:
       - name: Check version consistency
         working-directory: .
         run: scripts/check_version.sh
+      - name: Check localization completeness and placeholders
+        working-directory: .
+        run: python3 scripts/check_localization.py
       - name: Check native themes, contrast and Android icon layers
         working-directory: .
         run: |

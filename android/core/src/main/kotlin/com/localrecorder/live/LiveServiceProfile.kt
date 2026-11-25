@@ -22,11 +22,11 @@ data class LiveServiceProfile(
 
     fun validate() {
         if (protocolID != "qwen-livetranslate" || version != "3.8" || inputFormat != "pcm")
-            throw LiveTranslateException("此协议版本或上行音频格式尚不受支持")
+            throw LiveTranslateException(LiveMessage.UnsupportedProtocol)
         if (name.isBlank() || modelID.isBlank() || modelID.any { it.isWhitespace() || it.isISOControl() })
-            throw LiveTranslateException("请填写配置名称和有效的模型 ID")
+            throw LiveTranslateException(LiveMessage.InvalidProfileNameOrModel)
         if (turnDetection !in setOf("server_vad", "speaker_detection") || threshold !in 0.0..1.0 || silenceMS !in 1..60000)
-            throw LiveTranslateException("请检查断句方式、阈值及静音时长")
+            throw LiveTranslateException(LiveMessage.InvalidTurnDetection)
     }
 
     fun detectionParameters(): JSONObject = JSONObject().put("type", turnDetection).apply {

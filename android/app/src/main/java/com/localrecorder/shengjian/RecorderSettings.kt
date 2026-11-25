@@ -1,5 +1,6 @@
 package com.localrecorder.shengjian
 
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -23,6 +24,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -32,10 +34,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.localrecorder.live.InterfaceLanguage
 import com.localrecorder.live.LiveServiceProfile
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.live.PlaybackTiming
@@ -82,6 +86,9 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
         onDispose { owner.lifecycle.removeObserver(observer) }
     }
 
+    val context = LocalContext.current
+    val activity = context as? ComponentActivity
+    val interfaceLanguage = remember(context) { AppLocale.currentLanguage(context) }
     val recording = ui.session.state != SessionState.IDLE
     SettingsLayout(back = ::leave, recording = recording, service = {
         if (recording) {
@@ -134,6 +141,12 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
             canClear = ui.sessions.isNotEmpty() && ui.recordingId == null,
             clear = { confirmClear = true },
             recording = recording,
+            interfaceLanguage = interfaceLanguage,
+            onSelectInterfaceLanguage = { selected ->
+                if (selected != interfaceLanguage && activity != null) {
+                    if (commitService()) AppLocale.applyLanguage(activity, selected)
+                }
+            },
             dialogueTargets = if (ui.dialogueMode) ({
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("A" to ui.dialogueLanguageA, "B" to ui.dialogueLanguageB).forEach { (side, code) ->
@@ -243,7 +256,7 @@ internal fun ServiceFields(
     OutlinedTextField(
         value = key,
         onValueChange = onKey,
-        label = { Text("API Key") },
+        label = { Text(stringResource(R.string.api_key)) },
         placeholder = { Text(if (keySaved) stringResource(R.string.use_saved_key) else stringResource(R.string.enter_service_key)) },
         singleLine = true,
         enabled = !testing && !recording,
@@ -312,10 +325,13 @@ internal fun PreferenceGroups(
     canClear: Boolean,
     clear: () -> Unit,
     recording: Boolean = false,
+    interfaceLanguage: InterfaceLanguage = InterfaceLanguage.SYSTEM,
+    onSelectInterfaceLanguage: (InterfaceLanguage) -> Unit = {},
     dialogueTargets: (@Composable () -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     var showLanguageSheet by rememberSaveable { mutableStateOf(false) }
+    var showInterfaceLanguageSheet by rememberSaveable { mutableStateOf(false) }
 
     // Group 2: Translation & Audio
     GroupTitle(stringResource(R.string.translation_and_audio))
@@ -331,11 +347,22 @@ internal fun PreferenceGroups(
                     .heightIn(min = 48.dp)
                     .padding(vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(stringResource(R.string.default_target_language), style = Design.source, color = colors.onSurface)
+                Text(
+                    stringResource(R.string.default_target_language),
+                    style = Design.source,
+                    color = colors.onSurface,
+                    modifier = Modifier.weight(1f),
+                )
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(config.languageName, style = Design.caption.copy(fontWeight = FontWeight.SemiBold), color = colors.primary)
+                    Text(
+                        config.languageName,
+                        style = Design.caption.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                     Glyph(R.drawable.ic_expand_more, Modifier.size(18.dp), tint = colors.primary)
                 }
             }
@@ -385,6 +412,34 @@ internal fun PreferenceGroups(
     // Group 3: Network & Local History
     GroupTitle(stringResource(R.string.network_and_history))
     SettingsCard {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(Design.radiusInput))
+                .clickable(enabled = enabled) { showInterfaceLanguageSheet = true }
+                .heightIn(min = 48.dp)
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(stringResource(R.string.interface_language), style = Design.source, color = colors.onSurface)
+                Text(stringResource(R.string.interface_language_hint), style = Design.caption, color = colors.onSurfaceVariant)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    interfaceLanguage.nativeName ?: stringResource(R.string.follow_system),
+                    style = Design.caption.copy(fontWeight = FontWeight.SemiBold),
+                    color = colors.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Glyph(R.drawable.ic_expand_more, Modifier.size(18.dp), tint = colors.primary)
+            }
+        }
+
+        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.7f))
+
         SettingSwitch(
             label = stringResource(R.string.auto_reconnect),
             subtitle = stringResource(R.string.auto_reconnect_short),
@@ -464,6 +519,13 @@ internal fun PreferenceGroups(
             selected = config.language,
             onSelect = { code -> onConfig { it.copy(language = code) } },
             onDismiss = { showLanguageSheet = false },
+        )
+    }
+    if (showInterfaceLanguageSheet) {
+        InterfaceLanguagePickerSheet(
+            selected = interfaceLanguage,
+            onSelect = onSelectInterfaceLanguage,
+            onDismiss = { showInterfaceLanguageSheet = false },
         )
     }
 }

@@ -17,14 +17,14 @@ class LiveTranslateAudioDecoder {
     fun consume(event: LiveSessionEvent): ByteArray? {
         if (event !is LiveSessionEvent.Audio) return null
         if (event.eventID?.let { !seen.add(it) } == true) return null
-        val item = event.item ?: throw LiveTranslateException("译音缺少消息标识")
+        val item = event.item ?: throw LiveTranslateException(LiveMessage.AudioMissingItemId)
         if (item in completed) return null
         if (event.final) {
             completed.add(item)
-            if (tails.remove(item) != null) throw LiveTranslateException("译音数据不完整，已停止播放")
+            if (tails.remove(item) != null) throw LiveTranslateException(LiveMessage.AudioIncomplete)
             return null
         }
-        val chunk = event.samples ?: throw LiveTranslateException("译音数据格式无效，已停止播放")
+        val chunk = event.samples ?: throw LiveTranslateException(LiveMessage.AudioInvalidFormat)
         val out = ByteArrayOutputStream(chunk.size + 1)
         tails.remove(item)?.let { out.write(it.toInt()) }
         out.write(chunk)
@@ -57,7 +57,7 @@ class LiveTranslatePlaybackQueue(val timing: PlaybackTiming) {
         (event as? LiveSessionEvent.Audio)?.item?.let { id ->
             if (pcm != null && id !in released) {
                 if (bufferedBytes + pcm.size > MAX_PENDING_SPEECH_BYTES) {
-                    throw LiveTranslateException("等待定稿的译音超过 30 秒，已停止本次播放；字幕继续更新")
+                    throw LiveTranslateException(LiveMessage.AudioPendingTimeout)
                 }
                 buffers.getOrPut(id) { ByteArrayOutputStream() }.write(pcm)
                 bufferedBytes += pcm.size

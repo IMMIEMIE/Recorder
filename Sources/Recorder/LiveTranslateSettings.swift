@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LiveTranslateSettingsView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject private var interface = InterfaceLanguageSettings.shared
     /// Local mode has no address or key to draft, so its choices apply as they change.
     private struct LocalChoices: Equatable {
         var language: String
@@ -21,7 +22,7 @@ struct LiveTranslateSettingsView: View {
                     .toggleStyle(.switch)
                     // An unverified build can still leave local mode, but cannot enter it.
                     .disabled(model.liveSettingsBusy || (!local && !model.hyRuntimeVerified))
-                Text(LocalizedStringKey(model.hyRuntimeVerified ? (local ? "音频和文字都留在本机，不访问云端。" : "关闭时使用云端 Qwen LiveTranslate。") : model.hyRuntimeUnavailableReason))
+                Text(verbatim: interface.localizeMessage(model.hyRuntimeVerified ? (local ? "音频和文字都留在本机，不访问云端。" : "关闭时使用云端 Qwen LiveTranslate。") : model.hyRuntimeUnavailableReason))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Group {
@@ -29,7 +30,7 @@ struct LiveTranslateSettingsView: View {
                     Text("由本机 Hy-SimulMT Interleave 同时生成原文和译文，支持中英互译。")
                         .font(.caption).foregroundStyle(.secondary)
                     LabeledContent("模型") { Text("Hy-SimulMT Interleave Q4_K_M").font(.caption) }
-                    Text(LocalizedStringKey(model.hyModelStore.detail)).font(.caption).textSelection(.enabled)
+                    Text(verbatim: interface.localizeMessage(model.hyModelStore.detail)).font(.caption).textSelection(.enabled)
                     if model.hyModelStore.isBusy { ProgressView(value: model.hyModelStore.progress) }
                     HStack {
                         Button("下载本地模型") { model.downloadHyModel() }
@@ -41,7 +42,7 @@ struct LiveTranslateSettingsView: View {
                         Button("卸载模型") { model.unloadHyModel() }
                             .disabled(!["loading", "ready", "error"].contains(model.hyRuntimeState))
                     }
-                    Text(LocalizedStringKey(model.hyRuntimeDetail)).font(.caption).foregroundStyle(.secondary)
+                    Text(verbatim: interface.localizeMessage(model.hyRuntimeDetail)).font(.caption).foregroundStyle(.secondary)
                     if model.hyRuntimeState == "loading" { ProgressView().controlSize(.small) }
                     Text("首次需下载约 19.75 GB 模型，运行时约占用 23 GB 内存。打开上方两个开关会加载已下载的模型；重新打开应用后，在主窗口点击「加载模型」。卸载会释放内存。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -94,7 +95,7 @@ struct LiveTranslateSettingsView: View {
                 Text("始终显示原文＋译文字幕，可选播放译音。中文使用服务的 zh 选项，不进行简繁转换。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if !model.liveMessage.isEmpty { Text(model.liveMessage).font(.caption).textSelection(.enabled) }
+            if !model.liveMessage.isEmpty { Text(verbatim: interface.localizeMessage(model.liveMessage)).font(.caption).textSelection(.enabled) }
             Divider()
             Picker("快捷键：Control + Option +", selection: $model.shortcutKey) {
                 Text("Space").tag("Space"); Text("R").tag("R"); Text("D").tag("D")

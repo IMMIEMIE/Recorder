@@ -1,0 +1,4 @@
+"CFBundleDisplayName" = "Shengjian";
+"CFBundleName" = "Shengjian";
+"NSScreenCaptureUsageDescription" = "Shengjian は「システム音声」を選択して文字起こしを開始した場合のみシステム音声を取得します。画面画像は保存しません。";
+"NSMicrophoneUsageDescription" = "Shengjian は文字起こしを開始したときのみマイクを使用します。ローカル認識と Hy-SimulMT は音声を端末内に保持し、API 認識やクラウド LiveTranslate 選択時は選択したサービスへ送信します。録音は保存しません。";

@@ -1,4 +1,4 @@
 "CFBundleDisplayName" = "Shengjian";
 "CFBundleName" = "Shengjian";
-"NSMicrophoneUsageDescription" = "Shengjian uses your microphone when you start transcription. Local recognition and Hy-SimulMT keep audio on your Mac. API recognition and cloud LiveTranslate send audio to the selected service. Recordings are never saved.";
 "NSScreenCaptureUsageDescription" = "Shengjian captures system audio only when you select System Audio and start transcription. Screen images are never saved.";
+"NSMicrophoneUsageDescription" = "Shengjian uses your microphone when you start transcription. Local recognition and Hy-SimulMT keep audio on your Mac. API recognition and cloud LiveTranslate send audio to the selected service. Recordings are never saved.";

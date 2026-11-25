@@ -3,6 +3,7 @@ package com.localrecorder.shengjian
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -87,6 +88,10 @@ import java.time.ZoneId
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocale.wrapContext(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setBackgroundDrawableResource(R.color.background)
@@ -568,13 +573,16 @@ private fun TranscriptScreen(
     }
 
     val messages = remember { SnackbarHostState() }
-    val message = session.error.ifBlank { session.notice }
+    val errorText = remember(session.error, session.errorMessage, context) { context.formatError(session) }
+    val noticeText = remember(session.notice, session.noticeMessage, context) { context.formatNotice(session) }
+    val statusText = remember(session.status, session.statusMessage, context) { context.formatStatus(session) }
+    val message = errorText.ifBlank { noticeText }
     LaunchedEffect(message) {
         if (message.isNotEmpty()) {
             messages.showSnackbar(
                 message,
                 withDismissAction = true,
-                duration = if (session.error.isEmpty()) SnackbarDuration.Long else SnackbarDuration.Indefinite,
+                duration = if (errorText.isEmpty()) SnackbarDuration.Long else SnackbarDuration.Indefinite,
             )
             controller.dismissMessages()
         }
@@ -621,7 +629,7 @@ private fun TranscriptScreen(
                 rows, ui.dialogueLanguageA, ui.dialogueLanguageB, session.state, startEnabled,
                 ui.config.audioOutput, session.playing,
                 when {
-                    session.slowNetwork || session.slowService || session.state == SessionState.RECONNECTING -> session.status
+                    session.slowNetwork || session.slowService || session.state == SessionState.RECONNECTING -> statusText
                     session.state == SessionState.CONNECTING -> stringResource(R.string.connecting)
                     session.state == SessionState.RECORDING -> stringResource(R.string.recording)
                     else -> ""
@@ -662,7 +670,12 @@ private fun TranscriptScreen(
                             ) {
                                 Glyph(R.drawable.ic_dialogue, Modifier.size(16.dp))
                                 Spacer(Modifier.width(5.dp))
-                                Text(stringResource(R.string.dialogue_chip), style = Design.caption.copy(fontWeight = FontWeight.SemiBold))
+                                Text(
+                                    stringResource(R.string.dialogue_chip),
+                                    style = Design.caption.copy(fontWeight = FontWeight.SemiBold),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
                             var expanded by remember { mutableStateOf(false) }
                             Box {
@@ -696,8 +709,8 @@ private fun TranscriptScreen(
                                 Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     if (session.slowService) {
                                         Text(stringResource(R.string.slow_service, ui.config.profile.name), style = Design.caption, color = statusColors.slow)
-                                    } else if (session.slowNetwork && session.status.isNotBlank()) {
-                                        Text(session.status, style = Design.caption, color = statusColors.slow)
+                                    } else if (session.slowNetwork && statusText.isNotBlank()) {
+                                        Text(statusText, style = Design.caption, color = statusColors.slow)
                                     }
                                     ProfileSwitchButtons(ui.config, controller::switchRecordingProfile)
                                 }
@@ -828,6 +841,7 @@ private fun Subtitles(
         if (wasFollowing) list.scrollToItem(0)
     }
     val inspect = LocalInspectionMode.current
+    val context = LocalContext.current
     Box(modifier.fillMaxWidth()) {
         LazyColumn(
             Modifier.fillMaxSize(),
@@ -837,8 +851,8 @@ private fun Subtitles(
         ) {
             items(newestFirst, key = { it.key }, contentType = { if (it.marker.isEmpty()) 0 else 1 }) { row ->
                 Box(if (inspect) Modifier else Modifier.animateItem()) {
-                    if (row.marker.isNotEmpty()) {
-                        Marker(row.marker)
+                    if (row.marker.isNotEmpty() || row.markerMessage != null) {
+                        Marker(context.formatMarker(row))
                     } else {
                         SubtitleText(
                             row = row,

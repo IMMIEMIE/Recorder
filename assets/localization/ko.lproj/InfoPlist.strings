@@ -1,0 +1,4 @@
+"CFBundleDisplayName" = "Shengjian";
+"CFBundleName" = "Shengjian";
+"NSScreenCaptureUsageDescription" = "Shengjian은 시스템 오디오를 선택하고 전사를 시작할 때만 시스템 오디오를 캡처하며 화면 이미지는 저장하지 않습니다.";
+"NSMicrophoneUsageDescription" = "Shengjian은 전사를 시작할 때만 마이크를 사용합니다. 로컬 인식과 Hy-SimulMT는 오디오를 Mac에 유지하며, API 인식이나 클라우드 LiveTranslate 선택 시 선택한 서비스로 전송합니다. 녹음은 저장되지 않습니다.";

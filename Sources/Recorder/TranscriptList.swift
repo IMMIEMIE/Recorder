@@ -26,6 +26,7 @@ private struct TranscriptRows: RandomAccessCollection {
 
 struct TranscriptList: View {
     @ObservedObject var model: AppModel
+    @ObservedObject private var interface = InterfaceLanguageSettings.shared
     let accent: Color
     @State private var followLatest = true
     @State private var newBelow = false
@@ -83,11 +84,11 @@ struct TranscriptList: View {
                 let item = row.item
                 VStack(alignment: .leading, spacing: 24) {
                     if row.startsSegment {
-                        SessionMarker(text: InterfaceLanguageSettings.shared.string("继续录制") + (model.segmentStart(item.segment).map { " " + SessionExport.stamp($0, zone: .current) } ?? ""))
+                        SessionMarker(text: interface.string("继续录制") + (model.segmentStart(item.segment).map { " " + SessionExport.stamp($0, zone: .current) } ?? ""))
                     }
-                    if let marker = item.languages.switchMarker { SessionMarker(text: marker) }
+                    if let marker = item.languages.switchMarker { SessionMarker(text: interface.localizeMessage(marker)) }
                     if item.isBreak {
-                        SessionMarker(text: InterfaceLanguageSettings.shared.string(SessionExport.breakMarker))
+                        SessionMarker(text: interface.string(SessionExport.breakMarker))
                     } else {
                         transcriptLine(item)
                     }
@@ -111,12 +112,13 @@ struct TranscriptList: View {
                 else if !item.sourceDone { Text("识别中…").font(.caption2).foregroundStyle(.secondary) }
                 // Refresh the selectable AppKit text when a revision replaces its contents.
                 // The surrounding transcript row retains its ID and scroll position.
+                let speakerPrefix = item.languages.speaker == "unknown" ? interface.string("未识别：") : item.languages.speakerPrefix
                 if !item.text.isEmpty {
-                    Text(item.languages.speakerPrefix + item.text).modifier(DesignType(item.translation.isEmpty ? .translation : .source)).foregroundStyle(item.translation.isEmpty ? DesignTokens.onSurface : DesignTokens.onSurfaceVariant).lineSpacing(7).textSelection(.enabled).id(item.text)
+                    Text(speakerPrefix + item.text).modifier(DesignType(item.translation.isEmpty ? .translation : .source)).foregroundStyle(item.translation.isEmpty ? DesignTokens.onSurface : DesignTokens.onSurfaceVariant).lineSpacing(7).textSelection(.enabled).id(item.text)
                 }
                 let translation = item.translation
                 if !translation.isEmpty {
-                    Text((item.text.isEmpty ? item.languages.speakerPrefix : "") + translation).modifier(DesignType(.translation)).lineSpacing(5).foregroundStyle(DesignTokens.onSurface).textSelection(.enabled).id(translation)
+                    Text((item.text.isEmpty ? speakerPrefix : "") + translation).modifier(DesignType(.translation)).lineSpacing(5).foregroundStyle(DesignTokens.onSurface).textSelection(.enabled).id(translation)
                 } else if item.translating {
                     Text("翻译中…").font(.caption).foregroundStyle(.tertiary)
                 }
