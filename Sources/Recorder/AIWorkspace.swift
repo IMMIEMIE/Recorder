@@ -111,6 +111,7 @@ final class AIWorkspace: ObservableObject {
 
 struct AIWorkspaceView: View {
     @ObservedObject var ai: AIWorkspace
+    @ObservedObject private var interface = InterfaceLanguageSettings.shared
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var profiles: AIProfiles = .shared
     @State private var showSource = false
@@ -173,7 +174,7 @@ struct AIWorkspaceView: View {
             .padding(16)
             .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
 
-            if !ai.error.isEmpty { Text(ai.error).font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
+            if !ai.error.isEmpty { Text(verbatim: interface.localizeMessage(ai.error)).font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     if let profile = profiles.selected { Text("发送当前原文到 \(profile.baseURL)") }

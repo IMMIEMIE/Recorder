@@ -33,6 +33,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import com.localrecorder.live.LiveSessionEvent
 import com.localrecorder.live.LiveServiceProfile
+import com.localrecorder.live.LiveMessage
+import com.localrecorder.sessions.SessionText
 import java.io.File
 import java.time.ZoneId
 import java.util.UUID
@@ -84,6 +86,8 @@ class SessionController(private val context: Context) : SessionPlatform {
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
+
+    private fun localizedContext(): Context = AppLocale.localizedContext(context)
 
     private var config = settings.load()
     private var options = settings.loadOptions()
@@ -144,7 +148,13 @@ class SessionController(private val context: Context) : SessionPlatform {
         engine.clear()
         val record = recorder.begin(base, UUID.randomUUID().toString(), config.language)
         val prefix = base?.takeIf { it.rows.isNotEmpty() }?.let {
-            it.subtitleRows(zone) + SubtitleRow("seg:live", "", true, "", true, SessionExport.continuedMarker(record.segments.last().startedAtMs, zone))
+            val startedAt = record.segments.last().startedAtMs
+            val stamp = SessionText.stamp(startedAt, "yyyy-MM-dd HH:mm", zone)
+            it.subtitleRows(zone) + SubtitleRow(
+                "seg:live", "", true, "", true,
+                SessionExport.continuedMarker(startedAt, zone),
+                markerMessage = LiveMessage.ContinuedMarker(stamp),
+            )
         }.orEmpty()
         _ui.update { it.copy(selectedId = record.id, viewed = null, viewError = "", recordingId = record.id, recordingPrefix = prefix) }
         publishSessions()
@@ -163,7 +173,7 @@ class SessionController(private val context: Context) : SessionPlatform {
         if (id == null || id == _ui.value.recordingId) return
         library.load(id) { record ->
             if (_ui.value.selectedId != id) return@load
-            _ui.update { it.copy(viewed = record, viewError = if (record == null) "无法读取该会话：文件可能已删除、损坏或来自更新的版本" else "") }
+            _ui.update { it.copy(viewed = record, viewError = if (record == null) localizedContext().getString(R.string.session_read_detail_error) else "") }
         }
     }
 
@@ -243,9 +253,10 @@ class SessionController(private val context: Context) : SessionPlatform {
 
     /** Saves settings; a blank key keeps the key already saved for this endpoint. */
     fun saveSettings(draft: LiveTranslateConfig, key: String, draftOptions: AppOptions): Boolean {
+        val localized = localizedContext()
         val active = engine.snapshot.state != SessionState.IDLE
         if (active && (key.isNotBlank() || draft.profile.id != config.profile.id || draft.endpoint != config.endpoint)) {
-            _ui.update { it.copy(settingsMessage = context.getString(R.string.dialogue_service_locked)) }
+            _ui.update { it.copy(settingsMessage = localized.getString(R.string.dialogue_service_locked)) }
             return false
         }
         return try {
@@ -257,16 +268,16 @@ class SessionController(private val context: Context) : SessionPlatform {
             config = saved
             options = draftOptions
             _ui.update {
-                it.copy(config = saved, options = draftOptions, hasKey = secrets.has(saved.keyAccount), settingsMessage = context.getString(R.string.saved), testSucceeded = null)
+                it.copy(config = saved, options = draftOptions, hasKey = secrets.has(saved.keyAccount), settingsMessage = localized.getString(R.string.saved), testSucceeded = null)
             }
             if (active) engine.updatePreferences(saved, draftOptions.autoReconnect)
             if (targetChanged) configureMode()
             true
         } catch (e: LiveTranslateException) {
-            _ui.update { it.copy(settingsMessage = e.message.orEmpty()) }
+            _ui.update { it.copy(settingsMessage = localized.formatLiveMessage(e.liveMessage)) }
             false
         } catch (e: Exception) {
-            _ui.update { it.copy(settingsMessage = "保存失败：${e.javaClass.simpleName}") }
+            _ui.update { it.copy(settingsMessage = localized.getString(R.string.err_save_failed_detail, e.javaClass.simpleName)) }
             false
         }
     }
@@ -280,11 +291,21 @@ class SessionController(private val context: Context) : SessionPlatform {
         try {
             val next = config.copy(catalog = config.catalog.using(profile)).normalized(allowLocalhost)
             val key = secrets.get(next.keyAccount)
-            if (key.isNullOrBlank()) { engine.notice("请先保存「" + profile.name + "」对应的密钥"); return }
+            if (key.isNullOrBlank()) { engine.notice(LiveMessage.ProfileKeyMissing(profile.name)); return }
             config = settings.save(next, allowLocalhost)
             engine.switchProfile(config, key)
             _ui.update { it.copy(config = config, hasKey = true) }
-        } catch (e: LiveTranslateException) { engine.notice(e.message.orEmpty()) }
+        } catch (e: LiveTranslateException) { engine.notice(e.liveMessage) }
+    }
+
+    /** Refreshes localized foreground notifications and clears stale transient messages after an interface language switch. */
+    fun onInterfaceLanguageChanged() {
+        _ui.update { it.copy(settingsMessage = "", testSucceeded = null) }
+        RecordingService.refreshChannel(context)
+        if (engine.snapshot.state != SessionState.IDLE) {
+            notified = ""
+            pushNotification()
+        }
     }
 
     /** Keys are stored under the normalized address. */
@@ -305,10 +326,11 @@ class SessionController(private val context: Context) : SessionPlatform {
     /** Establishes a session without capturing or sending audio. */
     fun testConnection(draft: LiveTranslateConfig, key: String) {
         if (_ui.value.testing || engine.snapshot.state != SessionState.IDLE) return
+        val localized = localizedContext()
         val draftConfig = try {
             draft.normalized(allowLocalhost)
         } catch (e: LiveTranslateException) {
-            _ui.update { it.copy(testSucceeded = false, settingsMessage = e.message.orEmpty()) }
+            _ui.update { it.copy(testSucceeded = false, settingsMessage = localized.formatLiveMessage(e.liveMessage)) }
             return
         }
         val secret = key.trim().ifEmpty { secrets.get(draftConfig.keyAccount).orEmpty() }
@@ -319,17 +341,19 @@ class SessionController(private val context: Context) : SessionPlatform {
             override fun onEnd(error: String?, recoverable: Boolean, cause: EndCause) {
                 if (tester !== probe) return
                 tester = null
-                _ui.update { it.copy(testing = false, testSucceeded = error == null, settingsMessage = error ?: context.getString(R.string.test_succeeded)) }
+                val msg = localizedContext()
+                val formatted = cause.errorMessage?.let { msg.formatLiveMessage(it) } ?: error ?: msg.getString(R.string.test_succeeded)
+                _ui.update { it.copy(testing = false, testSucceeded = error == null, settingsMessage = formatted) }
             }
         })
         try {
             probe.connect(draftConfig, secret)
         } catch (e: LiveTranslateException) {
-            _ui.update { it.copy(testSucceeded = false, settingsMessage = e.message.orEmpty()) }
+            _ui.update { it.copy(testSucceeded = false, settingsMessage = localized.formatLiveMessage(e.liveMessage)) }
             return
         }
         tester = probe
-        _ui.update { it.copy(testing = true, testSucceeded = null, settingsMessage = context.getString(R.string.test_in_progress)) }
+        _ui.update { it.copy(testing = true, testSucceeded = null, settingsMessage = localized.getString(R.string.test_in_progress)) }
     }
 
     private fun recordingEnded(id: String, record: SessionRecord?) {
@@ -372,11 +396,12 @@ class SessionController(private val context: Context) : SessionPlatform {
     private fun pushNotification() {
         val snapshot = engine.snapshot
         if (snapshot.state == SessionState.IDLE) return
-        val title = context.getString(if (snapshot.state == SessionState.RECONNECTING) R.string.live_notification_reconnecting else R.string.live_notification_recording)
+        val localized = localizedContext()
+        val title = localized.getString(if (snapshot.state == SessionState.RECONNECTING) R.string.live_notification_reconnecting else R.string.live_notification_recording)
         val latest = snapshot.rows.asReversed().asSequence()
             .takeWhile { it.key != firstRowKey }
             .firstOrNull { it.translation.isNotEmpty() }
-        val text = latest?.translation ?: context.getString(R.string.live_notification_audio)
+        val text = latest?.translation ?: localized.getString(R.string.live_notification_audio)
         val content = "$title\n$text"
         if (content == notified) return
         if (RecordingService.update(context, title, text)) {
@@ -401,15 +426,20 @@ class SessionController(private val context: Context) : SessionPlatform {
         configuration.profile.transport(listener, mainExecutor, allowLocalhost)
 
     override fun startCapture(onChunk: (ByteArray) -> Unit, onError: (String) -> Unit) {
-        val notices = mutableListOf<String>()
+        val notices = mutableListOf<LiveMessage>()
         var headset: AudioDeviceInfo? = null
         if (options.bluetoothMicrophone) {
             headset = routing.startBluetoothMicrophone()
-            if (headset == null) notices += "未找到可用的蓝牙耳机麦克风，已改用手机麦克风"
+            if (headset == null) notices += LiveMessage.BluetoothFallback
         }
         // Translated speech from the loudspeaker would be captured and translated again.
         val loudspeaker = config.audioOutput && headset == null && !routing.hasHeadphones()
-        val source = MicrophoneSource(onChunk, onError, communication = loudspeaker || headset != null, preferredDevice = headset)
+        val source = MicrophoneSource(
+            onChunk,
+            onError = { msg -> onError(localizedContext().formatLiveMessage(msg)) },
+            communication = loudspeaker || headset != null,
+            preferredDevice = headset,
+        )
         try {
             source.start()
         } catch (e: Exception) {
@@ -418,11 +448,12 @@ class SessionController(private val context: Context) : SessionPlatform {
         }
         microphone = source
         if (loudspeaker) {
-            notices += if (source.echoCancelled) "未检测到耳机：已启用回声消除，外放的译音仍可能被再次收录，建议佩戴耳机"
-            else "未检测到耳机，本机也不支持回声消除：外放的译音可能被再次收录，建议佩戴耳机"
+            notices += if (source.echoCancelled) LiveMessage.LoudspeakerEchoCancelled
+            else LiveMessage.LoudspeakerNoEchoCancel
         }
         audioManager.registerAudioRecordingCallback(recordingCallback, main)
-        if (notices.isNotEmpty()) engine.notice(notices.joinToString("\n"))
+        if (notices.size == 1) engine.notice(notices.single())
+        else if (notices.size > 1) engine.notice(LiveMessage.Composite(notices, "\n"))
     }
 
     override fun stopCapture() {
@@ -438,7 +469,7 @@ class SessionController(private val context: Context) : SessionPlatform {
         created = SpeechPlayer(
             audioManager, main, voiceRoute = routing.bluetoothActive,
             onFocusLost = {
-                if (player === created) engine.interruptPlayback("通话或其他应用占用了音频输出，已停止译音；字幕继续更新")
+                if (player === created) engine.interruptPlayback(LiveMessage.AudioFocusLost)
             },
             onStopped = {
                 if (player === created) {
@@ -483,7 +514,7 @@ class SessionController(private val context: Context) : SessionPlatform {
 
     // A call or another recorder with priority silences this capture (reported on Android 10+).
     private val silenceCheck = Runnable {
-        engine.captureInterrupted("麦克风被通话或其他应用占用，已停止录音；已有文字已保留")
+        engine.captureInterrupted(LiveMessage.MicOccupied)
     }
 
     private val recordingCallback = object : AudioManager.AudioRecordingCallback() {

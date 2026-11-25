@@ -1,0 +1,4 @@
+"CFBundleDisplayName" = "Shengjian";
+"CFBundleName" = "Shengjian";
+"NSScreenCaptureUsageDescription" = "Shengjian capture l’audio système uniquement lorsque vous sélectionnez Audio système et démarrez la transcription. Aucune image d’écran n’est enregistrée.";
+"NSMicrophoneUsageDescription" = "Shengjian utilise le micro uniquement pendant la transcription. La reconnaissance locale et Hy-SimulMT gardent l’audio sur votre Mac ; les services API et LiveTranslate cloud l’envoient au service choisi. Aucun enregistrement n’est sauvegardé.";

@@ -6,6 +6,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
+import com.localrecorder.live.LiveMessage
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.live.LiveTranslateException
 
@@ -16,7 +17,7 @@ import com.localrecorder.live.LiveTranslateException
  */
 class MicrophoneSource(
     private val onChunk: (ByteArray) -> Unit,
-    private val onError: (String) -> Unit,
+    private val onError: (LiveMessage) -> Unit,
     private val communication: Boolean = false,
     private val preferredDevice: AudioDeviceInfo? = null,
 ) {
@@ -35,14 +36,14 @@ class MicrophoneSource(
     fun start() {
         val rate = LiveTranslateConfig.INPUT_SAMPLE_RATE
         val minimum = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (minimum <= 0) throw LiveTranslateException("设备不支持 16 kHz 单声道录音")
+        if (minimum <= 0) throw LiveTranslateException(LiveMessage.MicUnsupported)
         val recorder = AudioRecord(
             if (communication) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.VOICE_RECOGNITION, rate,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minimum, CHUNK_BYTES * 4),
         )
         if (recorder.state != AudioRecord.STATE_INITIALIZED) {
             recorder.release()
-            throw LiveTranslateException("无法打开麦克风，请检查录音权限或是否被其他应用占用")
+            throw LiveTranslateException(LiveMessage.MicOpenPermissionOrBusy)
         }
         preferredDevice?.let(recorder::setPreferredDevice)
         if (communication) echoCanceler = enableEchoCanceler(recorder.audioSessionId)
@@ -50,7 +51,7 @@ class MicrophoneSource(
         if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
             releaseEffects()
             recorder.release()
-            throw LiveTranslateException("麦克风启动失败，可能正被其他应用占用")
+            throw LiveTranslateException(LiveMessage.MicStartFailed)
         }
         sessionId = recorder.audioSessionId
         record = recorder
@@ -67,7 +68,7 @@ class MicrophoneSource(
                 if (count < 0) {
                     if (running) {
                         running = false
-                        onError("麦克风读取失败（$count），已停止录音；已有文字已保留")
+                        onError(LiveMessage.MicReadFailed(count))
                     }
                     return
                 }

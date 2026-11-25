@@ -3,6 +3,8 @@ package com.localrecorder.shengjian
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import com.localrecorder.live.LiveMessage
+import com.localrecorder.live.LiveTranslateException
 import java.security.KeyStore
 import java.util.Base64
 import javax.crypto.Cipher
@@ -35,8 +37,8 @@ class SecretStore(context: Context) {
         val iv = cipher.iv
         check(iv.size == IV_SIZE)
         val sealed = iv + cipher.doFinal(value.toByteArray(Charsets.UTF_8))
-        check(prefs.edit().putString(account, Base64.getEncoder().encodeToString(sealed)).commit()) {
-            "专用 API Key 未能写入本机"
+        if (!prefs.edit().putString(account, Base64.getEncoder().encodeToString(sealed)).commit()) {
+            throw LiveTranslateException(LiveMessage.SecretSaveFailed)
         }
     }
 

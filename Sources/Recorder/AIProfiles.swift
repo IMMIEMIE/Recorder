@@ -106,6 +106,7 @@ final class AIProfiles: ObservableObject {
 
 struct AISettingsView: View {
     @ObservedObject private var profiles = AIProfiles.shared
+    @ObservedObject private var interface = InterfaceLanguageSettings.shared
     @State private var editingID = ""
     @State private var base = "https://api.deepseek.com"
     @State private var model = "deepseek-v4-flash"
@@ -140,7 +141,7 @@ struct AISettingsView: View {
             LabeledContent("模型 ID") { TextField("模型 ID", text: $model) }
             LabeledContent("API Key") { SecureField("留空保留该 Base URL 已保存的密钥", text: $key) }
             Text("地址、模型和当前选择会持久保存，重启后自动恢复。密钥存于系统钥匙串；输入框留空不会清除已保存密钥。").font(.caption).foregroundStyle(.secondary)
-            Text(LocalizedStringKey(keyStatus)).font(.caption).foregroundStyle(.secondary)
+            Text(verbatim: interface.localizeMessage(keyStatus)).font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("保存并使用") {
                     do { let saved = try profiles.save(base: base, model: model, key: key); edit(saved); message = "已保存并设为当前配置" }
@@ -152,8 +153,8 @@ struct AISettingsView: View {
                     catch { message = error.localizedDescription }
                 }.disabled(editingID.isEmpty)
             }
-            if !message.isEmpty { Text(LocalizedStringKey(message)).font(.caption).textSelection(.enabled) }
-            if !profiles.message.isEmpty && message.isEmpty { Text(LocalizedStringKey(profiles.message)).font(.caption).foregroundStyle(.secondary) }
+            if !message.isEmpty { Text(verbatim: interface.localizeMessage(message)).font(.caption).textSelection(.enabled) }
+            if !profiles.message.isEmpty && message.isEmpty { Text(verbatim: interface.localizeMessage(profiles.message)).font(.caption).foregroundStyle(.secondary) }
             Spacer(minLength: 0)
         }.textFieldStyle(.roundedBorder).padding(20)
             .onAppear { if let selected = profiles.selected { edit(selected) } }

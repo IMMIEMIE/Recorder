@@ -1,0 +1,4 @@
+"CFBundleDisplayName" = "聲箋";
+"CFBundleName" = "聲箋";
+"NSScreenCaptureUsageDescription" = "聲箋僅在你選擇系統聲音並開始轉寫時擷取系統音訊，不儲存螢幕畫面。";
+"NSMicrophoneUsageDescription" = "聲箋僅在你主動開始轉寫時使用麥克風；本機辨識與本機 Hy-SimulMT 不上傳音訊，選擇 API 辨識或雲端 LiveTranslate 時會將音訊傳送至所選服務。應用不儲存錄音。";

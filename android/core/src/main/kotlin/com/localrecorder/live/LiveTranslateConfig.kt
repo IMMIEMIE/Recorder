@@ -3,7 +3,9 @@ package com.localrecorder.live
 import org.json.JSONObject
 import java.net.URI
 
-class LiveTranslateException(message: String) : Exception(message)
+class LiveTranslateException(val liveMessage: LiveMessage) : Exception(liveMessage.defaultText) {
+    constructor(message: String) : this(LiveMessage.Raw(message))
+}
 
 enum class PlaybackTiming(val id: String, val title: String) {
     STREAMING("streaming", "边说边播放"),
@@ -65,7 +67,7 @@ data class LiveTranslateConfig(
     /** Validated connection URL with the selected model query. */
     fun url(allowLocalhost: Boolean = false): String {
         profile.validate()
-        val invalid = LiveTranslateException("请填写有效的 WSS 实时服务地址，并选择支持的目标语言")
+        val invalid = LiveTranslateException(LiveMessage.InvalidEndpointOrLanguage)
         val uri = try {
             URI(endpoint.trim())
         } catch (_: Exception) {

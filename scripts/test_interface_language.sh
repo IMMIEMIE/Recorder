@@ -1,8 +1,10 @@
 #!/bin/bash
-# Exercise the production SwiftUI lookup path with both lproj directories in a main app bundle.
+# Exercise the production SwiftUI lookup path with all 9 lproj directories in a main app bundle.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+python3 scripts/check_localization.py
 app="$PWD/.build/feature-tests/InterfaceLanguageTests.app/Contents"
+rm -rf "$app/Resources"
 mkdir -p "$app/MacOS" "$app/Resources"
 cp -R assets/localization/*.lproj "$app/Resources/"
 cat > "$app/Info.plist" <<'PLIST'

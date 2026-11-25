@@ -15,7 +15,7 @@ enum TextExport {
     /// Writes `text` as UTF-8 (no BOM) to a file the user picks.
     static func save(_ text: String, fileName: String, fileExtension: String, title: String, onError: @escaping (String) -> Void) {
         let panel = NSSavePanel()
-        panel.title = title
+        panel.title = InterfaceLanguageSettings.shared.string(title)
         panel.allowedContentTypes = [UTType(filenameExtension: fileExtension, conformingTo: .plainText) ?? .plainText]
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false

@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
@@ -53,6 +54,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.localrecorder.live.InterfaceLanguage
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.live.SessionSnapshot
 import com.localrecorder.live.SessionState
@@ -157,8 +159,10 @@ internal fun SessionHeader(
 internal fun StatusPill(snapshot: SessionSnapshot, hasSession: Boolean, modifier: Modifier = Modifier) {
     val status = LocalStatusColors.current
     val colors = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val statusText = remember(snapshot.status, snapshot.statusMessage, context) { context.formatStatus(snapshot) }
     val key = when {
-        snapshot.error.isNotBlank() -> 0
+        snapshot.error.isNotBlank() || snapshot.errorMessage != null -> 0
         snapshot.slowNetwork -> 1
         snapshot.state == SessionState.RECORDING -> 2
         snapshot.state == SessionState.CONNECTING || snapshot.state == SessionState.RECONNECTING -> 3
@@ -179,7 +183,7 @@ internal fun StatusPill(snapshot: SessionSnapshot, hasSession: Boolean, modifier
             0 -> stringResource(R.string.error_occurred) to colors.error
             1 -> stringResource(R.string.slow_status) to status.slow
             2 -> stringResource(R.string.recording) to status.recording
-            3 -> snapshot.status.ifBlank { stringResource(R.string.connecting) } to status.connecting
+            3 -> statusText.ifBlank { stringResource(R.string.connecting) } to status.connecting
             4 -> stringResource(R.string.finishing) to status.connecting
             5 -> stringResource(R.string.completed) to status.complete
             else -> stringResource(R.string.ready) to status.complete
@@ -571,7 +575,12 @@ internal fun BottomActionDock(
             ) {
                 Glyph(if (active) R.drawable.ic_stop else R.drawable.ic_mic, Modifier.size(20.dp))
                 Spacer(Modifier.width(Design.spaceSm))
-                Text(primaryLabel, style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold))
+                Text(
+                    primaryLabel,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -756,6 +765,65 @@ internal fun Segments(title: String, choices: List<String>, selected: Int, onSel
                     Text(choice, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun InterfaceLanguagePickerSheet(
+    selected: InterfaceLanguage,
+    onSelect: (InterfaceLanguage) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = colors.surfaceContainerLow) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = Design.spaceMd, vertical = Design.spaceSm),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                stringResource(R.string.interface_language),
+                style = Design.title,
+                modifier = Modifier.padding(horizontal = Design.spaceXs, vertical = 4.dp),
+            )
+            val choices = remember { listOf(InterfaceLanguage.SYSTEM) + InterfaceLanguage.SUPPORTED }
+            choices.forEach { option ->
+                val isSelected = option == selected
+                val label = option.nativeName ?: stringResource(R.string.follow_system)
+                Surface(
+                    onClick = {
+                        onSelect(option)
+                        onDismiss()
+                    },
+                    shape = RoundedCornerShape(Design.radiusButton),
+                    color = if (isSelected) colors.primaryContainer else colors.surfaceContainerLowest,
+                    border = BorderStroke(if (isSelected) 1.5.dp else 1.dp, if (isSelected) colors.primary else colors.outlineVariant),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal),
+                            color = if (isSelected) colors.onPrimaryContainer else colors.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (isSelected) {
+                            Glyph(R.drawable.ic_check_circle, Modifier.size(18.dp), tint = colors.primary)
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(Design.spaceMd))
         }
     }
 }

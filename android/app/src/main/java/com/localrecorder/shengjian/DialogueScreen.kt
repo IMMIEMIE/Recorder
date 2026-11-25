@@ -322,7 +322,7 @@ private fun DialoguePanel(
         Row(
             Modifier.fillMaxWidth().padding(bottom = Design.spaceSm),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             LanguageChoice(
                 label = stringResource(R.string.side_label, side, name),
@@ -334,7 +334,14 @@ private fun DialoguePanel(
                 leadingDot = dotColor,
                 containerColor = pillColor,
             )
-            Text(roleTag, style = Design.caption, color = colors.onSurfaceVariant)
+            Spacer(Modifier.weight(1f))
+            Text(
+                roleTag,
+                style = Design.caption,
+                color = colors.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
 
         if (visible.isEmpty()) {

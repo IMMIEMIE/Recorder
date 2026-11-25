@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import CoreText
 
 /// Subtitle style lives in UserDefaults: the SwiftUI view reads it through @AppStorage, the AppKit context menu writes it.
@@ -60,6 +61,7 @@ final class SubtitleWindowController: NSWindowController, NSWindowDelegate {
     private var contentSize = SubtitleWindowController.initialSize
     private var placing = false
     private var hintTimer: Timer?
+    private var languageObservation: AnyCancellable?
 
     init(model: AppModel, onClose: @escaping () -> Void) {
         self.onClose = onClose
@@ -91,6 +93,11 @@ final class SubtitleWindowController: NSWindowController, NSWindowDelegate {
         panel.onKeyChange = { [weak self] key in
             if key { self?.showHint(for: 3) } else { self?.hideHint() }
         }
+        languageObservation = InterfaceLanguageSettings.shared.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.window?.title = InterfaceLanguageSettings.shared.string("声笺字幕")
+            }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     /// Becoming key shows the keyboard hint, so the arrow keys work right after entering subtitle mode.

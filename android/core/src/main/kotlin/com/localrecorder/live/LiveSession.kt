@@ -19,6 +19,7 @@ data class SubtitleRow(
     val languageChange: Boolean = false,
     /** Display name attached to the first text row after a confirmed switch, as required by the export format. */
     val languageSwitch: String? = null,
+    val markerMessage: LiveMessage? = null,
 )
 
 data class SessionSnapshot(
@@ -33,6 +34,9 @@ data class SessionSnapshot(
     val slowService: Boolean = false,
     /** Older rows were dropped to keep a long session bounded. */
     val trimmed: Boolean = false,
+    val statusMessage: LiveMessage? = null,
+    val errorMessage: LiveMessage? = null,
+    val noticeMessage: LiveMessage? = null,
 )
 
 fun interface Cancellable {
@@ -174,10 +178,10 @@ class LiveSession(
     private var speechOff = false
 
     private var attempts = 0
-    private var lastError = ""
+    private var lastError: LiveMessage? = null
 
     /** Short cause of the last disconnect for the reconnecting status (category + detail, never the key). */
-    private var lastCause = ""
+    private var lastCause: LiveMessage? = null
     private var online = true
     private var network: Long? = null
     private var retry: Cancellable? = null
@@ -249,28 +253,39 @@ class LiveSession(
         this.recoverInitial = recoverInitial
         attempts = 0
         limits = 0
-        lastCause = ""
+        lastCause = null
         quiet = false
         online = true
         network = null
         // A new session right after a rate limit or a burst of connections would only be refused again.
         val wait = earliestOpen() - platform.elapsedMs()
         if (wait > 0 && !plannedHandoff && !recoverInitial) {
-            update { it.copy(error = "连接过于频繁或服务限流，请 ${seconds(wait)} 秒后再试") }
+            val err = LiveMessage.CooldownError(seconds(wait))
+            update { it.copy(error = err.defaultText, errorMessage = err) }
             return
         }
         stopPlayback()
         speechOff = false
         if (wait <= 0) open()?.let { failure ->
-            update { it.copy(error = failure) }
+            update { it.copy(error = failure.defaultText, errorMessage = failure) }
             return
         }
         // Speech before the connection is ready is kept only for its last second, so do not invite talking yet.
-        update { it.copy(state = SessionState.CONNECTING, status = "正在连接…", error = "", notice = "") }
+        update {
+            it.copy(
+                state = SessionState.CONNECTING,
+                status = LiveMessage.Connecting.defaultText,
+                statusMessage = LiveMessage.Connecting,
+                error = "",
+                errorMessage = null,
+                notice = "",
+                noticeMessage = null,
+            )
+        }
         try {
             platform.sessionActive(true)
         } catch (_: Exception) {
-            end("无法启动前台录音服务，请在应用位于前台时开始")
+            end(LiveMessage.ForegroundServiceFailed)
             return
         }
         // Capture starts now, not once the session is configured: people speak as soon as they press start,
@@ -306,7 +321,13 @@ class LiveSession(
         pauseForHandoff()
         detach()
         quiet = true
-        update { it.copy(state = SessionState.RECONNECTING, status = "正在应用转译设置…") }
+        update {
+            it.copy(
+                state = SessionState.RECONNECTING,
+                status = LiveMessage.ApplyingSettings.defaultText,
+                statusMessage = LiveMessage.ApplyingSettings,
+            )
+        }
         attempt(immediately = true, counted = false)
     }
 
@@ -375,7 +396,13 @@ class LiveSession(
         detach()
         config = config.copy(language = language)
         quiet = true
-        update { it.copy(state = SessionState.RECONNECTING, status = "正在切换译文语言…") }
+        update {
+            it.copy(
+                state = SessionState.RECONNECTING,
+                status = LiveMessage.SwitchingLanguage.defaultText,
+                statusMessage = LiveMessage.SwitchingLanguage,
+            )
+        }
         attempt(immediately = true, counted = false)
     }
 
@@ -387,9 +414,11 @@ class LiveSession(
         val name = config.languageName
         firstSwitchRow = name
         switchCandidates.clear()
+        val markerMsg = LiveMessage.LanguageSwitchedMarker(name)
         markers += events.order.lastOrNull() to SubtitleRow(
             "language:${markerCount++}", "", true, "", true,
-            marker = "译文语言已切换为 $name", targetLanguage = config.language, languageChange = true,
+            marker = markerMsg.defaultText, targetLanguage = config.language, languageChange = true,
+            markerMessage = markerMsg,
         )
         if (desiredLanguage == config.language) desiredLanguage = null
         debounceComplete = false
@@ -410,9 +439,11 @@ class LiveSession(
         config = next
         key = credential
         quiet = false
-        lastCause = "切换到「" + next.profile.name + "」"
-        history += SubtitleRow("profile:$epoch", "", true, "", true, lastCause)
-        update { it.copy(state = SessionState.RECONNECTING, slowNetwork = false, slowService = false, notice = "") }
+        val switchCause = LiveMessage.CauseProfileSwitch(next.profile.name)
+        val switchMarker = LiveMessage.ProfileSwitchedMarker(next.profile.name)
+        lastCause = switchCause
+        history += SubtitleRow("profile:$epoch", "", true, "", true, switchMarker.defaultText, markerMessage = switchMarker)
+        update { it.copy(state = SessionState.RECONNECTING, slowNetwork = false, slowService = false, notice = "", noticeMessage = null) }
         publish()
         attempt(immediately = true, counted = false)
         return true
@@ -423,7 +454,7 @@ class LiveSession(
         val waiting = synchronized(audioLock) { plannedAudio && gap.size > 0 }
         if (waiting && (!online || transport == null && earliestOpen() > platform.elapsedMs())) {
             // An explicit stop must not keep the microphone/service alive through a long quota or offline wait.
-            end("连接未就绪，已保留收到的文字；切换期间的尾句可能不完整")
+            end(LiveMessage.HandoffStoppedEarly)
             return
         }
         if (waiting && snapshot.state in setOf(SessionState.CONNECTING, SessionState.RECONNECTING, SessionState.RECORDING)) {
@@ -432,7 +463,7 @@ class LiveSession(
                 capturing = false
             }
             finishAfterHandoff = true
-            update { it.copy(status = "正在等待尾句结果…") }
+            update { it.copy(status = LiveMessage.WaitingFinalResult.defaultText, statusMessage = LiveMessage.WaitingFinalResult) }
             return
         }
         languageTimer?.cancel()
@@ -440,13 +471,20 @@ class LiveSession(
         awaitingLanguage = null
         drainingOldLanguage = false
         when (snapshot.state) {
-            SessionState.CONNECTING, SessionState.RECONNECTING -> end(null)
+            SessionState.CONNECTING, SessionState.RECONNECTING -> end(null as LiveMessage?)
             SessionState.RECORDING -> {
                 // Joins the capture thread, so every chunk is queued before session.finish.
                 stopCapture()
                 stable?.cancel()
                 transport?.finish()
-                update { it.copy(state = SessionState.FINISHING, status = "正在等待尾句结果…", slowNetwork = false) }
+                update {
+                    it.copy(
+                        state = SessionState.FINISHING,
+                        status = LiveMessage.WaitingFinalResult.defaultText,
+                        statusMessage = LiveMessage.WaitingFinalResult,
+                        slowNetwork = false,
+                    )
+                }
             }
             else -> Unit
         }
@@ -475,20 +513,26 @@ class LiveSession(
     }
 
     /** Another app took the audio output. */
-    fun interruptPlayback(message: String) {
+    fun interruptPlayback(message: LiveMessage) {
         if (speech == null) return
         stopPlayback()
-        update { it.copy(notice = message) }
+        update { it.copy(notice = message.defaultText, noticeMessage = message) }
     }
 
-    fun notice(message: String) = update { it.copy(notice = message) }
+    fun interruptPlayback(message: String) = interruptPlayback(LiveMessage.Raw(message))
 
-    fun dismissMessages() = update { it.copy(error = "", notice = "") }
+    fun notice(message: LiveMessage) = update { it.copy(notice = message.defaultText, noticeMessage = message) }
+
+    fun notice(message: String) = notice(LiveMessage.Raw(message))
+
+    fun dismissMessages() = update { it.copy(error = "", errorMessage = null, notice = "", noticeMessage = null) }
 
     /** The microphone was taken away (a call, another recorder) or failed. */
-    fun captureInterrupted(message: String) {
+    fun captureInterrupted(message: LiveMessage) {
         if (capturing) end(message)
     }
+
+    fun captureInterrupted(message: String) = captureInterrupted(LiveMessage.Raw(message))
 
     /** The default network is up; [id] changes when the device moves between Wi‑Fi and mobile data. */
     fun networkAvailable(id: Long) {
@@ -500,7 +544,7 @@ class LiveSession(
         giveUp = null
         when (snapshot.state) {
             // The old socket is bound to the old network; waiting for it to time out loses speech.
-            SessionState.RECORDING -> if (switched && autoReconnect) interrupt("网络已切换")
+            SessionState.RECORDING -> if (switched && autoReconnect) interrupt(LiveMessage.CauseNetworkSwitched)
             SessionState.RECONNECTING -> if (switched || wasOffline) {
                 dropTransport()
                 attempts = 0
@@ -514,7 +558,7 @@ class LiveSession(
     fun networkLost() {
         online = false
         when (snapshot.state) {
-            SessionState.RECORDING -> if (autoReconnect) interrupt("网络已断开")
+            SessionState.RECORDING -> if (autoReconnect) interrupt(LiveMessage.CauseNetworkLost)
             SessionState.RECONNECTING -> {
                 dropTransport()
                 attempt()
@@ -524,7 +568,7 @@ class LiveSession(
     }
 
     /** Opens a new connection for the current session; returns an error for an invalid configuration. */
-    private fun open(): String? {
+    private fun open(): LiveMessage? {
         uplinkSlow = false
         serverSlow = false
         progressOffset = -1
@@ -544,7 +588,7 @@ class LiveSession(
             next = platform.transport(config, Listener(token))
             next.connect(config, key)
         } catch (e: LiveTranslateException) {
-            return e.message.orEmpty()
+            return e.liveMessage
         }
         transport = next
         playback = if (config.audioOutput && !speechOff) LiveTranslatePlaybackQueue(config.playbackTiming) else null
@@ -578,7 +622,10 @@ class LiveSession(
             config = config.copy(language = language)
             changedLanguage()
             transport?.let(::attach)
-            if (snapshot.state == SessionState.RECORDING) update { it.copy(status = recordingStatus()) }
+            if (snapshot.state == SessionState.RECORDING) {
+                val statusMsg = recordingStatusMessage()
+                update { it.copy(status = statusMsg.defaultText, statusMessage = statusMsg) }
+            }
             applySettingsHandoff()
         }
 
@@ -609,7 +656,7 @@ class LiveSession(
                 { message -> platform.post { if (generation == capture) captureInterrupted(message) } },
             )
         } catch (e: Exception) {
-            end((e as? LiveTranslateException)?.message ?: "无法打开麦克风")
+            end((e as? LiveTranslateException)?.liveMessage ?: LiveMessage.MicOpenFailed)
             return
         }
         capturing = true
@@ -704,12 +751,13 @@ class LiveSession(
 
     private fun ready() {
         val current = transport ?: return
+        val statusMsg = recordingStatusMessage()
         when (snapshot.state) {
             SessionState.CONNECTING -> {
                 attach(current)
                 // After capture: the platform has settled its audio routing (e.g. a Bluetooth headset) by now.
                 if (config.audioOutput) startSpeech()
-                update { it.copy(state = SessionState.RECORDING, status = recordingStatus()) }
+                update { it.copy(state = SessionState.RECORDING, status = statusMsg.defaultText, statusMessage = statusMsg) }
             }
             SessionState.RECONNECTING -> {
                 attach(current)
@@ -722,8 +770,11 @@ class LiveSession(
                 quiet = false
                 update {
                     it.copy(
-                        state = SessionState.RECORDING, status = recordingStatus(),
-                        notice = if (renewed) it.notice else "已重新连接；中断期间的内容可能有缺失",
+                        state = SessionState.RECORDING,
+                        status = statusMsg.defaultText,
+                        statusMessage = statusMsg,
+                        notice = if (renewed) it.notice else LiveMessage.ReconnectedNotice.defaultText,
+                        noticeMessage = if (renewed) it.noticeMessage else LiveMessage.ReconnectedNotice,
                     )
                 }
             }
@@ -735,7 +786,7 @@ class LiveSession(
         if (finishAfterHandoff && !plannedAudio) stop()
     }
 
-    private fun recordingStatus() = "正在转写 → ${config.languageName}"
+    private fun recordingStatusMessage() = LiveMessage.RecordingTo(config.languageName)
 
     /** Capture thread. */
     private fun chunk(generation: Int, pcm: ByteArray) {
@@ -833,7 +884,11 @@ class LiveSession(
     private fun resumed(generation: Int, target: LiveTransport, dropped: Long) {
         if (!current(generation, target)) return
         val seconds = ((dropped + 500L * BYTES_PER_MS) / (1000L * BYTES_PER_MS)).toInt().coerceAtLeast(1)
-        markers += events.order.lastOrNull() to SubtitleRow("congestion:${markerCount++}", "", true, "", true, congestionMarker(seconds))
+        val markerMsg = LiveMessage.CongestionMarker(seconds)
+        markers += events.order.lastOrNull() to SubtitleRow(
+            "congestion:${markerCount++}", "", true, "", true,
+            marker = markerMsg.defaultText, markerMessage = markerMsg,
+        )
         update { it.copy(slowNetwork = false) }
         publish()
     }
@@ -842,9 +897,9 @@ class LiveSession(
     private fun stalled(generation: Int, target: LiveTransport) {
         if (!current(generation, target)) return
         if (autoReconnect) {
-            interrupt("网络发送长时间停滞", "上行发送停滞超过 ${STALL_MS / 1000} 秒")
+            interrupt(LiveMessage.UploadStalledStopped, LiveMessage.CauseUploadStalled(STALL_MS / 1000))
         } else {
-            end("网络发送长时间停滞，已停止录音；已有文字已保留")
+            end(LiveMessage.UploadStalledStopped)
         }
     }
 
@@ -891,12 +946,12 @@ class LiveSession(
             try {
                 for (pcm in queue.consume(event, events)) {
                     if (speech?.append(pcm) == false) {
-                        interruptPlayback("译音播放积压超过 30 秒，已停止播放；字幕继续更新")
+                        interruptPlayback(LiveMessage.AudioBacklogStopped)
                         break
                     }
                 }
             } catch (e: LiveTranslateException) {
-                interruptPlayback(e.message.orEmpty())
+                interruptPlayback(e.liveMessage)
             }
         }
         // A long connection keeps only its newest rows addressable by ID.
@@ -946,24 +1001,32 @@ class LiveSession(
         }
         drainingOldLanguage = false
         val again = recoverable && (!limited || limits <= RATE_LIMIT_DELAYS_MS.size)
-        val failure = if (limited && !again) "LiveTranslate 持续限流，已停止录音；已有文字已保留" else error
+        val errorMsg = cause.errorMessage ?: error?.takeIf { it.isNotEmpty() }?.let(LiveMessage::Raw)
+        val causeMsg = cause.detailMessage ?: cause.detail.takeIf { it.isNotEmpty() }?.let(LiveMessage::Raw)
+        val failure = if (limited && !again) LiveMessage.ContinuousRateLimitStopped else errorMsg
         when (snapshot.state) {
             SessionState.CONNECTING -> if (recoverInitial && autoReconnect && again) {
                 dropTransport()
                 quiet = true
-                lastCause = cause.detail
-                lastError = error.orEmpty()
-                update { it.copy(state = SessionState.RECONNECTING, status = "正在重新连接…") }
+                lastCause = causeMsg
+                lastError = errorMsg
+                update {
+                    it.copy(
+                        state = SessionState.RECONNECTING,
+                        status = LiveMessage.ReconnectingSimple.defaultText,
+                        statusMessage = LiveMessage.ReconnectingSimple,
+                    )
+                }
                 attempt(counted = !limited)
             } else end(failure)
             SessionState.RECORDING -> when {
                 !again || !autoReconnect -> end(failure)
-                cause.kind == EndCause.Kind.NO_RESULT -> renew(cause.detail)
-                else -> interrupt(error.orEmpty(), cause.detail, counted = !limited)
+                cause.kind == EndCause.Kind.NO_RESULT -> renew(causeMsg)
+                else -> interrupt(errorMsg, causeMsg, counted = !limited)
             }
             SessionState.RECONNECTING -> if (again) {
-                lastError = error.orEmpty()
-                lastCause = cause.detail
+                lastError = errorMsg
+                lastCause = causeMsg
                 dropTransport()
                 if (quiet) {
                     // The quiet replacement failed too: from here on it is an ordinary break.
@@ -981,7 +1044,7 @@ class LiveSession(
 
     private fun markBreak() {
         if (history.lastOrNull()?.marker != BREAK_MARKER) {
-            history.add(SubtitleRow("break:$epoch", "", true, "", true, BREAK_MARKER))
+            history.add(SubtitleRow("break:$epoch", "", true, "", true, BREAK_MARKER, markerMessage = LiveMessage.BreakMarker))
         }
     }
 
@@ -1009,13 +1072,13 @@ class LiveSession(
     }
 
     /** The connection of a running session is gone: keep capturing and replace it. */
-    private fun interrupt(reason: String, cause: String = reason, counted: Boolean = true) {
+    private fun interrupt(reason: LiveMessage?, cause: LiveMessage? = reason, counted: Boolean = true) {
         detach()
         markBreak()
         quiet = false
         lastError = reason
         lastCause = cause
-        update { it.copy(state = SessionState.RECONNECTING, slowNetwork = false, slowService = false, notice = "") }
+        update { it.copy(state = SessionState.RECONNECTING, slowNetwork = false, slowService = false, notice = "", noticeMessage = null) }
         publish()
         attempt(counted = counted)
     }
@@ -1024,7 +1087,7 @@ class LiveSession(
      * The service closed a connection that heard nothing it could transcribe for 60 s (a long silence):
      * replace it right away without a marker; this is not a failed attempt.
      */
-    private fun renew(cause: String) {
+    private fun renew(cause: LiveMessage?) {
         detach()
         quiet = true
         lastCause = cause
@@ -1043,16 +1106,16 @@ class LiveSession(
         ticker?.cancel()
         ticker = null
         if (!online) {
-            update { it.copy(status = "网络已断开，等待恢复…") }
+            update { it.copy(status = LiveMessage.NetworkWaiting.defaultText, statusMessage = LiveMessage.NetworkWaiting) }
             if (giveUp == null) {
-                giveUp = platform.schedule(OFFLINE_GIVE_UP_MS) { end("网络长时间不可用，已停止录音；已有文字已保留") }
+                giveUp = platform.schedule(OFFLINE_GIVE_UP_MS) { end(LiveMessage.NetworkUnavailableStopped) }
             }
             return
         }
         var delay = 0L
         if (counted) {
             if (attempts >= RECONNECT_DELAYS_MS.size) {
-                end("多次重新连接失败，已停止录音。$lastError")
+                end(LiveMessage.ReconnectFailed(lastError))
                 return
             }
             delay = if (immediately) 0 else RECONNECT_DELAYS_MS[attempts]
@@ -1069,24 +1132,23 @@ class LiveSession(
             else open()?.let(::end)
         }
         when {
-            at > now + delay -> countdown(at, if (at == connectionBudget.limitedUntil) "服务限流" else "连接过于频繁")
-            switchOnReady -> update { it.copy(status = "正在切换译文语言…") }
-            quiet -> update { it.copy(status = "长时间无识别结果，正在续接连接…") }
-            else -> update { it.copy(status = reconnectStatus()) }
+            at > now + delay -> countdown(at, rateLimited = at == connectionBudget.limitedUntil)
+            switchOnReady -> update { it.copy(status = LiveMessage.SwitchingLanguage.defaultText, statusMessage = LiveMessage.SwitchingLanguage) }
+            quiet -> update { it.copy(status = LiveMessage.QuietRenewing.defaultText, statusMessage = LiveMessage.QuietRenewing) }
+            else -> {
+                val statusMsg = LiveMessage.Reconnecting(attempts, lastCause)
+                update { it.copy(status = statusMsg.defaultText, statusMessage = statusMsg) }
+            }
         }
     }
 
-    private fun reconnectStatus(): String {
-        val base = if (attempts > 0) "连接中断，正在重新连接（第 $attempts 次）…" else "连接中断，正在重新连接…"
-        return if (lastCause.isEmpty()) base else "$base 原因：$lastCause"
-    }
-
     /** "服务限流，N 秒后重试", updated every second until the connection opens at [at]. */
-    private fun countdown(at: Long, label: String) {
+    private fun countdown(at: Long, rateLimited: Boolean) {
         val left = at - platform.elapsedMs()
         val shown = seconds(left)
-        update { it.copy(status = "$label，$shown 秒后重试") }
-        if (shown > 1) ticker = platform.schedule(left - (shown - 1) * 1000L) { countdown(at, label) }
+        val statusMsg = LiveMessage.CooldownWait(rateLimited, shown)
+        update { it.copy(status = statusMsg.defaultText, statusMessage = statusMsg) }
+        if (shown > 1) ticker = platform.schedule(left - (shown - 1) * 1000L) { countdown(at, rateLimited) }
     }
 
     private fun seconds(ms: Long) = ((ms + 999) / 1000).toInt()
@@ -1097,7 +1159,7 @@ class LiveSession(
             update { it.copy(playing = true) }
         } catch (_: Exception) {
             stopPlayback()
-            update { it.copy(notice = "无法启动译音播放，仅显示字幕") }
+            update { it.copy(notice = LiveMessage.PlaybackStartFailed.defaultText, noticeMessage = LiveMessage.PlaybackStartFailed) }
         }
     }
 
@@ -1115,7 +1177,7 @@ class LiveSession(
         }
     }
 
-    private fun end(error: String?) {
+    private fun end(error: LiveMessage?) {
         languageTimer?.cancel()
         drain?.cancel()
         drain = null
@@ -1143,7 +1205,17 @@ class LiveSession(
         }
         // Rows first: observers treat the IDLE snapshot as the end of the session's rows.
         publish()
-        update { it.copy(state = SessionState.IDLE, status = "", error = error.orEmpty(), slowNetwork = false, slowService = false) }
+        update {
+            it.copy(
+                state = SessionState.IDLE,
+                status = "",
+                statusMessage = null,
+                error = error?.defaultText.orEmpty(),
+                errorMessage = error,
+                slowNetwork = false,
+                slowService = false,
+            )
+        }
         try {
             platform.sessionActive(false)
         } catch (_: Exception) {

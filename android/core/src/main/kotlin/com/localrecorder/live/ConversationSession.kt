@@ -22,8 +22,8 @@ class ConversationSession(
     private var tailPlayer: LiveSession? = null
     private var stopping = false
     private var pending: Cancellable? = null
-    private var message = ""
-    private var failure = ""
+    private var message: LiveMessage? = null
+    private var failure: LiveMessage? = null
     private var mute = false
     private var batch = false
     private var rendering = false
@@ -99,7 +99,7 @@ class ConversationSession(
                                 else -> Unit
                             }
                         } catch (error: LiveTranslateException) {
-                            interruptPlayback(error.message.orEmpty())
+                            interruptPlayback(error.liveMessage)
                         }
                     }
                     if (event !is LiveSessionEvent.Audio) listener.onEvent(event)
@@ -168,8 +168,8 @@ class ConversationSession(
         reconnect = autoReconnect
         stopping = false
         mute = false
-        message = ""
-        failure = ""
+        message = null
+        failure = null
         speaker.stop()
         tailPlayer?.stopPlayback()
         tailPlayer = null
@@ -217,13 +217,14 @@ class ConversationSession(
             active.lanes.single().session.setTargetLanguage(target)
         } else if (active.mode.dialogue != dialogue || active.mode.a != languageA || active.mode.b != languageB) {
             pending = platform.schedule(1_000) {
-                val label = if (dialogue) "双人对话 ${languageName(languageA)} ↔ ${languageName(languageB)}" else "单向转译 → ${languageName(target)}"
+                val markerMsg = if (dialogue) LiveMessage.DialogueModeMarker(languageName(languageA).orEmpty(), languageName(languageB).orEmpty())
+                    else LiveMessage.OneWayModeMarker(languageName(target).orEmpty())
                 val changed = if (active.mode.dialogue && dialogue) buildSet {
                     if (active.mode.a != languageA) add(languageA)
                     if (active.mode.b != languageB) add(languageB)
                 } else emptySet()
-                startGroup(SubtitleRow("mode:${groupId + 1}", "", true, "", true, marker = label,
-                    targetLanguage = if (dialogue) languageB else target, languageChange = true), changed)
+                startGroup(SubtitleRow("mode:${groupId + 1}", "", true, "", true, marker = markerMsg.defaultText,
+                    targetLanguage = if (dialogue) languageB else target, languageChange = true, markerMessage = markerMsg), changed)
             }
         }
     }
@@ -249,7 +250,8 @@ class ConversationSession(
         config = next
         if (active.mode.dialogue) {
             pending?.cancel()
-            startGroup(SubtitleRow("profile:${groupId + 1}", "", true, "", true, "切换到「${next.profile.name}」"))
+            val markerMsg = LiveMessage.ProfileSwitchedMarker(next.profile.name)
+            startGroup(SubtitleRow("profile:${groupId + 1}", "", true, "", true, markerMsg.defaultText, markerMessage = markerMsg))
         }
         return true
     }
@@ -282,15 +284,18 @@ class ConversationSession(
         refresh()
     }
 
-    fun interruptPlayback(message: String) { stopPlayback(); notice(message) }
-    fun notice(message: String) { this.message = message; refresh() }
+    fun interruptPlayback(message: LiveMessage) { stopPlayback(); notice(message) }
+    fun interruptPlayback(message: String) = interruptPlayback(LiveMessage.Raw(message))
+    fun notice(message: LiveMessage) { this.message = message; refresh() }
+    fun notice(message: String) = notice(LiveMessage.Raw(message))
     fun dismissMessages() {
-        message = ""
-        failure = ""
+        message = null
+        failure = null
         groups.flatMap { it.lanes }.forEach { it.session.dismissMessages() }
         refresh()
     }
-    fun captureInterrupted(message: String) = current?.lanes?.forEach { it.session.captureInterrupted(message) } ?: Unit
+    fun captureInterrupted(message: LiveMessage) = current?.lanes?.forEach { it.session.captureInterrupted(message) } ?: Unit
+    fun captureInterrupted(message: String) = captureInterrupted(LiveMessage.Raw(message))
     fun networkAvailable(id: Long) = current?.lanes?.forEach { it.session.networkAvailable(id) } ?: Unit
     fun networkLost() = current?.lanes?.forEach { it.session.networkLost() } ?: Unit
 
@@ -337,7 +342,9 @@ class ConversationSession(
                 if (!oldest.mode.dialogue) tailPlayer = oldest.lanes.single().session.takeIf { it.snapshot.playing }
                 current = null
                 pending?.cancel()
-                failure = lanes.map { it.error }.firstOrNull { it.isNotEmpty() }.orEmpty()
+                failure = lanes.firstNotNullOfOrNull { lane ->
+                    lane.errorMessage ?: lane.error.takeIf { it.isNotEmpty() }?.let(LiveMessage::Raw)
+                }
             }
         }
         if (archived.size > LiveSession.MAX_ROWS) {
@@ -353,16 +360,29 @@ class ConversationSession(
             else -> SessionState.CONNECTING
         }
         val broken = lanes.firstOrNull { it.state == SessionState.IDLE && it.error.isNotBlank() }
-        val statuses = lanes.map { it.status }.filter { it.isNotBlank() }.distinct()
+        val statusParts = lanes.mapNotNull { lane ->
+            lane.statusMessage ?: lane.status.takeIf { it.isNotBlank() }?.let(LiveMessage::Raw)
+        }.distinct()
+        val combinedStatus: LiveMessage? = when {
+            state == SessionState.IDLE || statusParts.isEmpty() -> null
+            statusParts.size == 1 -> statusParts.single()
+            else -> LiveMessage.Composite(statusParts)
+        }
+        val effectiveNotice: LiveMessage? = message
+            ?: broken?.let { it.errorMessage ?: it.error.takeIf { s -> s.isNotBlank() }?.let(LiveMessage::Raw) }
+            ?: lanes.firstNotNullOfOrNull { it.noticeMessage ?: it.notice.takeIf { s -> s.isNotBlank() }?.let(LiveMessage::Raw) }
         val allRows = archived + groups.flatMap { it.rows() }
         val next = SessionSnapshot(
             state = state, rows = allRows.takeLast(LiveSession.MAX_ROWS),
-            status = if (state == SessionState.IDLE) "" else statuses.joinToString(" · "),
-            error = if (state == SessionState.IDLE) failure else "",
-            notice = message.ifBlank { broken?.error ?: lanes.firstOrNull { it.notice.isNotBlank() }?.notice.orEmpty() },
+            status = combinedStatus?.defaultText.orEmpty(),
+            error = if (state == SessionState.IDLE) failure?.defaultText.orEmpty() else "",
+            notice = effectiveNotice?.defaultText.orEmpty(),
             playing = speaker.playing || tailPlayer?.snapshot?.playing == true || (active?.mode?.dialogue == false && lanes.any { it.playing }),
             slowNetwork = lanes.any { it.slowNetwork }, slowService = lanes.any { it.slowService },
             trimmed = trimmed || allRows.size > LiveSession.MAX_ROWS || lanes.any { it.trimmed } || active?.transcript?.trimmed == true,
+            statusMessage = combinedStatus,
+            errorMessage = if (state == SessionState.IDLE) failure else null,
+            noticeMessage = effectiveNotice,
         )
         if (next != snapshot) { snapshot = next; onChange(next) }
     }

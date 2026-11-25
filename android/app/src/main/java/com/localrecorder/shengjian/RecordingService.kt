@@ -13,6 +13,10 @@ import android.os.IBinder
 
 /** Keeps the process in the foreground (microphone type) while a session is active. */
 class RecordingService : Service() {
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(AppLocale.wrapContext(newBase))
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -21,12 +25,9 @@ class RecordingService : Service() {
             if (!running) stopSelf(startId)
             return START_NOT_STICKY
         }
-        getSystemService(NotificationManager::class.java)?.createNotificationChannel(
-            NotificationChannel(CHANNEL, getString(R.string.live_notification_channel), NotificationManager.IMPORTANCE_LOW).apply {
-                description = getString(R.string.live_notification_description)
-            }
-        )
-        val notification = notification(this, getString(R.string.live_notification_recording), getString(R.string.live_notification_audio))
+        val localized = AppLocale.localizedContext(this)
+        refreshChannel(localized)
+        val notification = notification(localized, localized.getString(R.string.live_notification_recording), localized.getString(R.string.live_notification_audio))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
         } else {
@@ -57,10 +58,20 @@ class RecordingService : Service() {
             context.stopService(Intent(context, RecordingService::class.java))
         }
 
+        fun refreshChannel(context: Context) {
+            val localized = AppLocale.localizedContext(context)
+            context.getSystemService(NotificationManager::class.java)?.createNotificationChannel(
+                NotificationChannel(CHANNEL, localized.getString(R.string.live_notification_channel), NotificationManager.IMPORTANCE_LOW).apply {
+                    description = localized.getString(R.string.live_notification_description)
+                }
+            )
+        }
+
         /** Replaces the ongoing notification's content; false while the service is not in the foreground. */
         fun update(context: Context, title: String, text: String): Boolean {
             if (!running) return false
-            context.getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification(context, title, text))
+            val localized = AppLocale.localizedContext(context)
+            context.getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification(localized, title, text))
             return true
         }
 

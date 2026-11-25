@@ -11,7 +11,7 @@ struct LiveServiceProfileEditor: View {
                 if !profiles.contains(where: { $0.id == model.liveProfile.id }) { Text("新配置").tag(model.liveProfile.id) }
             }
             Button("新建") {
-                model.liveProfile = LiveServiceProfile(id: UUID().uuidString, name: "新配置")
+                model.liveProfile = LiveServiceProfile(id: UUID().uuidString, name: InterfaceLanguageSettings.shared.string("新配置"))
                 model.liveMessage = ""
             }
         }

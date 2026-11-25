@@ -26,7 +26,7 @@ internal class DialogueSpeechInbox {
         if (id !in items && items.size >= LiveSession.MAX_ACTIVE_ROWS) evictFirst()
         val item = items.getOrPut(id, ::Item)
         if (pcm != null) {
-            if (size + pcm.size > MAX_PENDING_SPEECH_BYTES) throw LiveTranslateException("等待语言识别的译音超过 30 秒，已停止播放")
+            if (size + pcm.size > MAX_PENDING_SPEECH_BYTES) throw LiveTranslateException(LiveMessage.DialogueAudioPendingTimeout)
             item.audio.write(pcm)
             size += pcm.size
         }
@@ -60,7 +60,7 @@ internal class DialogueSpeechInbox {
 internal class DialogueSpeaker(
     private val platform: SessionPlatform,
     private val shouldGate: () -> Boolean,
-    private val report: (String) -> Unit,
+    private val report: (LiveMessage) -> Unit,
     private val changed: () -> Unit,
 ) {
     private val queue = ArrayDeque<ByteArray>()
@@ -79,7 +79,7 @@ internal class DialogueSpeaker(
     fun enqueue(audio: ByteArray, volume: Float) {
         this.volume = volume
         if (queued + audio.size > MAX_PENDING_SPEECH_BYTES) {
-            report("译音播放积压超过 30 秒，已停止播放")
+            report(LiveMessage.DialogueAudioBacklog)
             return
         }
         queue.add(audio)
@@ -95,7 +95,7 @@ internal class DialogueSpeaker(
             gateFallback = shouldGate()
             current = player
             player.start(volume)
-            if (!player.append(pcm)) throw LiveTranslateException("无法播放译音")
+            if (!player.append(pcm)) throw LiveTranslateException(LiveMessage.DialogueAudioPlayError)
             player.finish {
                 platform.post {
                     if (current === player) {
@@ -108,7 +108,7 @@ internal class DialogueSpeaker(
             }
             changed()
         } catch (_: Exception) {
-            report("无法播放译音，字幕将继续更新")
+            report(LiveMessage.DialogueAudioPlayNotice)
         }
     }
 
