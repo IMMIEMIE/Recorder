@@ -15,6 +15,20 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -23,6 +37,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -37,15 +52,24 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInspectionMode
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localrecorder.live.SessionState
 import com.localrecorder.live.SubtitleRow
@@ -90,6 +114,8 @@ class MainActivity : ComponentActivity() {
 /** Above this the binder transaction of ACTION_SEND may fail; such exports go to a file instead. */
 private const val MAX_SHARE_CHARS = 200_000
 
+private enum class AppRoute { WELCOME, MAIN, SETTINGS }
+
 @Composable
 private fun App(controller: SessionController) {
     val ui by controller.ui.collectAsStateWithLifecycle()
@@ -102,13 +128,32 @@ private fun App(controller: SessionController) {
         showWelcome = false
         showSettings = configure
     }
-    when {
-        showWelcome -> {
-            BackHandler { finishWelcome(false) }
-            Welcome(settings = { finishWelcome(true) }, later = { finishWelcome(false) })
+
+    val route = when {
+        showWelcome -> AppRoute.WELCOME
+        showSettings -> AppRoute.SETTINGS
+        else -> AppRoute.MAIN
+    }
+    AnimatedContent(
+        targetState = route,
+        transitionSpec = {
+            val forward = targetState.ordinal > initialState.ordinal
+            val enter = fadeIn(tween(240, easing = FastOutSlowInEasing)) +
+                slideInHorizontally(tween(240, easing = FastOutSlowInEasing)) { width -> if (forward) width / 14 else -width / 14 }
+            val exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) +
+                slideOutHorizontally(tween(180, easing = FastOutSlowInEasing)) { width -> if (forward) -width / 18 else width / 18 }
+            enter togetherWith exit
+        },
+        label = "appRoute",
+    ) { target ->
+        when (target) {
+            AppRoute.WELCOME -> {
+                BackHandler { finishWelcome(false) }
+                Welcome(settings = { finishWelcome(true) }, later = { finishWelcome(false) })
+            }
+            AppRoute.SETTINGS -> SettingsScreen(controller, ui, onBack = { showSettings = false })
+            AppRoute.MAIN -> MainScreen(controller, ui, onSettings = { showSettings = true })
         }
-        showSettings -> SettingsScreen(controller, ui, onBack = { showSettings = false })
-        else -> MainScreen(controller, ui, onSettings = { showSettings = true })
     }
 }
 
@@ -153,11 +198,16 @@ private fun MainScreen(controller: SessionController, ui: UiState, onSettings: (
 
     if (LocalConfiguration.current.screenWidthDp.dp >= Design.wide) {
         Row(Modifier.fillMaxSize()) {
-            Column(Modifier.width(256.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceContainerLow)
-                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical + WindowInsetsSides.Start))) {
+            Column(
+                Modifier
+                    .width(280.dp)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical + WindowInsetsSides.Start)),
+            ) {
                 SessionList(ui, menu, onSettings, onSelect = controller::select)
             }
-            VerticalDivider()
+            VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Box(Modifier.weight(1f)) { TranscriptScreen(controller, ui, menu, onSettings, onOpenList = null) }
         }
     } else {
@@ -168,7 +218,10 @@ private fun MainScreen(controller: SessionController, ui: UiState, onSettings: (
             drawerState = drawer,
             gesturesEnabled = !ui.dialogueMode || drawer.isOpen,
             drawerContent = {
-                ModalDrawerSheet(Modifier.width(320.dp)) {
+                ModalDrawerSheet(
+                    modifier = Modifier.width(320.dp),
+                    drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                ) {
                     SessionList(ui, menu, onSettings, onSelect = { id ->
                         controller.select(id)
                         scope.launch { drawer.close() }
@@ -238,36 +291,105 @@ private class SessionMenu(
 
 @Composable
 private fun ColumnScope.SessionList(ui: UiState, menu: SessionMenu, onSettings: () -> Unit, onSelect: (String?) -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = Design.spaceXs), verticalAlignment = Alignment.CenterVertically) {
-        Text(stringResource(R.string.session_history), Modifier.weight(1f), style = Design.title)
+    val colors = MaterialTheme.colorScheme
+    var query by rememberSaveable { mutableStateOf("") }
+
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = Design.spaceSm, top = Design.spaceSm, bottom = Design.spaceXs),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(R.string.session_history), style = Design.title)
+            if (ui.sessions.isNotEmpty()) {
+                Surface(color = colors.surfaceContainer, shape = CircleShape) {
+                    Text(
+                        stringResource(R.string.session_count, ui.sessions.size),
+                        style = Design.caption,
+                        color = colors.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                    )
+                }
+            }
+        }
         Tool(R.drawable.ic_settings, stringResource(R.string.settings), click = onSettings)
     }
-    FilledTonalButton(onClick = { onSelect(null) }, modifier = Modifier.padding(horizontal = Design.spaceMd, vertical = Design.spaceSm)) {
-        Glyph(R.drawable.ic_add)
+
+    FilledTonalButton(
+        onClick = { onSelect(null) },
+        shape = RoundedCornerShape(Design.radiusCard),
+        colors = ButtonDefaults.filledTonalButtonColors(
+            containerColor = colors.primaryContainer,
+            contentColor = colors.onPrimaryContainer,
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Design.spaceMd, vertical = Design.spaceSm)
+            .heightIn(min = 48.dp),
+    ) {
+        Glyph(R.drawable.ic_add, Modifier.size(18.dp))
         Spacer(Modifier.width(Design.spaceSm))
-        Text(stringResource(R.string.new_session))
+        Text(stringResource(R.string.new_session), fontWeight = FontWeight.SemiBold)
     }
+
+    if (ui.sessions.size > 1) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            placeholder = { Text(stringResource(R.string.search_sessions), style = MaterialTheme.typography.bodyMedium) },
+            leadingIcon = { Glyph(R.drawable.ic_search, Modifier.size(18.dp), tint = colors.onSurfaceVariant) },
+            singleLine = true,
+            shape = RoundedCornerShape(Design.radiusButton),
+            colors = OutlinedTextFieldDefaults.colors(
+                unfocusedContainerColor = colors.surfaceContainerLowest,
+                focusedContainerColor = colors.surfaceContainerLowest,
+                unfocusedBorderColor = colors.outlineVariant,
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = Design.spaceMd, vertical = Design.spaceXs),
+        )
+    }
+
     if (!ui.options.saveSessions) {
         Text(
             stringResource(R.string.history_off),
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp),
+            color = colors.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = Design.spaceMd, vertical = Design.spaceXs),
         )
     }
     if (ui.sessions.isEmpty()) {
         Text(
             stringResource(R.string.empty_history),
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(16.dp),
+            color = colors.onSurfaceVariant,
+            modifier = Modifier.padding(Design.spaceMd),
         )
         return
     }
+    val filtered = remember(ui.sessions, query) {
+        val needle = query.trim()
+        if (needle.isEmpty()) ui.sessions else ui.sessions.filter { it.title.contains(needle, ignoreCase = true) }
+    }
+    if (filtered.isEmpty()) {
+        Text(
+            stringResource(R.string.no_matching_sessions),
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.onSurfaceVariant,
+            modifier = Modifier.padding(Design.spaceMd),
+        )
+        return
+    }
+
     val zone = remember { ZoneId.systemDefault() }
-    val now = remember(ui.sessions) { System.currentTimeMillis() }
-    val groups = remember(ui.sessions, now) { ui.sessions.groupBy { SessionGroup.of(it.updatedAtMs, now, zone) } }
-    LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+    val now = remember(filtered) { System.currentTimeMillis() }
+    val groups = remember(filtered, now) { filtered.groupBy { SessionGroup.of(it.updatedAtMs, now, zone) } }
+    LazyColumn(
+        Modifier.weight(1f).fillMaxWidth(),
+        contentPadding = PaddingValues(bottom = Design.spaceMd),
+    ) {
         for ((group, sessions) in groups) {
             item(key = "group:${group.name}", contentType = 0) {
                 Text(
@@ -278,8 +400,8 @@ private fun ColumnScope.SessionList(ui: UiState, menu: SessionMenu, onSettings: 
                         SessionGroup.EARLIER -> R.string.earlier
                     }),
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 28.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
+                    color = colors.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 24.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
                 )
             }
             items(sessions, key = { it.id }, contentType = { 1 }) { session ->
@@ -298,54 +420,106 @@ private fun ColumnScope.SessionList(ui: UiState, menu: SessionMenu, onSettings: 
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SessionItem(session: SessionSummary, time: String, selected: Boolean, recording: Boolean, menu: SessionMenu, onClick: () -> Unit) {
+private fun SessionItem(
+    session: SessionSummary,
+    time: String,
+    selected: Boolean,
+    recording: Boolean,
+    menu: SessionMenu,
+    onClick: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
     var expanded by remember { mutableStateOf(false) }
+    val barColor = colors.primary
     Box(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .heightIn(min = 48.dp)
-                .clip(MaterialTheme.shapes.medium)
-                .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
-                .combinedClickable(onLongClick = { expanded = true }, onLongClickLabel = stringResource(R.string.session_actions), onClick = onClick)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .heightIn(min = 52.dp)
+                .clip(RoundedCornerShape(Design.radiusCard))
+                .background(if (selected) colors.secondaryContainer else Color.Transparent)
+                .drawBehind {
+                    if (selected) {
+                        val barWidth = 3.dp.toPx()
+                        val insetY = 10.dp.toPx()
+                        if (size.height > insetY * 2) {
+                            drawRoundRect(
+                                color = barColor,
+                                topLeft = Offset(4.dp.toPx(), insetY),
+                                size = Size(barWidth, size.height - insetY * 2),
+                                cornerRadius = CornerRadius(barWidth, barWidth),
+                            )
+                        }
+                    }
+                }
+                .combinedClickable(
+                    onLongClick = { expanded = true },
+                    onLongClickLabel = stringResource(R.string.session_actions),
+                    onClick = onClick,
+                )
+                .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(Modifier.weight(1f)) {
-                Text(session.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(time, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        session.title,
+                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal),
+                        color = if (selected) colors.onSecondaryContainer else colors.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (recording) RecordingBadge()
+                }
+                Text(time, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
             }
-            if (recording) RecordingBadge()
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = {
-                expanded = false
-                menu.rename(session.id, session.title)
-            })
-            DropdownMenuItem(text = { Text(stringResource(R.string.export_session)) }, onClick = {
-                expanded = false
-                menu.export(session.id)
-            })
-            DropdownMenuItem(text = { Text(if (recording) stringResource(R.string.cannot_delete_recording) else stringResource(R.string.delete)) }, enabled = !recording, onClick = {
-                expanded = false
-                menu.delete(session.id, session.title)
-            })
+            Box {
+                Tool(
+                    id = R.drawable.ic_more_vert,
+                    label = stringResource(R.string.session_actions),
+                    tint = colors.onSurfaceVariant,
+                    click = { expanded = true },
+                )
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = {
+                        expanded = false
+                        menu.rename(session.id, session.title)
+                    })
+                    DropdownMenuItem(text = { Text(stringResource(R.string.export_session)) }, onClick = {
+                        expanded = false
+                        menu.export(session.id)
+                    })
+                    DropdownMenuItem(
+                        text = { Text(if (recording) stringResource(R.string.cannot_delete_recording) else stringResource(R.string.delete)) },
+                        enabled = !recording,
+                        onClick = {
+                            expanded = false
+                            menu.delete(session.id, session.title)
+                        },
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
 private fun RecordingBadge() {
-    Text(
-        stringResource(R.string.recording),
-        style = MaterialTheme.typography.labelSmall,
-        color = LocalStatusColors.current.recording,
-        modifier = Modifier
-            .padding(start = 8.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerLow)
-            .padding(horizontal = 6.dp, vertical = 2.dp),
-    )
+    val rec = LocalStatusColors.current.recording
+    Surface(
+        color = rec.copy(alpha = 0.13f),
+        shape = CircleShape,
+    ) {
+        Row(
+            Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            PulsingDot(rec, Modifier.size(6.dp))
+            Text(stringResource(R.string.recording), style = MaterialTheme.typography.labelSmall, color = rec)
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -397,8 +571,11 @@ private fun TranscriptScreen(
     val message = session.error.ifBlank { session.notice }
     LaunchedEffect(message) {
         if (message.isNotEmpty()) {
-            messages.showSnackbar(message, withDismissAction = true,
-                duration = if (session.error.isEmpty()) SnackbarDuration.Long else SnackbarDuration.Indefinite)
+            messages.showSnackbar(
+                message,
+                withDismissAction = true,
+                duration = if (session.error.isEmpty()) SnackbarDuration.Long else SnackbarDuration.Indefinite,
+            )
             controller.dismissMessages()
         }
     }
@@ -409,126 +586,232 @@ private fun TranscriptScreen(
         controller.setDialogueMode(true)
     }
     var showDialogueCost by rememberSaveable { mutableStateOf(false) }
+    var showLanguageSheet by rememberSaveable { mutableStateOf(false) }
     val appearance = remember(context) { context.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
-    if (showDialogueCost) AlertDialog(
-        onDismissRequest = { showDialogueCost = false },
-        title = { Text(stringResource(R.string.dialogue_mode)) },
-        text = { Text(stringResource(R.string.dialogue_cost)) },
-        confirmButton = { TextButton({
-            appearance.edit().putBoolean("dialogueCostSeen", true).apply()
-            showDialogueCost = false
-            enterDialogue()
-        }) { Text(stringResource(R.string.dialogue_enter)) } },
-        dismissButton = { TextButton({ showDialogueCost = false }) { Text(stringResource(R.string.cancel)) } },
-    )
-    if (ui.dialogueMode && (!active || ui.viewingRecording)) {
-        var facing by remember { mutableStateOf(appearance.getBoolean("dialogueFacing", true)) }
-        val exit = { controller.setDialogueMode(false) }
-        BackHandler(enabled = session.state != SessionState.FINISHING, onBack = exit)
-        DialogueScreen(rows, ui.dialogueLanguageA, ui.dialogueLanguageB, session.state, startEnabled,
-            ui.config.audioOutput, session.playing,
-            when {
-                session.slowNetwork || session.slowService || session.state == SessionState.RECONNECTING -> session.status
-                session.state == SessionState.CONNECTING -> stringResource(R.string.connecting)
-                session.state == SessionState.RECORDING -> stringResource(R.string.recording)
-                else -> ""
+    if (showDialogueCost) {
+        AlertDialog(
+            onDismissRequest = { showDialogueCost = false },
+            title = { Text(stringResource(R.string.dialogue_mode)) },
+            text = { Text(stringResource(R.string.dialogue_cost)) },
+            confirmButton = {
+                TextButton({
+                    appearance.edit().putBoolean("dialogueCostSeen", true).apply()
+                    showDialogueCost = false
+                    enterDialogue()
+                }) { Text(stringResource(R.string.dialogue_enter)) }
             },
-            messages, facing, toggleFacing = {
-                facing = !facing
-                appearance.edit().putBoolean("dialogueFacing", facing).apply()
-            },
-            setLanguages = controller::setDialogueLanguages, record = toggleRecording, exit = exit,
-            onSpeech = { controller.saveSettings(ui.config.copy(audioOutput = !ui.config.audioOutput), "", ui.options) },
-            stopPlayback = controller::stopPlayback, settings = onSettings)
-        return
+            dismissButton = { TextButton({ showDialogueCost = false }) { Text(stringResource(R.string.cancel)) } },
+        )
     }
-    Scaffold(
-        snackbarHost = { SnackbarHost(messages) },
-        topBar = {
-            Column(Modifier.statusBarsPadding().displayCutoutPadding()) {
-                SessionHeader(title, onOpenList) {
-                    TextButton({
-                        if (appearance.getBoolean("dialogueCostSeen", false)) enterDialogue() else showDialogueCost = true
-                    }, enabled = session.state != SessionState.FINISHING) { Text(stringResource(R.string.dialogue_mode)) }
-                    var expanded by remember { mutableStateOf(false) }
-                    Box {
-                        Tool(R.drawable.ic_more_vert, stringResource(R.string.more_actions)) { expanded = true }
-                        DropdownMenu(expanded, { expanded = false }) {
-                            if (selectedId != null) {
-                                DropdownMenuItem(text = { Text(stringResource(R.string.rename_session)) }, onClick = { expanded = false; menu.rename(selectedId, title) })
-                                DropdownMenuItem(text = { Text(stringResource(R.string.export_session)) }, onClick = { expanded = false; menu.export(selectedId) })
-                                DropdownMenuItem(text = { Text(stringResource(R.string.delete_session)) }, enabled = selectedId != ui.recordingId,
-                                    onClick = { expanded = false; menu.delete(selectedId, title) })
+
+    val inDialogue = ui.dialogueMode && (!active || ui.viewingRecording)
+    AnimatedContent(
+        targetState = inDialogue,
+        transitionSpec = {
+            (fadeIn(tween(240, easing = FastOutSlowInEasing)) + slideInVertically(tween(240)) { if (targetState) it / 18 else -it / 18 })
+                .togetherWith(fadeOut(tween(180)))
+        },
+        label = "dialogueMode",
+    ) { dialogueActive ->
+        if (dialogueActive) {
+            var facing by remember { mutableStateOf(appearance.getBoolean("dialogueFacing", true)) }
+            val exit = { controller.setDialogueMode(false) }
+            BackHandler(enabled = session.state != SessionState.FINISHING, onBack = exit)
+            DialogueScreen(
+                rows, ui.dialogueLanguageA, ui.dialogueLanguageB, session.state, startEnabled,
+                ui.config.audioOutput, session.playing,
+                when {
+                    session.slowNetwork || session.slowService || session.state == SessionState.RECONNECTING -> session.status
+                    session.state == SessionState.CONNECTING -> stringResource(R.string.connecting)
+                    session.state == SessionState.RECORDING -> stringResource(R.string.recording)
+                    else -> ""
+                },
+                messages, facing,
+                toggleFacing = {
+                    facing = !facing
+                    appearance.edit().putBoolean("dialogueFacing", facing).apply()
+                },
+                setLanguages = controller::setDialogueLanguages,
+                record = toggleRecording,
+                exit = exit,
+                onSpeech = { controller.saveSettings(ui.config.copy(audioOutput = !ui.config.audioOutput), "", ui.options) },
+                stopPlayback = controller::stopPlayback,
+                settings = onSettings,
+            )
+        } else {
+            val colors = MaterialTheme.colorScheme
+            val statusColors = LocalStatusColors.current
+            Scaffold(
+                containerColor = colors.surface,
+                snackbarHost = { SnackbarHost(messages) },
+                topBar = {
+                    Column(Modifier.background(colors.surface).statusBarsPadding().displayCutoutPadding()) {
+                        SessionHeader(
+                            title = title,
+                            openList = onOpenList,
+                            statusContent = { StatusPill(session, selectedId != null) },
+                        ) {
+                            FilledTonalButton(
+                                onClick = {
+                                    if (appearance.getBoolean("dialogueCostSeen", false)) enterDialogue() else showDialogueCost = true
+                                },
+                                enabled = session.state != SessionState.FINISHING,
+                                shape = CircleShape,
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                modifier = Modifier.heightIn(min = 40.dp),
+                            ) {
+                                Glyph(R.drawable.ic_dialogue, Modifier.size(16.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text(stringResource(R.string.dialogue_chip), style = Design.caption.copy(fontWeight = FontWeight.SemiBold))
                             }
-                            DropdownMenuItem(text = { Text(stringResource(R.string.settings)) }, onClick = { expanded = false; onSettings() })
+                            var expanded by remember { mutableStateOf(false) }
+                            Box {
+                                Tool(R.drawable.ic_more_vert, stringResource(R.string.more_actions), tint = colors.onSurfaceVariant) { expanded = true }
+                                DropdownMenu(expanded, { expanded = false }) {
+                                    if (selectedId != null) {
+                                        DropdownMenuItem(text = { Text(stringResource(R.string.rename_session)) }, onClick = { expanded = false; menu.rename(selectedId, title) })
+                                        DropdownMenuItem(text = { Text(stringResource(R.string.export_session)) }, onClick = { expanded = false; menu.export(selectedId) })
+                                        DropdownMenuItem(
+                                            text = { Text(stringResource(R.string.delete_session)) },
+                                            enabled = selectedId != ui.recordingId,
+                                            onClick = { expanded = false; menu.delete(selectedId, title) },
+                                        )
+                                    }
+                                    DropdownMenuItem(text = { Text(stringResource(R.string.settings)) }, onClick = { expanded = false; onSettings() })
+                                }
+                            }
+                        }
+                        AnimatedVisibility(
+                            visible = session.slowService || session.slowNetwork,
+                            enter = expandVertically() + fadeIn(),
+                            exit = shrinkVertically() + fadeOut(),
+                        ) {
+                            Surface(
+                                color = statusColors.slow.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(Design.radiusButton),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = Design.spaceMd, vertical = Design.spaceXs),
+                            ) {
+                                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    if (session.slowService) {
+                                        Text(stringResource(R.string.slow_service, ui.config.profile.name), style = Design.caption, color = statusColors.slow)
+                                    } else if (session.slowNetwork && session.status.isNotBlank()) {
+                                        Text(session.status, style = Design.caption, color = statusColors.slow)
+                                    }
+                                    ProfileSwitchButtons(ui.config, controller::switchRecordingProfile)
+                                }
+                            }
                         }
                     }
-                }
-                SessionStatus(session, ui.config.languageName, selectedId != null) {
-                    LanguageChoice(stringResource(R.string.target_button, ui.config.languageName), ui.config.language,
-                        controller::setTargetLanguage, enabled = session.state != SessionState.FINISHING)
-                }
-                if (session.slowService || session.slowNetwork) {
-                    Column(Modifier.padding(horizontal = Design.spaceMd)) {
-                        if (session.slowService) Text(stringResource(R.string.slow_service, ui.config.profile.name), style = Design.caption)
-                        ProfileSwitchButtons(ui.config, controller::switchRecordingProfile)
-                    }
-                }
-                HorizontalDivider()
-            }
-        },
-        bottomBar = {
-            Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
-                Column(Modifier.fillMaxWidth().navigationBarsPadding().displayCutoutPadding()
-                    .padding(horizontal = Design.spaceMd, vertical = Design.spaceSm)) {
-                    SpeechToggle(ui.config.audioOutput, session.state != SessionState.FINISHING, { enabled ->
-                        controller.saveSettings(ui.config.copy(audioOutput = enabled), "", ui.options)
-                    }, if (session.playing) controller::stopPlayback else null)
-                    if (active && !ui.viewingRecording) {
-                        TextButton({ controller.select(ui.recordingId) }) { Text(stringResource(R.string.return_to_recording)) }
-                    }
-                    val label = when (session.state) {
+                },
+                bottomBar = {
+                    val primaryLabel = when (session.state) {
                         SessionState.CONNECTING -> stringResource(R.string.cancel_connection)
                         SessionState.RECONNECTING -> stringResource(R.string.stop_reconnecting)
                         SessionState.RECORDING -> stringResource(R.string.stop_translation)
                         SessionState.FINISHING -> stringResource(R.string.finishing)
                         SessionState.IDLE -> if (selectedId == null) stringResource(R.string.start_live) else stringResource(R.string.resume_recording)
                     }
-                    Button(
-                        onClick = toggleRecording,
-                        enabled = startEnabled,
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = MaterialTheme.shapes.medium,
-                    ) {
-                        Glyph(if (active) R.drawable.ic_stop else R.drawable.ic_mic)
-                        Spacer(Modifier.width(Design.spaceSm))
-                        Text(label)
+                    BottomActionDock(
+                        languageLabel = stringResource(R.string.target_pill, ui.config.languageName),
+                        languageEnabled = session.state != SessionState.FINISHING,
+                        onOpenLanguage = { showLanguageSheet = true },
+                        audioOutput = ui.config.audioOutput,
+                        audioEnabled = session.state != SessionState.FINISHING,
+                        onToggleAudio = { enabled ->
+                            controller.saveSettings(ui.config.copy(audioOutput = enabled), "", ui.options)
+                        },
+                        playing = session.playing,
+                        onStopPlayback = if (session.playing) controller::stopPlayback else null,
+                        active = active,
+                        primaryLabel = primaryLabel,
+                        primaryEnabled = startEnabled,
+                        onPrimaryClick = toggleRecording,
+                        returnToRecording = if (active && !ui.viewingRecording) ({ controller.select(ui.recordingId) }) else null,
+                    )
+                },
+            ) { padding ->
+                Column(Modifier.padding(padding).fillMaxSize()) {
+                    if (!ui.hasKey && !active && rows.isEmpty()) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(Design.spaceLg),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(56.dp)
+                                    .clip(RoundedCornerShape(Design.radiusCard))
+                                    .background(colors.primaryContainer),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Glyph(R.drawable.ic_key, Modifier.size(26.dp), tint = colors.onPrimaryContainer)
+                            }
+                            Text(
+                                stringResource(R.string.setup_hint),
+                                Modifier.padding(Design.spaceMd),
+                                textAlign = TextAlign.Center,
+                                color = colors.onSurfaceVariant,
+                            )
+                            FilledTonalButton(onSettings, shape = RoundedCornerShape(Design.radiusButton)) {
+                                Text(stringResource(R.string.setup_service))
+                            }
+                        }
+                    } else {
+                        Subtitles(
+                            rows = rows,
+                            trimmed = ui.viewingRecording && session.trimmed,
+                            emptyText = emptyText,
+                            modifier = Modifier.weight(1f),
+                            sessionId = selectedId,
+                            stamp = { key -> controller.subtitleStartMs(key)?.let { SessionText.stamp(it, "HH:mm", zone) } },
+                            onCopyRow = { row ->
+                                val combined = listOf(row.translation, row.source).filter { it.isNotBlank() }.joinToString("\n")
+                                if (combined.isNotBlank()) {
+                                    context.getSystemService(ClipboardManager::class.java)
+                                        ?.setPrimaryClip(ClipData.newPlainText(context.getString(R.string.app_name), combined))
+                                    Toast.makeText(context, R.string.copy_row_copied, Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                        )
                     }
                 }
             }
-        },
-    ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
-            if (!ui.hasKey && !active && rows.isEmpty()) {
-                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(Design.spaceLg),
-                    verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                    Glyph(R.drawable.ic_key)
-                    Text(stringResource(R.string.setup_hint), Modifier.padding(Design.spaceMd), textAlign = TextAlign.Center)
-                    FilledTonalButton(onSettings) { Text(stringResource(R.string.setup_service)) }
-                }
-            } else {
-                Subtitles(rows, trimmed = ui.viewingRecording && session.trimmed, emptyText = emptyText, modifier = Modifier.weight(1f),
-                    sessionId = selectedId, stamp = { key -> controller.subtitleStartMs(key)?.let { SessionText.stamp(it, "HH:mm", zone) } })
+            if (showLanguageSheet) {
+                LanguagePickerSheet(
+                    title = stringResource(R.string.choose_language),
+                    subtitle = stringResource(R.string.language_live_hint),
+                    selected = ui.config.language,
+                    onSelect = controller::setTargetLanguage,
+                    onDismiss = { showLanguageSheet = false },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun Subtitles(rows: List<SubtitleRow>, trimmed: Boolean, emptyText: String, modifier: Modifier,
-                      sessionId: String?, stamp: (String) -> String?) {
+private fun Subtitles(
+    rows: List<SubtitleRow>,
+    trimmed: Boolean,
+    emptyText: String,
+    modifier: Modifier,
+    sessionId: String?,
+    stamp: (String) -> String?,
+    onCopyRow: ((SubtitleRow) -> Unit)? = null,
+) {
+    val colors = MaterialTheme.colorScheme
     if (rows.isEmpty()) {
-        Column(modifier.fillMaxWidth().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(emptyText, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        Column(
+            modifier.fillMaxWidth().padding(32.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(emptyText, color = colors.onSurfaceVariant, textAlign = TextAlign.Center)
         }
         return
     }
@@ -544,37 +827,90 @@ private fun Subtitles(rows: List<SubtitleRow>, trimmed: Boolean, emptyText: Stri
     LaunchedEffect(rows.lastOrNull()?.key) {
         if (wasFollowing) list.scrollToItem(0)
     }
+    val inspect = LocalInspectionMode.current
     Box(modifier.fillMaxWidth()) {
-        LazyColumn(Modifier.fillMaxSize(), state = list, reverseLayout = true) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            state = list,
+            reverseLayout = true,
+            contentPadding = PaddingValues(top = 18.dp, bottom = 12.dp),
+        ) {
             items(newestFirst, key = { it.key }, contentType = { if (it.marker.isEmpty()) 0 else 1 }) { row ->
-                if (row.marker.isNotEmpty()) {
-                    Marker(row.marker)
-                    return@items
+                Box(if (inspect) Modifier else Modifier.animateItem()) {
+                    if (row.marker.isNotEmpty()) {
+                        Marker(row.marker)
+                    } else {
+                        SubtitleText(
+                            row = row,
+                            stamp = remember(sessionId, row.key) { stamp(row.key) },
+                            onCopy = onCopyRow?.let { cb -> ({ cb(row) }) },
+                        )
+                    }
                 }
-                SubtitleText(row, remember(sessionId, row.key) { stamp(row.key) })
             }
             if (trimmed) {
                 item(key = "trimmed", contentType = 1) { Marker(stringResource(R.string.earlier_captions)) }
             }
         }
-        if (!following) {
-            FilledTonalButton(
+
+        // Soft top fade edge prevents harsh horizontal slicing of scrolled captions.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(24.dp)
+                .align(Alignment.TopCenter)
+                .background(Brush.verticalGradient(listOf(colors.surface, colors.surface.copy(alpha = 0f)))),
+        )
+
+        AnimatedVisibility(
+            visible = !following,
+            enter = fadeIn(tween(200)) + slideInVertically(tween(240, easing = FastOutSlowInEasing)) { it / 2 },
+            exit = fadeOut(tween(160)) + slideOutVertically(tween(180)) { it / 2 },
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+        ) {
+            Surface(
                 onClick = { scope.launch { list.animateScrollToItem(0) } },
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
-            ) { Text(stringResource(R.string.latest)) }
+                shape = CircleShape,
+                color = colors.surfaceContainerLowest,
+                border = BorderStroke(1.dp, colors.outlineVariant),
+                shadowElevation = 4.dp,
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Glyph(R.drawable.ic_arrow_downward, Modifier.size(16.dp), tint = colors.primary)
+                    Text(
+                        stringResource(R.string.latest),
+                        style = Design.caption.copy(fontWeight = FontWeight.SemiBold),
+                        color = colors.primary,
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
 private fun Marker(text: String) {
-    Column(Modifier.fillMaxWidth()) {
-        HorizontalDivider()
-        Text(
-            text, style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-        )
+    val colors = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = Design.spaceMd, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        HorizontalDivider(Modifier.weight(1f), color = colors.outlineVariant.copy(alpha = 0.65f))
+        Surface(color = colors.surfaceContainer, shape = CircleShape) {
+            Text(
+                text,
+                style = Design.caption,
+                color = colors.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
+        HorizontalDivider(Modifier.weight(1f), color = colors.outlineVariant.copy(alpha = 0.65f))
     }
 }
 
@@ -623,33 +959,106 @@ private fun ExportDialog(
     var format by rememberSaveable { mutableStateOf(ExportFormat.TXT) }
     var content by rememberSaveable { mutableStateOf(ExportContent.BILINGUAL) }
     val zone = remember { ZoneId.systemDefault() }
-    fun text() = SessionExport.render(record, format, content, zone)
+    val rendered = remember(record, format, content) { SessionExport.render(record, format, content, zone) }
+    val preview = remember(rendered) { rendered.lines().take(5).joinToString("\n") }
     fun name() = SessionExport.fileName(record, format, zone)
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
-        ExportChoices(record.title, format, content, { format = it }, { content = it },
-            save = { onSave(format, name(), text()) }, share = { onShare(name(), text()) }, copy = { onCopy(text()) })
+        ExportChoices(
+            title = record.title,
+            format = format,
+            content = content,
+            setFormat = { format = it },
+            setContent = { content = it },
+            preview = preview,
+            save = { onSave(format, name(), rendered) },
+            share = { onShare(name(), rendered) },
+            copy = { onCopy(rendered) },
+        )
     }
 }
 
 @Composable
 internal fun ExportChoices(
-    title: String, format: ExportFormat, content: ExportContent, setFormat: (ExportFormat) -> Unit,
-    setContent: (ExportContent) -> Unit, save: () -> Unit, share: () -> Unit, copy: () -> Unit,
+    title: String,
+    format: ExportFormat,
+    content: ExportContent,
+    setFormat: (ExportFormat) -> Unit,
+    setContent: (ExportContent) -> Unit,
+    save: () -> Unit,
+    share: () -> Unit,
+    copy: () -> Unit,
+    preview: String? = null,
 ) {
-    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = Design.spaceLg, vertical = Design.spaceSm),
-        verticalArrangement = Arrangement.spacedBy(Design.spaceSm)) {
-        Text(stringResource(R.string.export_session), style = Design.title)
-        Text(stringResource(R.string.export_summary, title), style = Design.source)
-        Segments(stringResource(R.string.format), ExportFormat.entries.map { it.label }, format.ordinal) { setFormat(ExportFormat.entries[it]) }
-        Segments(stringResource(R.string.content), listOf(stringResource(R.string.bilingual), stringResource(R.string.source_only), stringResource(R.string.translation_only)), content.ordinal) { setContent(ExportContent.entries[it]) }
-        Button(save, Modifier.fillMaxWidth()) {
-            Glyph(R.drawable.ic_upload_file)
-            Spacer(Modifier.width(Design.spaceSm))
-            Text(stringResource(R.string.save_to_file))
+    val colors = MaterialTheme.colorScheme
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = Design.spaceLg, vertical = Design.spaceSm),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(stringResource(R.string.export_session), style = Design.title)
+            Text(stringResource(R.string.export_summary, title), style = Design.caption, color = colors.onSurfaceVariant)
         }
-        Row {
-            TextButton(share) { Text(stringResource(R.string.share)) }
-            TextButton(copy) { Text(stringResource(R.string.copy_text)) }
+        Segments(stringResource(R.string.format), ExportFormat.entries.map { it.label }, format.ordinal) { setFormat(ExportFormat.entries[it]) }
+        Segments(
+            stringResource(R.string.content),
+            listOf(stringResource(R.string.bilingual), stringResource(R.string.source_only), stringResource(R.string.translation_only)),
+            content.ordinal,
+        ) { setContent(ExportContent.entries[it]) }
+
+        if (!preview.isNullOrBlank()) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(stringResource(R.string.export_preview), style = Design.caption, color = colors.onSurfaceVariant)
+                Surface(
+                    color = colors.surfaceContainerLowest,
+                    shape = RoundedCornerShape(Design.radiusButton),
+                    border = BorderStroke(1.dp, colors.outlineVariant),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        preview,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, lineHeight = 18.sp),
+                        color = colors.onSurfaceVariant,
+                        maxLines = 5,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
+            }
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp, bottom = Design.spaceMd)) {
+            Button(
+                onClick = save,
+                shape = RoundedCornerShape(Design.radiusCard),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp),
+            ) {
+                Glyph(R.drawable.ic_upload_file, Modifier.size(18.dp))
+                Spacer(Modifier.width(Design.spaceSm))
+                Text(stringResource(R.string.save_to_file), fontWeight = FontWeight.SemiBold)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(
+                    onClick = share,
+                    shape = RoundedCornerShape(Design.radiusButton),
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                ) {
+                    Glyph(R.drawable.ic_share, Modifier.size(17.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.share), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                FilledTonalButton(
+                    onClick = copy,
+                    shape = RoundedCornerShape(Design.radiusButton),
+                    modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                ) {
+                    Glyph(R.drawable.ic_content_copy, Modifier.size(17.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.copy_all_text), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
         }
     }
 }

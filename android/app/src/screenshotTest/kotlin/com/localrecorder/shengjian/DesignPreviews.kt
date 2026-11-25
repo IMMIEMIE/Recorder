@@ -4,27 +4,38 @@ package com.localrecorder.shengjian
 
 import android.content.res.Configuration
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.lazy.LazyListPrefetchStrategy
-import androidx.compose.foundation.lazy.layout.PrefetchScheduler
-import androidx.compose.foundation.lazy.layout.PrefetchRequest
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyListPrefetchStrategy
+import androidx.compose.foundation.lazy.layout.PrefetchRequest
+import androidx.compose.foundation.lazy.layout.PrefetchScheduler
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.res.stringResource
-import com.localrecorder.live.SessionState
-import com.localrecorder.live.SubtitleRow
 import com.android.tools.screenshot.PreviewTest
 import com.localrecorder.live.LiveTranslateConfig
+import com.localrecorder.live.SessionSnapshot
+import com.localrecorder.live.SessionState
+import com.localrecorder.live.SubtitleRow
+import com.localrecorder.sessions.ExportContent
+import com.localrecorder.sessions.ExportFormat
 import com.localrecorder.shengjian.ui.theme.Design
 import com.localrecorder.shengjian.ui.theme.LocalStatusColors
 import com.localrecorder.shengjian.ui.theme.ShengjianTheme
@@ -50,8 +61,8 @@ private fun Review(initial: Page = Page.Transcript) {
                 val wide = maxWidth >= Design.wide
                 Row(Modifier.fillMaxSize()) {
                     if (wide && page in listOf(Page.Transcript, Page.Export)) {
-                        History(Modifier.width(256.dp).fillMaxHeight(), { page = Page.Transcript }, { page = Page.Settings })
-                        VerticalDivider()
+                        History(Modifier.width(280.dp).fillMaxHeight(), { page = Page.Transcript }, { page = Page.Settings })
+                        VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     }
                     when (page) {
                         Page.Dialogue -> DialogueReview { page = Page.Transcript }
@@ -72,27 +83,68 @@ private fun Review(initial: Page = Page.Transcript) {
 @Composable
 private fun History(modifier: Modifier, select: () -> Unit, settings: () -> Unit) {
     val colors = MaterialTheme.colorScheme
+    val barColor = colors.primary
     Column(modifier.background(colors.surfaceContainerLow)) {
-        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = Design.spaceXs), verticalAlignment = Alignment.CenterVertically) {
-            Text("会话记录", Modifier.weight(1f), style = Design.title)
+        Row(
+            Modifier.fillMaxWidth().padding(start = 20.dp, end = Design.spaceSm, top = Design.spaceSm, bottom = Design.spaceXs),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("会话记录", style = Design.title)
+                Surface(color = colors.surfaceContainer, shape = CircleShape) {
+                    Text("3 段会话", style = Design.caption, color = colors.onSurfaceVariant, modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
+                }
+            }
             Tool(R.drawable.ic_settings, "设置", click = settings)
         }
-        FilledTonalButton(onClick = select, modifier = Modifier.padding(horizontal = Design.spaceMd, vertical = Design.spaceSm)) {
-            Glyph(R.drawable.ic_add)
+        FilledTonalButton(
+            onClick = select,
+            shape = RoundedCornerShape(Design.radiusCard),
+            colors = ButtonDefaults.filledTonalButtonColors(
+                containerColor = colors.primaryContainer,
+                contentColor = colors.onPrimaryContainer,
+            ),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = Design.spaceMd, vertical = Design.spaceSm).heightIn(min = 48.dp),
+        ) {
+            Glyph(R.drawable.ic_add, Modifier.size(18.dp))
             Spacer(Modifier.width(Design.spaceSm))
-            Text("新建会话")
+            Text("新建会话", fontWeight = FontWeight.SemiBold)
         }
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = Design.spaceSm)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp)) {
             for ((group, titles) in listOf("今天" to listOf("河岸散步", "访谈提纲"), "昨天" to listOf("周末读书会"))) {
-                Text(group, Modifier.padding(horizontal = Design.spaceMd, vertical = Design.spaceSm), style = Design.caption, color = colors.onSurfaceVariant)
+                Text(group, Modifier.padding(horizontal = 12.dp, vertical = Design.spaceSm), style = Design.caption, color = colors.onSurfaceVariant)
                 for (title in titles) {
                     val active = title == "河岸散步"
-                    Column(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium)
-                        .background(if (active) colors.secondaryContainer else colors.surfaceContainerLow)
-                        .clickable(onClick = select).padding(horizontal = Design.spaceMd, vertical = 12.dp)) {
-                        Text(title, style = Design.source)
-                        Text(if (active) "09:41 · 录制中" else if (title == "访谈提纲") "08:15" else "14:20",
-                            style = Design.caption, color = if (active) LocalStatusColors.current.recording else colors.onSurfaceVariant)
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp)
+                            .clip(RoundedCornerShape(Design.radiusCard))
+                            .background(if (active) colors.secondaryContainer else colors.surfaceContainerLow)
+                            .drawBehind {
+                                if (active) {
+                                    val bw = 3.dp.toPx()
+                                    val inset = 10.dp.toPx()
+                                    drawRoundRect(barColor, Offset(4.dp.toPx(), inset), Size(bw, size.height - inset * 2), CornerRadius(bw, bw))
+                                }
+                            }
+                            .clickable(onClick = select)
+                            .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(title, style = Design.source.copy(fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal))
+                                if (active) {
+                                    val rec = LocalStatusColors.current.recording
+                                    Surface(color = rec.copy(alpha = 0.13f), shape = CircleShape) {
+                                        Text("录制中", style = MaterialTheme.typography.labelSmall, color = rec, modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp))
+                                    }
+                                }
+                            }
+                            Text(if (active) "09:41" else if (title == "访谈提纲") "08:15" else "14:20", style = Design.caption, color = colors.onSurfaceVariant)
+                        }
+                        Tool(R.drawable.ic_more_vert, "会话操作", tint = colors.onSurfaceVariant, click = select)
                     }
                 }
             }
@@ -105,39 +157,70 @@ private fun Transcript(wide: Boolean, recording: Boolean, toggle: () -> Unit, na
     val colors = MaterialTheme.colorScheme
     var more by remember { mutableStateOf(false) }
     var speech by remember { mutableStateOf(true) }
-    Column(Modifier.fillMaxSize()) {
-        SessionHeader("河岸散步", if (wide) null else ({ navigate(Page.History) })) {
-            TextButton({ navigate(Page.Dialogue) }) { Text(stringResource(R.string.dialogue_mode)) }
+    Column(Modifier.fillMaxSize().background(colors.surface)) {
+        SessionHeader(
+            title = "河岸散步",
+            openList = if (wide) null else ({ navigate(Page.History) }),
+            statusContent = {
+                StatusPill(
+                    SessionSnapshot(state = if (recording) SessionState.RECORDING else SessionState.IDLE),
+                    hasSession = true,
+                )
+            },
+        ) {
+            FilledTonalButton(
+                onClick = { navigate(Page.Dialogue) },
+                shape = CircleShape,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier.heightIn(min = 40.dp),
+            ) {
+                Glyph(R.drawable.ic_dialogue, Modifier.size(16.dp))
+                Spacer(Modifier.width(5.dp))
+                Text(stringResource(R.string.dialogue_chip), style = Design.caption.copy(fontWeight = FontWeight.SemiBold))
+            }
             Box {
-                Tool(R.drawable.ic_more_vert, "更多操作") { more = true }
+                Tool(R.drawable.ic_more_vert, "更多操作", tint = colors.onSurfaceVariant) { more = true }
                 DropdownMenu(more, { more = false }) {
                     DropdownMenuItem(text = { Text("导出会话") }, onClick = { more = false; navigate(Page.Export) })
                     DropdownMenuItem(text = { Text("设置") }, onClick = { more = false; navigate(Page.Settings) })
                 }
             }
         }
-        SessionStatus(com.localrecorder.live.SessionSnapshot(state = if (recording) com.localrecorder.live.SessionState.RECORDING else com.localrecorder.live.SessionState.IDLE),
-            "中文", true) {
-            LanguageChoice(stringResource(R.string.target_button, "中文"), "zh", {})
-        }
-        HorizontalDivider()
-        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState(), reverseScrolling = true),
-            verticalArrangement = Arrangement.Bottom) {
-            samples.forEachIndexed { i, (translation, source) ->
-                val done = i != samples.lastIndex || !recording
-                SubtitleText(com.localrecorder.live.SubtitleRow(i.toString(), source, done, translation, done), if (i < 2) "09:40" else if (i < 4) "09:41" else "09:42")
-            }
-        }
-        Surface(color = colors.surfaceContainerLow) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = Design.spaceMd, vertical = Design.spaceSm)) {
-                SpeechToggle(speech, true, { speech = it })
-                Button(onClick = toggle, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), shape = MaterialTheme.shapes.medium) {
-                    Glyph(if (recording) R.drawable.ic_stop else R.drawable.ic_mic)
-                    Spacer(Modifier.width(Design.spaceSm))
-                    Text(if (recording) "停止实时翻译" else "开始实时翻译")
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            Column(
+                Modifier.fillMaxSize().verticalScroll(rememberScrollState(), reverseScrolling = true).padding(top = 18.dp, bottom = 8.dp),
+                verticalArrangement = Arrangement.Bottom,
+            ) {
+                samples.forEachIndexed { i, (translation, source) ->
+                    val done = i != samples.lastIndex || !recording
+                    SubtitleText(
+                        SubtitleRow(i.toString(), source, done, translation, done),
+                        if (i < 2) "09:40" else if (i < 4) "09:41" else "09:42",
+                    )
                 }
             }
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(24.dp)
+                    .align(Alignment.TopCenter)
+                    .background(Brush.verticalGradient(listOf(colors.surface, colors.surface.copy(alpha = 0f)))),
+            )
         }
+        BottomActionDock(
+            languageLabel = stringResource(R.string.target_pill, "中文"),
+            languageEnabled = true,
+            onOpenLanguage = {},
+            audioOutput = speech,
+            audioEnabled = true,
+            onToggleAudio = { speech = it },
+            playing = recording && speech,
+            onStopPlayback = {},
+            active = recording,
+            primaryLabel = if (recording) "停止实时翻译" else "开始实时翻译",
+            primaryEnabled = true,
+            onPrimaryClick = toggle,
+        )
     }
 }
 
@@ -147,10 +230,17 @@ private fun Settings(back: () -> Unit) {
     var key by remember { mutableStateOf("") }
     var options by remember { mutableStateOf(AppOptions()) }
     SettingsLayout(back, service = {
-        ServiceFields(config.profile, config, key, true, false,
+        ServiceFields(
+            profile = config.profile,
+            config = config,
+            key = key,
+            keySaved = true,
+            testing = false,
             onEdit = { config = config.copy(catalog = config.catalog.using(it)) },
             onSelect = { config = config.copy(catalog = config.catalog.using(it)) },
-            onKey = { key = it }, test = {})
+            onKey = { key = it },
+            test = {},
+        )
     }) {
         PreferenceGroups(config, options, true, { config = it(config) }, { options = it(options) }, true, {})
     }
@@ -160,11 +250,21 @@ private fun Settings(back: () -> Unit) {
 private fun Export(close: () -> Unit) {
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = .32f)), contentAlignment = Alignment.BottomCenter) {
         Surface(shape = BottomSheetDefaults.ExpandedShape, color = MaterialTheme.colorScheme.surfaceContainerLow) {
-            var format by remember { mutableStateOf(com.localrecorder.sessions.ExportFormat.TXT) }
-            var content by remember { mutableStateOf(com.localrecorder.sessions.ExportContent.BILINGUAL) }
+            var format by remember { mutableStateOf(ExportFormat.MARKDOWN) }
+            var content by remember { mutableStateOf(ExportContent.BILINGUAL) }
             Column {
                 BottomSheetDefaults.DragHandle(Modifier.align(Alignment.CenterHorizontally))
-                ExportChoices("河岸散步", format, content, { format = it }, { content = it }, close, close, close)
+                ExportChoices(
+                    title = "河岸散步",
+                    format = format,
+                    content = content,
+                    setFormat = { format = it },
+                    setContent = { content = it },
+                    preview = "# 河岸散步\n\n**09:40**\n早晨的河边很安静，适合散步。\n> The waterfront is quiet in the morning.",
+                    save = close,
+                    share = close,
+                    copy = close,
+                )
             }
         }
     }
@@ -185,15 +285,21 @@ private fun previewListState() = rememberLazyListState(prefetchStrategy = rememb
 @Composable
 private fun DialogueReview(exit: () -> Unit) {
     val rows = listOf(
-        SubtitleRow("1", "我们在河边碰面吧。", true, "Let's meet by the river.", true,
-            sourceLanguage = "zh", targetLanguage = "en", speaker = "A"),
-        SubtitleRow("2", "Shall we meet at the bridge?", true, "我们在桥上见面好吗？", true,
-            sourceLanguage = "en", targetLanguage = "zh", speaker = "B"),
+        SubtitleRow(
+            "1", "我们在河边碰面吧。", true, "Let's meet by the river.", true,
+            sourceLanguage = "zh", targetLanguage = "en", speaker = "A",
+        ),
+        SubtitleRow(
+            "2", "Shall we meet at the bridge?", true, "我们在桥上见面好吗？", true,
+            sourceLanguage = "en", targetLanguage = "zh", speaker = "B",
+        ),
     )
-    DialogueScreen(rows, "zh", "en", SessionState.RECORDING, true, false, false,
+    DialogueScreen(
+        rows, "zh", "en", SessionState.RECORDING, true, false, false,
         stringResource(R.string.recording), remember { SnackbarHostState() },
         facing = true, toggleFacing = {}, setLanguages = { _, _ -> }, record = {}, exit = exit, onSpeech = {}, stopPlayback = {}, settings = {},
-        listA = previewListState(), listB = previewListState())
+        listA = previewListState(), listB = previewListState(),
+    )
 }
 
 @PreviewTest @Preview(name = "PhoneDialogue", widthDp = 393, heightDp = 780, locale = "zh-rCN")
