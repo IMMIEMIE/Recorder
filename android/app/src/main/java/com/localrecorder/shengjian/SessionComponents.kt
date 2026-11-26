@@ -1,5 +1,9 @@
 package com.localrecorder.shengjian
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -55,6 +59,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.localrecorder.live.AudioSourceMode
 import com.localrecorder.live.InterfaceLanguage
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.live.SessionSnapshot
@@ -428,6 +433,173 @@ internal fun LanguagePickerSheet(
     }
 }
 
+@Composable
+internal fun OverlayPermissionDialog(
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.floating_subtitle)) },
+        text = { Text(stringResource(R.string.floating_permission_rationale)) },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(stringResource(R.string.floating_permission_go_settings))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        },
+    )
+}
+
+internal fun openOverlayPermissionSettings(context: Context) {
+    val specific = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+        context.startActivity(specific)
+    } catch (_: Exception) {
+        try {
+            context.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun AudioSourceBar(
+    selected: AudioSourceMode,
+    canSwitch: Boolean,
+    systemAudioSupported: Boolean,
+    floatingSubtitleEnabled: Boolean,
+    overlayPermissionGranted: Boolean,
+    onSelect: (AudioSourceMode) -> Unit,
+    onUnsupportedTap: () -> Unit,
+    onToggleFloatingSubtitle: (Boolean) -> Unit,
+    onRequestOverlayPermission: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.colorScheme
+    val choices = listOf(
+        AudioSourceMode.MICROPHONE to stringResource(R.string.audio_mode_mic),
+        AudioSourceMode.SYSTEM_AUDIO to stringResource(R.string.audio_mode_system),
+        AudioSourceMode.SYSTEM_AND_MIC to stringResource(R.string.audio_mode_mixed),
+    )
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(colors.surface)
+            .padding(horizontal = Design.spaceMd, vertical = Design.spaceXs),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            choices.forEachIndexed { index, (mode, label) ->
+                val unsupported = mode.usesSystemAudio && !systemAudioSupported
+                val isSelected = selected == mode
+                SegmentedButton(
+                    selected = isSelected,
+                    onClick = {
+                        if (unsupported) onUnsupportedTap() else onSelect(mode)
+                    },
+                    enabled = canSwitch && !unsupported,
+                    shape = SegmentedButtonDefaults.itemShape(index, choices.size),
+                    colors = SegmentedButtonDefaults.colors(
+                        activeContainerColor = colors.secondaryContainer,
+                        activeContentColor = colors.onSecondaryContainer,
+                        inactiveContainerColor = colors.surfaceContainerLow,
+                        inactiveContentColor = if (unsupported) colors.onSurface.copy(alpha = 0.38f) else colors.onSurfaceVariant,
+                    ),
+                ) {
+                    Text(
+                        label,
+                        style = Design.caption.copy(fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+        AnimatedVisibility(
+            visible = !systemAudioSupported,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(140)),
+        ) {
+            Text(
+                stringResource(R.string.system_audio_android_10_hint),
+                style = Design.caption,
+                color = colors.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = Design.spaceXs),
+            )
+        }
+        AnimatedVisibility(
+            visible = systemAudioSupported && selected.usesSystemAudio,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(140)),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = if (overlayPermissionGranted) {
+                        stringResource(
+                            if (floatingSubtitleEnabled) R.string.floating_subtitle_active_hint
+                            else R.string.floating_subtitle_off_hint,
+                        )
+                    } else {
+                        stringResource(R.string.floating_subtitle_optional_hint)
+                    },
+                    style = Design.caption,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(end = Design.spaceSm),
+                )
+                Surface(
+                    onClick = {
+                        if (overlayPermissionGranted) onToggleFloatingSubtitle(!floatingSubtitleEnabled)
+                        else onRequestOverlayPermission()
+                    },
+                    shape = CircleShape,
+                    color = if (overlayPermissionGranted && floatingSubtitleEnabled) colors.primaryContainer else colors.surfaceContainer,
+                    border = BorderStroke(
+                        1.dp,
+                        if (overlayPermissionGranted && floatingSubtitleEnabled) colors.primary.copy(alpha = 0.45f) else colors.outlineVariant,
+                    ),
+                    modifier = Modifier.heightIn(min = 34.dp),
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Glyph(
+                            R.drawable.ic_subtitles,
+                            Modifier.size(15.dp),
+                            tint = if (overlayPermissionGranted && floatingSubtitleEnabled) colors.onPrimaryContainer else colors.onSurfaceVariant,
+                        )
+                        Text(
+                            text = when {
+                                !overlayPermissionGranted -> stringResource(R.string.enable_floating_subtitle)
+                                floatingSubtitleEnabled -> stringResource(R.string.floating_subtitle_on)
+                                else -> stringResource(R.string.floating_subtitle_off)
+                            },
+                            style = Design.caption.copy(fontWeight = FontWeight.SemiBold),
+                            color = if (overlayPermissionGranted && floatingSubtitleEnabled) colors.onPrimaryContainer else colors.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun BottomActionDock(
@@ -444,6 +616,7 @@ internal fun BottomActionDock(
     primaryEnabled: Boolean,
     onPrimaryClick: () -> Unit,
     returnToRecording: (() -> Unit)? = null,
+    @DrawableRes idlePrimaryIcon: Int = R.drawable.ic_mic,
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -576,7 +749,7 @@ internal fun BottomActionDock(
                 shape = RoundedCornerShape(Design.radiusCard),
                 modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
             ) {
-                Glyph(if (active) R.drawable.ic_stop else R.drawable.ic_mic, Modifier.size(20.dp))
+                Glyph(if (active) R.drawable.ic_stop else idlePrimaryIcon, Modifier.size(20.dp))
                 Spacer(Modifier.width(Design.spaceSm))
                 Text(
                     primaryLabel,

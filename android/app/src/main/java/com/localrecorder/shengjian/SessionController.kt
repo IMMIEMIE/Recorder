@@ -1,20 +1,28 @@
 package com.localrecorder.shengjian
 
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.AudioRecordingConfiguration
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
+import com.localrecorder.live.AudioSourceMode
 import com.localrecorder.live.Cancellable
-import com.localrecorder.live.EndCause
 import com.localrecorder.live.ConversationSession
 import com.localrecorder.live.DialogueTurns
+import com.localrecorder.live.EndCause
+import com.localrecorder.live.LiveMessage
+import com.localrecorder.live.LiveServiceProfile
+import com.localrecorder.live.LiveSessionEvent
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.live.LiveTranslateException
 import com.localrecorder.live.LiveTransport
@@ -27,14 +35,11 @@ import com.localrecorder.sessions.SessionExport
 import com.localrecorder.sessions.SessionRecord
 import com.localrecorder.sessions.SessionRecorder
 import com.localrecorder.sessions.SessionSummary
+import com.localrecorder.sessions.SessionText
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import com.localrecorder.live.LiveSessionEvent
-import com.localrecorder.live.LiveServiceProfile
-import com.localrecorder.live.LiveMessage
-import com.localrecorder.sessions.SessionText
 import java.io.File
 import java.time.ZoneId
 import java.util.UUID
@@ -62,15 +67,27 @@ data class UiState(
     val dialogueMode: Boolean = false,
     val dialogueLanguageA: String = "zh",
     val dialogueLanguageB: String = "en",
+    val systemAudioSupported: Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
+    val overlayPermissionGranted: Boolean = false,
+    val startingProjection: Boolean = false,
 ) {
     val viewingRecording: Boolean get() = recordingId != null && selectedId == recordingId
     val selectedTitle: String? get() = selectedId?.let { id -> sessions.firstOrNull { it.id == id }?.title ?: viewed?.title }
+
+    /** Dialogue mode always captures microphone only; exiting dialogue restores the selected source mode. */
+    val effectiveAudioMode: AudioSourceMode
+        get() = when {
+            dialogueMode -> AudioSourceMode.MICROPHONE
+            !systemAudioSupported -> AudioSourceMode.MICROPHONE
+            else -> options.audioSourceMode
+        }
 }
 
 /**
- * The Android side of [ConversationSession] (microphone, speech player, foreground service, network and
- * audio-routing callbacks) plus settings and saved sessions. Everything runs on the main thread; the
- * session logic itself lives in `:core` and is tested there.
+ * The Android side of [ConversationSession] (microphone, system playback capture, audio mixing,
+ * speech player, foreground service, floating subtitle overlay, network and audio-routing callbacks)
+ * plus settings and saved sessions. Everything runs on the main thread; the session logic itself
+ * lives in `:core` and is tested there.
  */
 class SessionController(private val context: Context) : SessionPlatform {
     private val settings = SettingsStore(context)
@@ -79,6 +96,7 @@ class SessionController(private val context: Context) : SessionPlatform {
     private val mainExecutor = Executor { main.post(it) }
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
+    private val projectionManager = context.getSystemService(MediaProjectionManager::class.java)
     private val routing = AudioRouting(audioManager)
 
     /** Debug builds accept ws://127.0.0.1 to run against tests/mock_livetranslate_server.py (adb reverse). */
@@ -114,9 +132,38 @@ class SessionController(private val context: Context) : SessionPlatform {
     })
     private var recordingSummary: SessionSummary? = null
     private var microphone: MicrophoneSource? = null
+    private var playbackSource: PlaybackAudioSource? = null
+    private var mixedSource: MixedAudioSource? = null
+    private var activeProjection: MediaProjection? = null
+    private var releasingProjection = false
+    private var recordingCallbackRegistered = false
+    private var activeCaptureMode = AudioSourceMode.MICROPHONE
     private var player: SpeechPlayer? = null
     private var tester: LiveTransport? = null
     private var monitoringNetwork = false
+
+    private data class PendingProjection(val resultCode: Int, val data: Intent, val mode: AudioSourceMode)
+    private var pendingProjection: PendingProjection? = null
+    private var stagedProjection: PendingProjection? = null
+    private val pendingProjectionTimeout = Runnable {
+        if (pendingProjection != null) onForegroundServiceFailed()
+    }
+
+    private var appInForeground = false
+    private var pendingEnableOverlayAfterPermission = false
+
+    private val overlay = FloatingSubtitleOverlay(
+        appContext = context.applicationContext,
+        onToggleBilingual = { setFloatingBilingual(!options.floatingBilingual) },
+        onOpenApp = {
+            val open = Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            context.startActivity(open)
+        },
+        onStopSession = { stop() },
+        onCloseOverlay = { setFloatingSubtitleEnabled(false) },
+        onPositionChanged = { x, y -> saveOverlayPosition(x, y) },
+    )
 
     // Ongoing notification: the latest translation of this session, at most one update per second.
     private var firstRowKey: String? = null
@@ -130,18 +177,109 @@ class SessionController(private val context: Context) : SessionPlatform {
 
     init {
         val (a, b) = settings.loadDialogueLanguages()
-        _ui.update { it.copy(config = config, options = options, hasKey = secrets.has(config.keyAccount),
-            dialogueLanguageA = a, dialogueLanguageB = b) }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && options.audioSourceMode.usesSystemAudio) {
+            options = options.copy(audioSourceMode = AudioSourceMode.MICROPHONE)
+            settings.saveOptions(options)
+        }
+        val canOverlay = Settings.canDrawOverlays(context)
+        if (options.audioSourceMode.usesSystemAudio && canOverlay && !options.floatingSubtitleUserSet && !options.floatingSubtitle) {
+            options = options.copy(floatingSubtitle = true)
+            settings.saveOptions(options)
+        }
+        _ui.update {
+            it.copy(
+                config = config,
+                options = options,
+                hasKey = secrets.has(config.keyAccount),
+                dialogueLanguageA = a,
+                dialogueLanguageB = b,
+                systemAudioSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q,
+                overlayPermissionGranted = canOverlay,
+            )
+        }
         configureMode()
         library.onChange = ::publishSessions
     }
 
     /**
-     * Starts recording into the selected session (a new segment) or, with nothing selected, into a new
-     * session. The caller has already obtained RECORD_AUDIO.
+     * Starts microphone recording into the selected session (or a new session). The caller has
+     * already obtained RECORD_AUDIO.
      */
     fun start() {
-        if (engine.snapshot.state != SessionState.IDLE) return
+        if (engine.snapshot.state != SessionState.IDLE || pendingProjection != null) return
+        activeCaptureMode = AudioSourceMode.MICROPHONE
+        stagedProjection = null
+        startEngineSession()
+    }
+
+    /**
+     * Starts a system audio or mixed session using the MediaProjection consent result.
+     * On Android 14+ (targetSdk 35), RecordingService MUST enter the foreground with
+     * FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION before MediaProjectionManager.getMediaProjection()
+     * is invoked, so we wait for RecordingService.onStartCommand() to confirm foreground entry.
+     */
+    fun startWithProjection(resultCode: Int, data: Intent) {
+        if (engine.snapshot.state != SessionState.IDLE || pendingProjection != null) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            engine.notice(LiveMessage.SystemAudioUnsupported)
+            return
+        }
+        val state = _ui.value
+        val mode = state.effectiveAudioMode
+        if (!mode.usesSystemAudio) {
+            start()
+            return
+        }
+        if (state.selectedId != null && state.viewed?.id != state.selectedId) return
+        pendingProjection = PendingProjection(resultCode, data, mode)
+        _ui.update { it.copy(startingProjection = true) }
+        main.removeCallbacks(pendingProjectionTimeout)
+        main.postDelayed(pendingProjectionTimeout, PROJECTION_FGS_TIMEOUT_MS)
+        try {
+            RecordingService.start(context, mode)
+        } catch (_: Exception) {
+            onForegroundServiceFailed()
+        }
+    }
+
+    internal fun onForegroundServiceStarted(mode: AudioSourceMode) {
+        val pending = pendingProjection ?: return
+        main.removeCallbacks(pendingProjectionTimeout)
+        pendingProjection = null
+        _ui.update { it.copy(startingProjection = false) }
+        activeCaptureMode = pending.mode
+        stagedProjection = pending
+        startEngineSession()
+        if (engine.snapshot.state == SessionState.IDLE) {
+            stagedProjection = null
+            releaseProjection()
+            RecordingService.stop(context)
+        }
+    }
+
+    internal fun onForegroundServiceFailed() {
+        main.removeCallbacks(pendingProjectionTimeout)
+        val hadPending = pendingProjection != null
+        pendingProjection = null
+        stagedProjection = null
+        _ui.update { it.copy(startingProjection = false) }
+        if (hadPending) {
+            RecordingService.stop(context)
+            engine.notice(LiveMessage.ForegroundServiceFailed)
+        }
+    }
+
+    internal fun onRecordingServiceDestroyed() {
+        overlay.hide()
+        if (pendingProjection != null) {
+            main.removeCallbacks(pendingProjectionTimeout)
+            pendingProjection = null
+            stagedProjection = null
+            _ui.update { it.copy(startingProjection = false) }
+        }
+    }
+
+    private fun startEngineSession() {
         val state = _ui.value
         val base = state.selectedId?.let { id -> state.viewed?.takeIf { it.id == id } ?: return }
         // The live list shows only this recording; earlier rows come from the saved session.
@@ -162,10 +300,106 @@ class SessionController(private val context: Context) : SessionPlatform {
         if (engine.snapshot.state == SessionState.IDLE) recorder.finish()
     }
 
-    fun stop() = engine.stop()
+    fun stop() {
+        if (pendingProjection != null) {
+            main.removeCallbacks(pendingProjectionTimeout)
+            pendingProjection = null
+            stagedProjection = null
+            _ui.update { it.copy(startingProjection = false) }
+            RecordingService.stop(context)
+            return
+        }
+        engine.stop()
+    }
 
     /** Writes pending rows now (the app goes to the background). */
     fun flush() = recorder.flush()
+
+    fun setAppForeground(foreground: Boolean) {
+        appInForeground = foreground
+        syncOverlay()
+    }
+
+    fun setAudioSourceMode(mode: AudioSourceMode) {
+        if (engine.snapshot.state != SessionState.IDLE || _ui.value.startingProjection) return
+        if (mode.usesSystemAudio && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            engine.notice(LiveMessage.SystemAudioUnsupported)
+            return
+        }
+        val canOverlay = Settings.canDrawOverlays(context)
+        val autoEnableOverlay = mode.usesSystemAudio && canOverlay && !options.floatingSubtitleUserSet
+        val next = options.copy(
+            audioSourceMode = mode,
+            floatingSubtitle = if (autoEnableOverlay) true else options.floatingSubtitle,
+        )
+        options = next
+        settings.saveOptions(next)
+        _ui.update { it.copy(options = next, overlayPermissionGranted = canOverlay) }
+        syncOverlay()
+    }
+
+    fun setFloatingSubtitleEnabled(enabled: Boolean) {
+        val next = options.copy(floatingSubtitle = enabled, floatingSubtitleUserSet = true)
+        options = next
+        settings.saveOptions(next)
+        _ui.update { it.copy(options = next, overlayPermissionGranted = Settings.canDrawOverlays(context)) }
+        syncOverlay()
+    }
+
+    fun setFloatingBilingual(bilingual: Boolean) {
+        val next = options.copy(floatingBilingual = bilingual)
+        options = next
+        settings.saveOptions(next)
+        _ui.update { it.copy(options = next) }
+        syncOverlay()
+    }
+
+    fun markPendingOverlayPermission() {
+        pendingEnableOverlayAfterPermission = true
+    }
+
+    fun refreshOverlayPermission() {
+        val granted = Settings.canDrawOverlays(context)
+        if (granted && pendingEnableOverlayAfterPermission) {
+            pendingEnableOverlayAfterPermission = false
+            setFloatingSubtitleEnabled(true)
+            return
+        }
+        if (!granted) pendingEnableOverlayAfterPermission = false
+        if (granted && options.audioSourceMode.usesSystemAudio && !options.floatingSubtitleUserSet && !options.floatingSubtitle) {
+            val next = options.copy(floatingSubtitle = true)
+            options = next
+            settings.saveOptions(next)
+        }
+        _ui.update { it.copy(options = options, overlayPermissionGranted = granted) }
+        syncOverlay()
+    }
+
+    fun notifySystemAudioDenied() {
+        engine.notice(LiveMessage.SystemAudioPermissionDenied)
+    }
+
+    private fun saveOverlayPosition(x: Int, y: Int) {
+        val next = options.copy(floatingOffsetX = x, floatingOffsetY = y)
+        options = next
+        settings.saveOptions(next)
+        _ui.update { it.copy(options = next) }
+    }
+
+    private fun syncOverlay() {
+        val snapshot = engine.snapshot
+        val active = snapshot.state != SessionState.IDLE
+        if (active && !appInForeground && options.floatingSubtitle && Settings.canDrawOverlays(context)) {
+            overlay.showOrUpdate(
+                snapshot = snapshot,
+                bilingual = options.floatingBilingual,
+                savedX = options.floatingOffsetX,
+                savedY = options.floatingOffsetY,
+            )
+        } else {
+            overlay.hide()
+        }
+    }
 
     /** Shows a session; null shows a new, empty one. Recording continues in its own session. */
     fun select(id: String?) {
@@ -229,7 +463,9 @@ class SessionController(private val context: Context) : SessionPlatform {
     fun dismissMessages() = engine.dismissMessages()
 
     fun setDialogueMode(enabled: Boolean) {
-        if (_ui.value.dialogueMode == enabled || engine.snapshot.state == SessionState.FINISHING) return
+        if (_ui.value.dialogueMode == enabled || engine.snapshot.state == SessionState.FINISHING || _ui.value.startingProjection) return
+        // Dialogue mode always uses microphone only; never switch mid-session from system/mixed capture.
+        if (enabled && engine.snapshot.state != SessionState.IDLE && activeCaptureMode.usesSystemAudio) return
         _ui.update { it.copy(dialogueMode = enabled) }
         configureMode()
     }
@@ -268,10 +504,18 @@ class SessionController(private val context: Context) : SessionPlatform {
             config = saved
             options = draftOptions
             _ui.update {
-                it.copy(config = saved, options = draftOptions, hasKey = secrets.has(saved.keyAccount), settingsMessage = localized.getString(R.string.saved), testSucceeded = null)
+                it.copy(
+                    config = saved,
+                    options = draftOptions,
+                    hasKey = secrets.has(saved.keyAccount),
+                    settingsMessage = localized.getString(R.string.saved),
+                    testSucceeded = null,
+                    overlayPermissionGranted = Settings.canDrawOverlays(context),
+                )
             }
             if (active) engine.updatePreferences(saved, draftOptions.autoReconnect)
             if (targetChanged) configureMode()
+            syncOverlay()
             true
         } catch (e: LiveTranslateException) {
             _ui.update { it.copy(settingsMessage = localized.formatLiveMessage(e.liveMessage)) }
@@ -298,7 +542,7 @@ class SessionController(private val context: Context) : SessionPlatform {
         } catch (e: LiveTranslateException) { engine.notice(e.liveMessage) }
     }
 
-    /** Refreshes localized foreground notifications and clears stale transient messages after an interface language switch. */
+    /** Refreshes localized foreground notifications, overlay and clears stale transient messages after a locale/theme change. */
     fun onInterfaceLanguageChanged() {
         _ui.update { it.copy(settingsMessage = "", testSucceeded = null) }
         RecordingService.refreshChannel(context)
@@ -306,6 +550,7 @@ class SessionController(private val context: Context) : SessionPlatform {
             notified = ""
             pushNotification()
         }
+        syncOverlay()
     }
 
     /** Keys are stored under the normalized address. */
@@ -383,6 +628,7 @@ class SessionController(private val context: Context) : SessionPlatform {
         recorder.observe(snapshot)
         _ui.update { it.copy(session = snapshot) }
         if (recorder.record?.summary != recordingSummary) publishSessions()
+        syncOverlay()
         if (snapshot.state == SessionState.IDLE || notificationPending) return
         val wait = notifiedAt + 1_000 - SystemClock.elapsedRealtime()
         if (wait <= 0) {
@@ -401,7 +647,7 @@ class SessionController(private val context: Context) : SessionPlatform {
         val latest = snapshot.rows.asReversed().asSequence()
             .takeWhile { it.key != firstRowKey }
             .firstOrNull { it.translation.isNotEmpty() }
-        val text = latest?.translation ?: localized.getString(R.string.live_notification_audio)
+        val text = latest?.translation ?: localized.getString(RecordingService.notificationTextRes(activeCaptureMode))
         val content = "$title\n$text"
         if (content == notified) return
         if (RecordingService.update(context, title, text)) {
@@ -426,6 +672,14 @@ class SessionController(private val context: Context) : SessionPlatform {
         configuration.profile.transport(listener, mainExecutor, allowLocalhost)
 
     override fun startCapture(onChunk: (ByteArray) -> Unit, onError: (String) -> Unit) {
+        when (activeCaptureMode) {
+            AudioSourceMode.MICROPHONE -> startMicrophoneCapture(onChunk, onError)
+            AudioSourceMode.SYSTEM_AUDIO -> startSystemAudioCapture(onChunk, onError, mixed = false)
+            AudioSourceMode.SYSTEM_AND_MIC -> startSystemAudioCapture(onChunk, onError, mixed = true)
+        }
+    }
+
+    private fun startMicrophoneCapture(onChunk: (ByteArray) -> Unit, onError: (String) -> Unit) {
         val notices = mutableListOf<LiveMessage>()
         var headset: AudioDeviceInfo? = null
         if (options.bluetoothMicrophone) {
@@ -452,16 +706,111 @@ class SessionController(private val context: Context) : SessionPlatform {
             else LiveMessage.LoudspeakerNoEchoCancel
         }
         audioManager.registerAudioRecordingCallback(recordingCallback, main)
+        recordingCallbackRegistered = true
+        emitNotices(notices)
+    }
+
+    private fun startSystemAudioCapture(onChunk: (ByteArray) -> Unit, onError: (String) -> Unit, mixed: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            throw LiveTranslateException(LiveMessage.SystemAudioUnsupported)
+        }
+        val staged = stagedProjection ?: throw LiveTranslateException(LiveMessage.SystemAudioOpenFailed)
+        stagedProjection = null
+        val projection = try {
+            projectionManager?.getMediaProjection(staged.resultCode, staged.data)
+        } catch (_: Exception) {
+            null
+        } ?: throw LiveTranslateException(LiveMessage.SystemAudioOpenFailed)
+
+        // Android 14+ requires registering a MediaProjection.Callback before starting capture.
+        projection.registerCallback(projectionCallback, main)
+        activeProjection = projection
+
+        val notices = mutableListOf<LiveMessage>()
+        if (!mixed) {
+            val source = PlaybackAudioSource(
+                mediaProjection = projection,
+                onChunk = onChunk,
+                onError = { msg -> onError(localizedContext().formatLiveMessage(msg)) },
+                onSilent = { main.post { if (playbackSource != null) engine.notice(LiveMessage.SystemAudioSilentNotice) } },
+            )
+            try {
+                source.start()
+            } catch (e: Exception) {
+                releaseProjection()
+                throw e
+            }
+            playbackSource = source
+        } else {
+            var headset: AudioDeviceInfo? = null
+            if (options.bluetoothMicrophone) {
+                headset = routing.startBluetoothMicrophone()
+                if (headset == null) notices += LiveMessage.BluetoothFallback
+            }
+            val hasHeadphones = headset != null || routing.hasHeadphones()
+            val loudspeaker = config.audioOutput && !hasHeadphones
+            val source = MixedAudioSource(
+                mediaProjection = projection,
+                onChunk = onChunk,
+                onError = { msg -> onError(localizedContext().formatLiveMessage(msg)) },
+                onSystemSilent = { main.post { if (mixedSource != null) engine.notice(LiveMessage.SystemAudioSilentNotice) } },
+                communication = loudspeaker || headset != null,
+                preferredDevice = headset,
+            )
+            try {
+                source.start()
+            } catch (e: Exception) {
+                releaseProjection()
+                routing.stopBluetoothMicrophone()
+                throw e
+            }
+            mixedSource = source
+            if (!hasHeadphones) {
+                notices += LiveMessage.MixedModeHeadphonesNotice
+            }
+            audioManager.registerAudioRecordingCallback(recordingCallback, main)
+            recordingCallbackRegistered = true
+        }
+        emitNotices(notices)
+    }
+
+    private fun emitNotices(notices: List<LiveMessage>) {
         if (notices.size == 1) engine.notice(notices.single())
         else if (notices.size > 1) engine.notice(LiveMessage.Composite(notices, "\n"))
     }
 
     override fun stopCapture() {
         main.removeCallbacks(silenceCheck)
-        audioManager.unregisterAudioRecordingCallback(recordingCallback)
+        if (recordingCallbackRegistered) {
+            recordingCallbackRegistered = false
+            audioManager.unregisterAudioRecordingCallback(recordingCallback)
+        }
         microphone?.stop()
         microphone = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            playbackSource?.stop()
+            playbackSource = null
+            mixedSource?.stop()
+            mixedSource = null
+        }
+        stagedProjection = null
+        releaseProjection()
         releaseRouting()
+    }
+
+    private fun releaseProjection() {
+        val projection = activeProjection ?: return
+        activeProjection = null
+        releasingProjection = true
+        try {
+            projection.unregisterCallback(projectionCallback)
+        } catch (_: Exception) {
+        }
+        try {
+            projection.stop()
+        } catch (_: Exception) {
+        }
+        releasingProjection = false
     }
 
     override fun speech(): SpeechOutput {
@@ -486,11 +835,14 @@ class SessionController(private val context: Context) : SessionPlatform {
         if (active) {
             firstRowKey = engine.snapshot.rows.lastOrNull()?.key
             notified = ""
-            RecordingService.start(context)
+            if (!RecordingService.isRunningFor(activeCaptureMode)) {
+                RecordingService.start(context, activeCaptureMode)
+            }
             if (!monitoringNetwork) {
                 connectivity.registerDefaultNetworkCallback(networkCallback, main)
                 monitoringNetwork = true
             }
+            syncOverlay()
         } else {
             if (monitoringNetwork) {
                 monitoringNetwork = false
@@ -499,12 +851,21 @@ class SessionController(private val context: Context) : SessionPlatform {
             main.removeCallbacks(notificationUpdate)
             notificationPending = false
             RecordingService.stop(context)
+            syncOverlay()
         }
     }
 
     /** The Bluetooth headset stays selected until both capture and the tail of the speech are done. */
     private fun releaseRouting() {
-        if (microphone == null && player == null) routing.stopBluetoothMicrophone()
+        if (microphone == null && mixedSource == null && player == null) routing.stopBluetoothMicrophone()
+    }
+
+    private val projectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            if (releasingProjection) return
+            activeProjection = null
+            engine.captureInterrupted(LiveMessage.SystemAudioProjectionStopped)
+        }
     }
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -519,12 +880,18 @@ class SessionController(private val context: Context) : SessionPlatform {
 
     private val recordingCallback = object : AudioManager.AudioRecordingCallback() {
         override fun onRecordingConfigChanged(configs: List<AudioRecordingConfiguration>) {
-            val session = microphone?.sessionId ?: return
+            val session = microphone?.sessionId
+                ?: (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) mixedSource?.micSessionId else null)
+                ?: return
             val silenced = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
                 configs.any { it.clientAudioSessionId == session && it.isClientSilenced }
             main.removeCallbacks(silenceCheck)
             // Brief silencing (e.g. a voice assistant hotword) is tolerated.
             if (silenced) main.postDelayed(silenceCheck, 2_000)
         }
+    }
+
+    private companion object {
+        const val PROJECTION_FGS_TIMEOUT_MS = 5_000L
     }
 }

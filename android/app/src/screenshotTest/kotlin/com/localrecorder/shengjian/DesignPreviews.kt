@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.android.tools.screenshot.PreviewTest
+import com.localrecorder.live.AudioSourceMode
 import com.localrecorder.live.LiveTranslateConfig
 import com.localrecorder.live.SessionSnapshot
 import com.localrecorder.live.SessionState
@@ -52,9 +53,13 @@ private val samples = listOf(
 )
 
 @Composable
-private fun Review(initial: Page = Page.Transcript) {
+private fun Review(
+    initial: Page = Page.Transcript,
+    initialMode: AudioSourceMode = AudioSourceMode.MICROPHONE,
+    initialRecording: Boolean = true,
+) {
     var page by remember { mutableStateOf(initial) }
-    var recording by remember { mutableStateOf(true) }
+    var recording by remember { mutableStateOf(initialRecording) }
     ShengjianTheme {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
             BoxWithConstraints {
@@ -70,7 +75,7 @@ private fun Review(initial: Page = Page.Transcript) {
                         Page.Settings -> Settings { page = Page.Transcript }
                         Page.History -> History(Modifier.fillMaxSize(), { page = Page.Transcript }, { page = Page.Settings })
                         Page.Transcript, Page.Export -> Box(Modifier.fillMaxSize()) {
-                            Transcript(wide, recording, { recording = !recording }, { page = it })
+                            Transcript(wide, recording, initialMode, { recording = !recording }, { page = it })
                             if (page == Page.Export) Export { page = Page.Transcript }
                         }
                     }
@@ -153,10 +158,18 @@ private fun History(modifier: Modifier, select: () -> Unit, settings: () -> Unit
 }
 
 @Composable
-private fun Transcript(wide: Boolean, recording: Boolean, toggle: () -> Unit, navigate: (Page) -> Unit) {
+private fun Transcript(
+    wide: Boolean,
+    recording: Boolean,
+    initialMode: AudioSourceMode,
+    toggle: () -> Unit,
+    navigate: (Page) -> Unit,
+) {
     val colors = MaterialTheme.colorScheme
     var more by remember { mutableStateOf(false) }
     var speech by remember { mutableStateOf(true) }
+    var audioMode by remember { mutableStateOf(initialMode) }
+    var floatingOn by remember { mutableStateOf(true) }
     Column(Modifier.fillMaxSize().background(colors.surface)) {
         SessionHeader(
             title = "河岸散步",
@@ -207,6 +220,17 @@ private fun Transcript(wide: Boolean, recording: Boolean, toggle: () -> Unit, na
                     .background(Brush.verticalGradient(listOf(colors.surface, colors.surface.copy(alpha = 0f)))),
             )
         }
+        AudioSourceBar(
+            selected = audioMode,
+            canSwitch = !recording,
+            systemAudioSupported = true,
+            floatingSubtitleEnabled = floatingOn,
+            overlayPermissionGranted = true,
+            onSelect = { audioMode = it },
+            onUnsupportedTap = {},
+            onToggleFloatingSubtitle = { floatingOn = it },
+            onRequestOverlayPermission = {},
+        )
         BottomActionDock(
             languageLabel = stringResource(R.string.target_pill, "中文"),
             languageEnabled = true,
@@ -220,6 +244,11 @@ private fun Transcript(wide: Boolean, recording: Boolean, toggle: () -> Unit, na
             primaryLabel = stringResource(if (recording) R.string.stop_translation else R.string.start_live),
             primaryEnabled = true,
             onPrimaryClick = toggle,
+            idlePrimaryIcon = when (audioMode) {
+                AudioSourceMode.MICROPHONE -> R.drawable.ic_mic
+                AudioSourceMode.SYSTEM_AUDIO -> R.drawable.ic_volume_up
+                AudioSourceMode.SYSTEM_AND_MIC -> R.drawable.ic_graphic_eq
+            },
         )
     }
 }
@@ -349,3 +378,6 @@ private fun DialogueReview(exit: () -> Unit) {
 
 @PreviewTest @Preview(name = "DialogueTa", widthDp = 360, heightDp = 780, locale = "ta")
 @Composable fun DialogueTa() = Review(Page.Dialogue)
+
+@PreviewTest @Preview(name = "PhoneSystemAudio", widthDp = 393, heightDp = 780, locale = "zh-rCN")
+@Composable fun PhoneSystemAudio() = Review(Page.Transcript, AudioSourceMode.SYSTEM_AND_MIC, initialRecording = false)

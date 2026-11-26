@@ -56,6 +56,7 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
     var invalid by remember { mutableStateOf(false) }
     var testedDraft by rememberSaveable { mutableStateOf(false) }
     var confirmClear by rememberSaveable { mutableStateOf(false) }
+    var showOverlayDialog by rememberSaveable { mutableStateOf(false) }
 
     fun commitService(): Boolean {
         val current = controller.ui.value
@@ -141,6 +142,14 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
             canClear = ui.sessions.isNotEmpty() && ui.recordingId == null,
             clear = { confirmClear = true },
             recording = recording,
+            overlayPermissionGranted = ui.overlayPermissionGranted,
+            onToggleFloatingSubtitle = { enabled ->
+                if (commitService()) controller.setFloatingSubtitleEnabled(enabled)
+            },
+            onRequestOverlayPermission = { showOverlayDialog = true },
+            onToggleFloatingBilingual = { bilingual ->
+                if (commitService()) controller.setFloatingBilingual(bilingual)
+            },
             interfaceLanguage = interfaceLanguage,
             onSelectInterfaceLanguage = { selected ->
                 if (selected != interfaceLanguage && activity != null) {
@@ -181,6 +190,16 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
             stringResource(R.string.delete_all),
             onDismiss = { confirmClear = false },
             onConfirm = { controller.deleteAll(); confirmClear = false },
+        )
+    }
+    if (showOverlayDialog) {
+        OverlayPermissionDialog(
+            onDismiss = { showOverlayDialog = false },
+            onConfirm = {
+                showOverlayDialog = false
+                controller.markPendingOverlayPermission()
+                openOverlayPermissionSettings(context)
+            },
         )
     }
 }
@@ -325,6 +344,10 @@ internal fun PreferenceGroups(
     canClear: Boolean,
     clear: () -> Unit,
     recording: Boolean = false,
+    overlayPermissionGranted: Boolean = false,
+    onToggleFloatingSubtitle: (Boolean) -> Unit = {},
+    onRequestOverlayPermission: () -> Unit = {},
+    onToggleFloatingBilingual: (Boolean) -> Unit = {},
     interfaceLanguage: InterfaceLanguage = InterfaceLanguage.SYSTEM,
     onSelectInterfaceLanguage: (InterfaceLanguage) -> Unit = {},
     dialogueTargets: (@Composable () -> Unit)? = null,
@@ -406,6 +429,34 @@ internal fun PreferenceGroups(
                     )
                 }
             }
+        }
+
+        HorizontalDivider(color = colors.outlineVariant.copy(alpha = 0.7f))
+
+        SettingSwitch(
+            label = stringResource(R.string.floating_subtitle),
+            subtitle = stringResource(
+                if (overlayPermissionGranted) R.string.floating_subtitle_settings_hint
+                else R.string.floating_subtitle_permission_needed,
+            ),
+            value = options.floatingSubtitle && overlayPermissionGranted,
+            enabled = enabled,
+        ) { value ->
+            if (value && !overlayPermissionGranted) onRequestOverlayPermission()
+            else onToggleFloatingSubtitle(value)
+        }
+
+        AnimatedVisibility(
+            visible = options.floatingSubtitle && overlayPermissionGranted,
+            enter = expandVertically(tween(220)) + fadeIn(tween(180)),
+            exit = shrinkVertically(tween(180)) + fadeOut(tween(140)),
+        ) {
+            SettingSwitch(
+                label = stringResource(R.string.floating_subtitle_bilingual),
+                subtitle = stringResource(R.string.floating_subtitle_bilingual_hint),
+                value = options.floatingBilingual,
+                enabled = enabled,
+            ) { value -> onToggleFloatingBilingual(value) }
         }
     }
 

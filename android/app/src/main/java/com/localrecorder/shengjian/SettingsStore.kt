@@ -1,6 +1,7 @@
 package com.localrecorder.shengjian
 
 import android.content.Context
+import com.localrecorder.live.AudioSourceMode
 import com.localrecorder.live.InterfaceLanguage
 import com.localrecorder.live.LiveMessage
 import com.localrecorder.live.LiveTranslateException
@@ -13,6 +14,13 @@ data class AppOptions(
     val bluetoothMicrophone: Boolean = false,
     /** Finalized transcripts are saved under filesDir/sessions (docs/SESSIONS.md); off = memory only. */
     val saveSessions: Boolean = true,
+    val audioSourceMode: AudioSourceMode = AudioSourceMode.MICROPHONE,
+    val floatingSubtitle: Boolean = false,
+    /** True once the user explicitly toggled floating subtitles on or off (prevents re-enabling after opt-out). */
+    val floatingSubtitleUserSet: Boolean = false,
+    val floatingBilingual: Boolean = true,
+    val floatingOffsetX: Int = Int.MIN_VALUE,
+    val floatingOffsetY: Int = Int.MIN_VALUE,
 )
 
 /** Non-secret settings; the LiveTranslate JSON matches the macOS `livetranslate.configuration.v1` value. */
@@ -55,6 +63,12 @@ class SettingsStore(context: Context) {
             autoReconnect = json.optBoolean("autoReconnect", true),
             bluetoothMicrophone = json.optBoolean("bluetoothMicrophone", false),
             saveSessions = json.optBoolean("saveSessions", true),
+            audioSourceMode = AudioSourceMode.of(json.optString("audioSourceMode", AudioSourceMode.MICROPHONE.id)),
+            floatingSubtitle = json.optBoolean("floatingSubtitle", false),
+            floatingSubtitleUserSet = json.optBoolean("floatingSubtitleUserSet", false),
+            floatingBilingual = json.optBoolean("floatingBilingual", true),
+            floatingOffsetX = json.optInt("floatingOffsetX", Int.MIN_VALUE),
+            floatingOffsetY = json.optInt("floatingOffsetY", Int.MIN_VALUE),
         )
     } catch (_: Exception) {
         AppOptions()
@@ -65,6 +79,12 @@ class SettingsStore(context: Context) {
             .put("autoReconnect", options.autoReconnect)
             .put("bluetoothMicrophone", options.bluetoothMicrophone)
             .put("saveSessions", options.saveSessions)
+            .put("audioSourceMode", options.audioSourceMode.id)
+            .put("floatingSubtitle", options.floatingSubtitle)
+            .put("floatingSubtitleUserSet", options.floatingSubtitleUserSet)
+            .put("floatingBilingual", options.floatingBilingual)
+            .put("floatingOffsetX", options.floatingOffsetX)
+            .put("floatingOffsetY", options.floatingOffsetY)
         prefs.edit().putString(OPTIONS_KEY, json.toString()).apply()
     }
 
