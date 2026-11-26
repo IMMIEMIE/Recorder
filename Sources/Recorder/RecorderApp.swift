@@ -22,7 +22,7 @@ struct RecorderApp: App {
             }.frame(minWidth: 640, idealWidth: 680, minHeight: 600).tint(DesignTokens.primary)
         }
         .environment(\.locale, interface.locale)
-        MenuBarExtra(interface.string("声笺"), systemImage: model.recording ? "mic.fill" : "waveform") {
+        MenuBarExtra(interface.string("声笺"), systemImage: model.recording ? (model.audioSource == AudioInputSource.system.rawValue ? "speaker.wave.2.fill" : "mic.fill") : "waveform") {
             MenuContent(model: model)
         }
         .environment(\.locale, interface.locale)
@@ -31,11 +31,23 @@ struct RecorderApp: App {
 
 struct MenuContent: View {
     @ObservedObject var model: AppModel
+    @ObservedObject private var interface = InterfaceLanguageSettings.shared
     @Environment(\.openWindow) var openWindow
     var body: some View {
         Text(LocalizedStringKey(model.statusTitle))
         Button(model.canStop ? "停止转写" : model.continuesSession ? "继续录制" : "开始转写") { model.toggle() }
             .disabled(!model.canStop && !model.canStart)
+        Menu {
+            ForEach(AudioInputSource.liveModes, id: \.rawValue) { mode in
+                Toggle(LocalizedStringKey(mode.titleKey), isOn: Binding(
+                    get: { model.audioSource == mode.rawValue },
+                    set: { if $0 { model.setAudioSource(mode.rawValue) } }
+                ))
+            }
+        } label: {
+            Text("音频输入：\(interface.string(model.audioSourceTitle))")
+        }
+        .disabled(model.inputBusy)
         Button("显示转写窗口") { openWindow(id: "main"); NSApp.activate(ignoringOtherApps: true) }
         Toggle("字幕模式", isOn: Binding(get: { model.subtitleMode }, set: { model.setSubtitleMode($0) }))
         Button("导出会话…") {
@@ -80,28 +92,50 @@ struct MainView: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(13).background(accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
                 VStack(alignment: .leading, spacing: 12) {
                     Text("音频输入").font(.caption).foregroundStyle(.secondary)
-                    Picker("音源", selection: $model.audioSource) {
-                        Text("麦克风").tag("microphone")
-                        Text("音频文件").tag("file")
-                        Text("系统声音").tag("system")
+                    Picker("音源", selection: Binding(get: { model.audioSource }, set: { model.setAudioSource($0) })) {
+                        Text("麦克风").tag(AudioInputSource.microphone.rawValue)
+                        Text("系统声音").tag(AudioInputSource.system.rawValue)
+                        Text("系统声音 + 麦克风").tag(AudioInputSource.systemMix.rawValue)
+                        Text("音频文件").tag(AudioInputSource.file.rawValue)
                     }.disabled(model.inputBusy)
-                    if model.audioSource == "microphone" {
-                    Picker("麦克风", selection: $model.device) {
-                        Text("系统默认麦克风").tag(UInt32(0))
-                        ForEach(model.microphones) { Text($0.name).tag($0.id) }
-                    }.labelsHidden().disabled(model.inputBusy)
-                    HStack { Circle().fill(model.permission == "已允许" ? accent : DesignTokens.slow).frame(width: 6, height: 6); Text("麦克风权限：\(interface.string(model.permission))").font(.caption2).foregroundStyle(.secondary) }
-                    } else if model.audioSource == "file" {
+                    if model.audioSource == AudioInputSource.microphone.rawValue || model.audioSource == AudioInputSource.systemMix.rawValue {
+                        Picker("麦克风", selection: $model.device) {
+                            Text("系统默认麦克风").tag(UInt32(0))
+                            ForEach(model.microphones) { Text($0.name).tag($0.id) }
+                        }.labelsHidden().disabled(model.inputBusy)
+                        HStack(spacing: 6) {
+                            Circle().fill(model.permission == "已允许" ? accent : DesignTokens.slow).frame(width: 6, height: 6)
+                            Text("麦克风权限：\(interface.string(model.permission))").font(.caption2).foregroundStyle(.secondary)
+                            if model.permission == "未允许" {
+                                Button("前往系统设置") { model.showPermissionSettings() }.buttonStyle(.link).font(.caption2)
+                            }
+                        }
+                    }
+                    if model.audioSource == AudioInputSource.system.rawValue || model.audioSource == AudioInputSource.systemMix.rawValue {
+                        HStack(spacing: 6) {
+                            Circle().fill(model.screenCaptureAuthorized ? accent : DesignTokens.slow).frame(width: 6, height: 6)
+                            Text("屏幕与系统音频：\(interface.string(model.screenCapturePermission))").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if !model.screenCaptureAuthorized {
+                            Button("前往系统设置") { model.showScreenCapturePermissionSettings() }
+                                .buttonStyle(.link).font(.caption2)
+                        }
+                        if model.audioSource == AudioInputSource.system.rawValue {
+                            Text("采集其他应用播放的声音，不使用麦克风。首次使用需允许屏幕与系统音频录制权限。").font(.caption2).foregroundStyle(.secondary)
+                        } else {
+                            Text("同时采集系统声音与所选麦克风，适合线上会议；声笺自身译音不会被回环收录。").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    } else if model.audioSource == AudioInputSource.file.rawValue {
                         Button("选择音频文件…") { model.chooseAudioFile() }.disabled(model.inputBusy)
                         Text(model.audioFileURL?.lastPathComponent ?? interface.string("尚未选择文件")).font(.caption).lineLimit(2)
                         Text("按原始语速转写，不播放声音；文件结束后自动处理尾句。").font(.caption2).foregroundStyle(.secondary)
-                    } else {
-                        Text("采集其他应用播放的声音，不使用麦克风。首次使用需允许屏幕与系统音频录制权限。").font(.caption).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 3) {
                         ForEach(0..<24) { i in Capsule().fill(Float(i)/24 < model.level ? accent : accent.opacity(0.12)).frame(height: 5 + CGFloat(i % 4) * 3) }
                     }.frame(height: 22)
-                    if model.audioSource == "microphone" { Button("刷新设备") { model.refreshDevices() }.buttonStyle(.link).font(.caption) }
+                    if model.audioSource == AudioInputSource.microphone.rawValue || model.audioSource == AudioInputSource.systemMix.rawValue {
+                        Button("刷新设备") { model.refreshDevices() }.buttonStyle(.link).font(.caption)
+                    }
                 }
                 Divider()
                 VStack(alignment: .leading, spacing: 9) {
@@ -158,6 +192,7 @@ struct MainView: View {
                         ProgressView(value: model.progress)
                         HStack { Text(model.progressLabel).lineLimit(1); Spacer(); Button("取消下载") { model.cancelDownload() } }.font(.caption)
                     }
+                    AudioSourceModeBar(model: model, accent: accent)
                     HStack(spacing: 12) {
                         Circle().fill(statusColor).frame(width: 8, height: 8)
                         VStack(alignment: .leading, spacing: 4) {
@@ -200,6 +235,85 @@ struct MainView: View {
         case "error": DesignTokens.error
         case "connecting", "reconnecting", "loading", "warming", "finalizing": DesignTokens.connecting
         default: model.recording ? DesignTokens.recording : DesignTokens.complete
+        }
+    }
+}
+
+private struct AudioSourceModeBar: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject private var interface = InterfaceLanguageSettings.shared
+    let accent: Color
+
+    private var needsScreenPermission: Bool {
+        !model.screenCaptureAuthorized
+            && (model.audioSource == AudioInputSource.system.rawValue || model.audioSource == AudioInputSource.systemMix.rawValue)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                HStack(spacing: 2) {
+                    ForEach(AudioInputSource.liveModes, id: \.rawValue) { mode in
+                        let selected = model.audioSource == mode.rawValue
+                        Button {
+                            model.setAudioSource(mode.rawValue)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: mode.systemImage).font(.system(size: 11, weight: .medium))
+                                Text(LocalizedStringKey(mode.titleKey)).font(.system(size: 12, weight: selected ? .semibold : .medium))
+                            }
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 5)
+                            .foregroundStyle(selected ? DesignTokens.onPrimary : DesignTokens.onSurfaceVariant)
+                            .background {
+                                if selected {
+                                    Capsule().fill(accent)
+                                }
+                            }
+                            .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(3)
+                .background(DesignTokens.surfaceContainerHigh, in: Capsule())
+                .disabled(model.inputBusy)
+                .opacity(model.inputBusy ? 0.6 : 1)
+                .help(model.inputBusy ? Text("录制中不可切换音频输入") : Text("切换音频输入模式"))
+
+                if model.audioSource == AudioInputSource.file.rawValue {
+                    HStack(spacing: 4) {
+                        Image(systemName: AudioInputSource.file.systemImage).font(.caption2)
+                        Text("音频文件").font(.caption2)
+                    }
+                    .foregroundStyle(DesignTokens.onSecondaryContainer)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(DesignTokens.secondaryContainer, in: Capsule())
+                }
+
+                Spacer()
+
+                if needsScreenPermission {
+                    HStack(spacing: 6) {
+                        Circle().fill(DesignTokens.slow).frame(width: 6, height: 6)
+                        Text("屏幕与系统音频：\(interface.string(model.screenCapturePermission))")
+                            .font(.caption2)
+                            .foregroundStyle(DesignTokens.slow)
+                        Button("前往系统设置") { model.showScreenCapturePermissionSettings() }
+                            .buttonStyle(.link)
+                            .font(.caption2)
+                    }
+                }
+            }
+
+            if model.shouldShowEchoHint {
+                HStack(spacing: 5) {
+                    Image(systemName: "headphones").font(.caption2)
+                    Text("建议佩戴耳机，避免扬声器外放被麦克风重复收录。").font(.caption2)
+                }
+                .foregroundStyle(DesignTokens.onSurfaceVariant)
+            }
         }
     }
 }
@@ -303,7 +417,10 @@ struct SettingsView: View {
                     Text("语言和高级参数在加载后生效。").font(.caption).foregroundStyle(.secondary)
                 }.padding(.top, 8).disabled(model.busy)
             }
-            Button("麦克风权限…") { model.showPermissionSettings() }.buttonStyle(.link)
+            HStack(spacing: 16) {
+                Button("麦克风权限…") { model.showPermissionSettings() }.buttonStyle(.link)
+                Button("屏幕与系统音频权限…") { model.showScreenCapturePermissionSettings() }.buttonStyle(.link)
+            }
             }.disabled(model.liveEnabled)
         }
         .onChange(of: model.asrAPIBaseURL) { _, _ in

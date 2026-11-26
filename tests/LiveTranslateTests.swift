@@ -475,7 +475,89 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         let callbacks = cancel.callbacks
         try await Task.sleep(nanoseconds: 200_000_000)
         try check(cancel.callbacks == callbacks && !cancel.ended, "cancel suppresses subsequent transport callbacks")
+
+        // AppModel audio source persistence, idle-only switching lock, echo hint and permission gating.
+        let audioSuite = "test.appmodel.audiosource.\(UUID().uuidString)"
+        let audioDefaults = UserDefaults(suiteName: audioSuite)!
+        defer { audioDefaults.removePersistentDomain(forName: audioSuite) }
+        var screenGranted = false
+        var micGranted = false
+        let audioApp = AppModel(
+            defaults: audioDefaults,
+            integrateSystem: false,
+            liveAllowLocalhost: true,
+            screenCaptureAuthorized: { screenGranted },
+            requestScreenCaptureAccess: { screenGranted },
+            requestMicrophoneAccess: { $0(micGranted) }
+        )
+        defer { audioApp.shutdown() }
+        try check(audioApp.audioSource == "microphone", "fresh AppModel defaults to microphone")
+        try check(!audioApp.screenCaptureAuthorized && audioApp.screenCapturePermission == "未允许", "screen capture preflight reflects unauthorized")
+        // Verify connecting state locks switching, then ready state allows switching.
+        audioApp.shutdown()
+        audioApp.state = "connecting"
+        audioApp.setAudioSource("system_mix")
+        try check(audioApp.audioSource == "microphone", "audioSource must stay locked while connecting")
+        audioApp.state = "ready"
+        audioApp.setAudioSource("system_mix")
+        try check(audioApp.audioSource == "system_mix", "idle switch to system_mix succeeds")
+        try check(audioApp.shouldShowEchoHint, "system_mix without headphones shows non-blocking echo hint")
+
+        // Persistence across relaunch.
+        let restoredAudioApp = AppModel(
+            defaults: audioDefaults,
+            integrateSystem: false,
+            liveAllowLocalhost: true,
+            screenCaptureAuthorized: { true },
+            requestScreenCaptureAccess: { true },
+            requestMicrophoneAccess: { $0(true) }
+        )
+        defer { restoredAudioApp.shutdown() }
+        restoredAudioApp.shutdown()
+        try check(restoredAudioApp.audioSource == "system_mix", "AppModel restores saved system_mix mode")
+        try check(restoredAudioApp.screenCaptureAuthorized && restoredAudioApp.screenCapturePermission == "已允许", "screen capture preflight reflects authorized")
+
+        // Idle-only switching lock.
+        restoredAudioApp.state = "recording"
+        restoredAudioApp.setAudioSource("microphone")
+        try check(restoredAudioApp.audioSource == "system_mix", "audioSource must stay locked while recording")
+        restoredAudioApp.state = "ready"
+        restoredAudioApp.setAudioSource("system")
+        try check(restoredAudioApp.audioSource == "system", "audioSource unlocks when idle/ready")
+
+        // Permission gates in system and system_mix modes.
+        func waitCondition(_ condition: () -> Bool) async throws {
+            for _ in 0..<200 {
+                if condition() { return }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            throw LiveTestError(message: "Timed out waiting for audio permission error")
+        }
+        audioApp.state = "ready"
+        audioApp.setAudioSource("system")
+        audioApp.start()
+        try check(audioApp.error.contains("屏幕与系统音频录制权限") && audioApp.error.contains("重启声笺"), "system mode missing permission gives clear relaunch guidance: \(audioApp.error)")
+
+        audioApp.setAudioSource("system_mix")
+        micGranted = false; screenGranted = false
+        audioApp.start()
+        try await waitCondition { !audioApp.error.isEmpty }
+        try check(audioApp.error.contains("麦克风") && audioApp.error.contains("屏幕与系统音频录制权限"), "system_mix missing both permissions reports both: \(audioApp.error)")
+
+        audioApp.error = ""
+        micGranted = true; screenGranted = false
+        audioApp.start()
+        try await waitCondition { !audioApp.error.isEmpty }
+        try check(audioApp.error.contains("屏幕与系统音频录制权限") && audioApp.error.contains("重启声笺"), "system_mix missing screen permission reports screen guidance: \(audioApp.error)")
+
+        audioApp.error = ""
+        micGranted = false; screenGranted = true
+        audioApp.start()
+        try await waitCondition { !audioApp.error.isEmpty }
+        try check(audioApp.error.contains("麦克风权限"), "system_mix missing mic permission reports mic guidance: \(audioApp.error)")
+
         print("PASS: configuration, credential namespace, independent startup, model bypass, mode locks and restoration")
         print("PASS: WebSocket handshake, PCM ordering, association, duplicate events, Unicode, tail drain, empty session, cancellation, repeated sessions, errors and timeouts")
+        print("PASS: audio source persistence, idle-only switching lock, echo hint and system/mix permission gates")
     }
 }

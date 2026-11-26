@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import Carbon
+import CoreGraphics
 import UniformTypeIdentifiers
 import Combine
 // SwiftPM builds import the backend module; the swiftc test scripts compile its sources into one module.
@@ -47,12 +48,27 @@ final class AppModel: ObservableObject {
     @Published var partial = ""
     @Published var level: Float = 0
     @Published var microphones: [Microphone] = []
-    @Published var audioSource = "microphone"
-    @Published var audioFileURL: URL?
+    @Published var audioSource = AudioInputSource.microphone.rawValue {
+        didSet { persistAudioSource() }
+    }
+    @Published var audioFileURL: URL? {
+        didSet { persistAudioSource() }
+    }
+    private var restoringAudioSource = false
     private let additionalInput = AdditionalAudioInput()
+    private let audioMixer = PCM16AudioMixer()
     private var startAttempt = UUID()
     @Published var device: AudioDeviceID = 0
     @Published var permission = "尚未请求"
+    @Published private(set) var screenCaptureAuthorized = false
+    @Published private(set) var headphonesConnected = false
+    var screenCapturePermission: String { screenCaptureAuthorized ? "已允许" : "未允许" }
+    var audioSourceTitle: String { (AudioInputSource(rawValue: audioSource) ?? .microphone).titleKey }
+    var shouldShowEchoHint: Bool {
+        guard !headphonesConnected else { return false }
+        return audioSource == AudioInputSource.systemMix.rawValue
+            || (liveEnabled && liveConfiguration.audioOutput && audioSource == AudioInputSource.microphone.rawValue)
+    }
     @Published var modelID = "mlx-community/Qwen3-ASR-1.7B-bf16"
     @Published var asrProvider = "local"
     @Published var asrAPIBaseURL = "https://api.openai.com/v1"
@@ -120,6 +136,11 @@ final class AppModel: ObservableObject {
     private var hotKey: EventHotKeyRef?
     private var hotHandler: EventHandlerRef?
     private var sleepObserver: NSObjectProtocol?
+    private var activeObserver: NSObjectProtocol?
+    private let integrateSystem: Bool
+    private let screenCaptureAuthorizedCheck: () -> Bool
+    private let screenCaptureAccessRequester: () -> Bool
+    private let microphoneAccessRequester: (@escaping (Bool) -> Void) -> Void
     @Published private var pendingStart = false
     private var generation = UUID()
     @Published private(set) var liveConfiguration = LiveTranslateConfiguration()
@@ -275,7 +296,14 @@ final class AppModel: ObservableObject {
          runtimeExecutable: @escaping () -> URL? = { HyRuntimeAvailability.executableURL },
          localSpeech: (any LocalSpeechOutputting)? = nil,
          replaySpeech: (any LocalSpeechOutputting)? = nil,
-         sessionStore: SessionStore? = nil) {
+         sessionStore: SessionStore? = nil,
+         screenCaptureAuthorized: @escaping () -> Bool = { CGPreflightScreenCaptureAccess() },
+         requestScreenCaptureAccess: @escaping () -> Bool = { CGRequestScreenCaptureAccess() },
+         requestMicrophoneAccess: @escaping (@escaping (Bool) -> Void) -> Void = { AVCaptureDevice.requestAccess(for: .audio, completionHandler: $0) }) {
+        self.integrateSystem = integrateSystem
+        self.screenCaptureAuthorizedCheck = screenCaptureAuthorized
+        self.screenCaptureAccessRequester = requestScreenCaptureAccess
+        self.microphoneAccessRequester = requestMicrophoneAccess
         self.liveClientFactory = liveClientFactory; self.liveKeyReader = liveKeyReader
         self.liveSessionFactory = liveSessionFactory
         self.hyModelStore = hyModelStore ?? HyModelStore()
@@ -284,6 +312,11 @@ final class AppModel: ObservableObject {
         self.replaySpeech = replaySpeech ?? LocalSpeechOutput()
         self.liveAllowLocalhost = liveAllowLocalhost
         liveDefaults = defaults
+        let restoredInput = AudioInputSource.restore(defaults: defaults)
+        restoringAudioSource = true
+        audioSource = restoredInput.source.rawValue
+        audioFileURL = restoredInput.fileURL
+        restoringAudioSource = false
         let persist = defaults.object(forKey: Self.persistSessionsKey) as? Bool ?? true
         // Tests (integrateSystem: false) never touch the real sessions directory unless they pass a store.
         sessionLibrary = SessionLibrary(store: sessionStore ?? (integrateSystem ? SessionStore() : nil), persist: persist)
@@ -311,15 +344,53 @@ final class AppModel: ObservableObject {
             self.translationTick += 1
         }
         apiTranslations.onError = { [weak self] message in self?.error = message }
-        if integrateSystem { refreshDevices(); updatePermission() }
+        updateScreenCapturePermission()
+        if integrateSystem { refreshDevices(); updatePermission(); updateHeadphoneStatus() }
         installActiveSession(nil)
-        capture.onFailure = { [weak self] message in DispatchQueue.main.async { self?.stop(); self?.error = message } }
+        capture.onFailure = { [weak self] message in DispatchQueue.main.async {
+            guard let self, self.recording else { return }
+            let formatted = self.audioSource == AudioInputSource.systemMix.rawValue ? "麦克风采集异常：\(message)" : message
+            self.stop(); self.error = formatted
+        } }
         capture.onPCM = { [weak self] pcm, rms in self?.audio(pcm, rms: rms) }
         if integrateSystem {
-        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.stop() }
-        registerShortcut()
+            sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in self?.stop() }
+            activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.refreshAudioEnvironment()
+            }
+            registerShortcut()
         }
         launch()
+    }
+
+    deinit {
+        if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
+        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
+    }
+
+    private func persistAudioSource() {
+        guard !restoringAudioSource, let mode = AudioInputSource(rawValue: audioSource) else { return }
+        AudioInputSource.save(source: mode, fileURL: audioFileURL, defaults: liveDefaults)
+    }
+
+    func setAudioSource(_ source: String) {
+        guard !inputBusy, let mode = AudioInputSource(rawValue: source) else { return }
+        if audioSource != mode.rawValue {
+            audioSource = mode.rawValue
+        }
+        updateScreenCapturePermission()
+        if integrateSystem {
+            updatePermission()
+            updateHeadphoneStatus()
+        }
+    }
+
+    func refreshAudioEnvironment() {
+        updateScreenCapturePermission()
+        guard integrateSystem else { return }
+        updatePermission()
+        updateHeadphoneStatus()
+        refreshDevices()
     }
 
     func setSubtitleMode(_ enabled: Bool) {
@@ -335,13 +406,22 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func refreshDevices() { microphones = AudioCapture.microphones() }
+    func refreshDevices() {
+        microphones = AudioCapture.microphones()
+        updateHeadphoneStatus()
+    }
     func updatePermission() {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: permission = "已允许"
         case .denied, .restricted: permission = "未允许"
         default: permission = "尚未请求"
         }
+    }
+    func updateScreenCapturePermission() {
+        screenCaptureAuthorized = screenCaptureAuthorizedCheck()
+    }
+    func updateHeadphoneStatus() {
+        headphonesConnected = integrateSystem ? AudioCapture.isHeadphonesLikelyConnected() : false
     }
 
     func launch() {
@@ -562,6 +642,7 @@ final class AppModel: ObservableObject {
         if panel.runModal() == .OK { localPath = panel.url?.path ?? "" }
     }
     func showPermissionSettings() { NSWorkspace.shared.open(URL(string:"x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!) }
+    func showScreenCapturePermissionSettings() { NSWorkspace.shared.open(URL(string:"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!) }
 
     func toggle() { canStop ? stop() : start() }
     func chooseAudioFile() {
@@ -579,7 +660,8 @@ final class AppModel: ObservableObject {
             if state == "ready" { error = "识别服务设置已更改，请先点击「连接 / 切换」使其生效" }
             return
         }
-        if audioSource == "file", audioFileURL == nil { error = "请先选择音频文件"; return }
+        let mode = AudioInputSource(rawValue: audioSource) ?? .microphone
+        if mode == .file, audioFileURL == nil { error = "请先选择音频文件"; return }
         if !continuingAfterProfileSwitch {
             resumeFileFrame = 0
             // An explicit "继续录制" starts recording in the displayed conversation.
@@ -588,9 +670,8 @@ final class AppModel: ObservableObject {
         error = ""; pendingStart = true
         startAttempt = UUID()
         let attempt = startAttempt
-        let begin = { [weak self] (granted: Bool) in
+        let proceed = { [weak self] in
             guard let self, self.pendingStart, self.startAttempt == attempt else { return }
-            guard granted else { self.pendingStart = false; self.error = "请在系统设置中允许麦克风访问"; return }
             guard self.state == "ready" else { self.pendingStart = false; return }
             self.session = UUID().uuidString
             self.partial = ""; self.revisions.removeAll()
@@ -598,11 +679,56 @@ final class AppModel: ObservableObject {
             if self.streamingActive { self.connectStreaming(); return }
             self.command("start", extra: ["endpoint_mode": self.endpointMode, "endpoint_silence_ms": self.silence])
         }
-        if audioSource == "microphone" {
-            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in DispatchQueue.main.async {
-                self?.updatePermission(); begin(granted)
+        let ensureScreenAccess = { [weak self] () -> Bool in
+            guard let self else { return false }
+            if self.screenCaptureAuthorizedCheck() {
+                self.screenCaptureAuthorized = true
+                return true
+            }
+            let granted = self.screenCaptureAccessRequester()
+            self.screenCaptureAuthorized = granted || self.screenCaptureAuthorizedCheck()
+            return self.screenCaptureAuthorized
+        }
+        switch mode {
+        case .microphone:
+            microphoneAccessRequester { [weak self] granted in DispatchQueue.main.async {
+                guard let self, self.pendingStart, self.startAttempt == attempt else { return }
+                if self.integrateSystem { self.updatePermission() }
+                guard granted else { self.pendingStart = false; self.error = "请在系统设置中允许麦克风访问"; return }
+                proceed()
             } }
-        } else { begin(true) }
+        case .system:
+            guard ensureScreenAccess() else {
+                pendingStart = false
+                error = "未获得屏幕与系统音频录制权限。请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中允许声笺；开启权限后若仍无法采集，请重启声笺。"
+                return
+            }
+            proceed()
+        case .systemMix:
+            microphoneAccessRequester { [weak self] micGranted in DispatchQueue.main.async {
+                guard let self, self.pendingStart, self.startAttempt == attempt else { return }
+                if self.integrateSystem { self.updatePermission() }
+                let screenGranted = ensureScreenAccess()
+                if !micGranted && !screenGranted {
+                    self.pendingStart = false
+                    self.error = "未获得麦克风及屏幕与系统音频录制权限。请在系统设置 → 隐私与安全性中分别允许声笺访问，开启屏幕录制权限后如未生效请重启声笺。"
+                    return
+                }
+                if !micGranted {
+                    self.pendingStart = false
+                    self.error = "混音模式需要麦克风权限，请在系统设置 → 隐私与安全性 → 麦克风中允许声笺。"
+                    return
+                }
+                if !screenGranted {
+                    self.pendingStart = false
+                    self.error = "混音模式需要屏幕与系统音频录制权限。请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中允许声笺；开启权限后若仍无法采集，请重启声笺。"
+                    return
+                }
+                proceed()
+            } }
+        case .file:
+            proceed()
+        }
     }
 
     /// The cloud task starts first; the backend session starts once audio can flow, and ends after the last final.
@@ -651,7 +777,12 @@ final class AppModel: ObservableObject {
         beginSessionSegment()
         audioLock.lock(); sequence = 0; samples = 0; accepting = true; audioLock.unlock()
         let currentSession = session
-        additionalInput.onPCM = { [weak self] pcm, rms in self?.audio(pcm, rms: rms) }
+        let mode = AudioInputSource(rawValue: audioSource) ?? .microphone
+        capture.onFailure = { [weak self] message in DispatchQueue.main.async {
+            guard let self, self.session == currentSession, self.recording else { return }
+            let formatted = mode == .systemMix ? "麦克风采集异常：\(message)" : message
+            self.stop(); self.error = formatted
+        } }
         additionalInput.onEnd = { [weak self] in DispatchQueue.main.async {
             guard let self, self.session == currentSession, self.recording else { return }
             self.stop()
@@ -661,22 +792,49 @@ final class AppModel: ObservableObject {
             self.stop(); self.error = message
         } }
         do {
-            switch audioSource {
-            case "file":
+            switch mode {
+            case .file:
                 guard let url = audioFileURL else { throw AIError.message("请先选择音频文件") }
+                additionalInput.onPCM = { [weak self] pcm, rms in self?.audio(pcm, rms: rms) }
                 try additionalInput.startFile(url, atFrame: resumeFileFrame)
                 resumeFileFrame = 0
-            case "system":
+            case .system:
+                additionalInput.onPCM = { [weak self] pcm, rms in self?.audio(pcm, rms: rms) }
                 Task { @MainActor [weak self] in
                     guard let self, self.session == currentSession, self.recording else { return }
                     do { try await self.additionalInput.startSystem() }
                     catch {
                         guard self.session == currentSession, self.recording else { return }
+                        self.updateScreenCapturePermission()
                         self.stop()
-                        self.error = "无法采集系统声音：\(error.localizedDescription)。请在系统设置 → 隐私与安全性中允许声笺录制屏幕与系统音频。"
+                        self.error = "无法采集系统声音：\(error.localizedDescription)。请在系统设置 → 隐私与安全性中允许声笺录制屏幕与系统音频；如刚开启权限，请重启声笺后重试。"
                     }
                 }
-            default: try capture.start(device: device)
+            case .systemMix:
+                audioMixer.onPCM = { [weak self] pcm, rms in self?.audio(pcm, rms: rms) }
+                capture.onPCM = { [weak self] pcm, _ in self?.audioMixer.append(pcm, to: .microphone) }
+                additionalInput.onPCM = { [weak self] pcm, _ in self?.audioMixer.append(pcm, to: .system) }
+                audioMixer.start()
+                do {
+                    try capture.start(device: device)
+                } catch {
+                    stop()
+                    self.error = "麦克风采集异常：\(error.localizedDescription)"
+                    return
+                }
+                Task { @MainActor [weak self] in
+                    guard let self, self.session == currentSession, self.recording else { return }
+                    do { try await self.additionalInput.startSystem() }
+                    catch {
+                        guard self.session == currentSession, self.recording else { return }
+                        self.updateScreenCapturePermission()
+                        self.stop()
+                        self.error = "系统声音采集异常：\(error.localizedDescription)。请在系统设置 → 隐私与安全性中允许声笺录制屏幕与系统音频；如刚开启权限，请重启声笺后重试。"
+                    }
+                }
+            case .microphone:
+                capture.onPCM = { [weak self] pcm, rms in self?.audio(pcm, rms: rms) }
+                try capture.start(device: device)
             }
         } catch { stop(); self.error = error.localizedDescription }
     }
@@ -684,6 +842,7 @@ final class AppModel: ObservableObject {
     private func stopInputs() {
         capture.stop()
         let frame = additionalInput.stop()
+        audioMixer.stop()
         if switchAfterDrain != nil, audioSource == "file" { resumeFileFrame = frame }
     }
 
