@@ -612,11 +612,13 @@ private fun TranscriptScreen(
         }
     }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        val mode = controller.ui.value.effectiveAudioMode
         val granted = result[Manifest.permission.RECORD_AUDIO] == true ||
             context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         if (!granted) {
-            Toast.makeText(context, R.string.mic_permission_required, Toast.LENGTH_LONG).show()
-        } else if (controller.ui.value.effectiveAudioMode.usesSystemAudio) {
+            val deniedMsg = if (mode == AudioSourceMode.SYSTEM_AUDIO) R.string.err_system_audio_permission_denied else R.string.mic_permission_required
+            Toast.makeText(context, deniedMsg, Toast.LENGTH_LONG).show()
+        } else if (mode.usesSystemAudio) {
             launchSystemAudioConsent()
         } else {
             controller.start()
@@ -834,9 +836,6 @@ private fun TranscriptScreen(
                             floatingSubtitleEnabled = ui.options.floatingSubtitle,
                             overlayPermissionGranted = ui.overlayPermissionGranted,
                             onSelect = controller::setAudioSourceMode,
-                            onUnsupportedTap = {
-                                Toast.makeText(context, R.string.err_system_audio_unsupported, Toast.LENGTH_LONG).show()
-                            },
                             onToggleFloatingSubtitle = controller::setFloatingSubtitleEnabled,
                             onRequestOverlayPermission = { showOverlayDialog = true },
                         )

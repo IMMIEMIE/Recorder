@@ -182,9 +182,12 @@ class SessionController(private val context: Context) : SessionPlatform {
             settings.saveOptions(options)
         }
         val canOverlay = Settings.canDrawOverlays(context)
-        if (options.audioSourceMode.usesSystemAudio && canOverlay && !options.floatingSubtitleUserSet && !options.floatingSubtitle) {
-            options = options.copy(floatingSubtitle = true)
-            settings.saveOptions(options)
+        if (!options.floatingSubtitleUserSet) {
+            val expected = options.audioSourceMode.usesSystemAudio && canOverlay
+            if (options.floatingSubtitle != expected) {
+                options = options.copy(floatingSubtitle = expected)
+                settings.saveOptions(options)
+            }
         }
         _ui.update {
             it.copy(
@@ -327,10 +330,10 @@ class SessionController(private val context: Context) : SessionPlatform {
             return
         }
         val canOverlay = Settings.canDrawOverlays(context)
-        val autoEnableOverlay = mode.usesSystemAudio && canOverlay && !options.floatingSubtitleUserSet
+        val nextFloating = if (options.floatingSubtitleUserSet) options.floatingSubtitle else (mode.usesSystemAudio && canOverlay)
         val next = options.copy(
             audioSourceMode = mode,
-            floatingSubtitle = if (autoEnableOverlay) true else options.floatingSubtitle,
+            floatingSubtitle = nextFloating,
         )
         options = next
         settings.saveOptions(next)
@@ -366,10 +369,13 @@ class SessionController(private val context: Context) : SessionPlatform {
             return
         }
         if (!granted) pendingEnableOverlayAfterPermission = false
-        if (granted && options.audioSourceMode.usesSystemAudio && !options.floatingSubtitleUserSet && !options.floatingSubtitle) {
-            val next = options.copy(floatingSubtitle = true)
-            options = next
-            settings.saveOptions(next)
+        if (!options.floatingSubtitleUserSet) {
+            val expected = options.audioSourceMode.usesSystemAudio && granted
+            if (options.floatingSubtitle != expected) {
+                val next = options.copy(floatingSubtitle = expected)
+                options = next
+                settings.saveOptions(next)
+            }
         }
         _ui.update { it.copy(options = options, overlayPermissionGranted = granted) }
         syncOverlay()
@@ -389,7 +395,8 @@ class SessionController(private val context: Context) : SessionPlatform {
     private fun syncOverlay() {
         val snapshot = engine.snapshot
         val active = snapshot.state != SessionState.IDLE
-        if (active && !appInForeground && options.floatingSubtitle && Settings.canDrawOverlays(context)) {
+        val showForMode = if (options.floatingSubtitleUserSet) options.floatingSubtitle else (activeCaptureMode.usesSystemAudio && options.floatingSubtitle)
+        if (active && !appInForeground && showForMode && Settings.canDrawOverlays(context)) {
             overlay.showOrUpdate(
                 snapshot = snapshot,
                 bilingual = options.floatingBilingual,

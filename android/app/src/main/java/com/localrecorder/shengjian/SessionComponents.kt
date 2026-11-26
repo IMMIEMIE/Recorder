@@ -477,7 +477,6 @@ internal fun AudioSourceBar(
     floatingSubtitleEnabled: Boolean,
     overlayPermissionGranted: Boolean,
     onSelect: (AudioSourceMode) -> Unit,
-    onUnsupportedTap: () -> Unit,
     onToggleFloatingSubtitle: (Boolean) -> Unit,
     onRequestOverlayPermission: () -> Unit,
     modifier: Modifier = Modifier,
@@ -501,9 +500,7 @@ internal fun AudioSourceBar(
                 val isSelected = selected == mode
                 SegmentedButton(
                     selected = isSelected,
-                    onClick = {
-                        if (unsupported) onUnsupportedTap() else onSelect(mode)
-                    },
+                    onClick = { onSelect(mode) },
                     enabled = canSwitch && !unsupported,
                     shape = SegmentedButtonDefaults.itemShape(index, choices.size),
                     colors = SegmentedButtonDefaults.colors(

@@ -227,7 +227,6 @@ private fun Transcript(
             floatingSubtitleEnabled = floatingOn,
             overlayPermissionGranted = true,
             onSelect = { audioMode = it },
-            onUnsupportedTap = {},
             onToggleFloatingSubtitle = { floatingOn = it },
             onRequestOverlayPermission = {},
         )

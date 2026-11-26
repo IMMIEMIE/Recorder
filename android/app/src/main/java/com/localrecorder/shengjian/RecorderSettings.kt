@@ -143,13 +143,9 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
             clear = { confirmClear = true },
             recording = recording,
             overlayPermissionGranted = ui.overlayPermissionGranted,
-            onToggleFloatingSubtitle = { enabled ->
-                if (commitService()) controller.setFloatingSubtitleEnabled(enabled)
-            },
+            onToggleFloatingSubtitle = controller::setFloatingSubtitleEnabled,
             onRequestOverlayPermission = { showOverlayDialog = true },
-            onToggleFloatingBilingual = { bilingual ->
-                if (commitService()) controller.setFloatingBilingual(bilingual)
-            },
+            onToggleFloatingBilingual = controller::setFloatingBilingual,
             interfaceLanguage = interfaceLanguage,
             onSelectInterfaceLanguage = { selected ->
                 if (selected != interfaceLanguage && activity != null) {
