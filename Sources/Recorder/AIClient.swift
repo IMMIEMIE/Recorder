@@ -23,34 +23,201 @@ enum AIError: LocalizedError {
     var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
 }
 
+/// API keys for AI profiles, API/streaming ASR and LiveTranslate, keyed by account string
+/// (`asr:<base>`, `livetranslate:<endpoint>`, `StreamingASRConfiguration.keyAccount`, AI base URLs).
+/// Release builds are ad-hoc signed, so the legacy login Keychain asked for the login password on every
+/// launch (issue #50). Keys now live in one JSON map under the app data root; see `APIKeyFileStore`.
 enum APIKeyStore {
-    static let service = "local.shengjian.recorder.ai"
-    static func query(_ endpoint: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: endpoint]
-    }
-    static func read(endpoint: String) throws -> String? {
-        var q = query(endpoint); q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
+    /// Tests swap in a store rooted in a temporary directory.
+    static var shared = APIKeyFileStore(
+        directory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LocalRecorder/APIKeys", isDirectory: true),
+        legacy: .keychain)
+    static func read(endpoint: String) throws -> String? { try shared.read(endpoint) }
+    static func save(_ key: String, endpoint: String) throws { try shared.save(key, account: endpoint) }
+    static func remove(endpoint: String) throws { try shared.remove(endpoint) }
+}
+
+/// Result of one attempt to read a key saved by builds before 0.8.3 in the legacy login Keychain.
+enum LegacyKeyResult: Equatable {
+    case found(String)
+    /// No such item (or an empty one).
+    case missing
+    /// The user denied the Keychain prompt (-128) or the password was wrong.
+    case declined
+    /// No prompt could be shown (locked, no UI); try again in a later process.
+    case unavailable
+    /// Any other error or unreadable data.
+    case failed
+}
+
+/// The pre-#50 Keychain items (service `local.shengjian.recorder.ai`), only read for migration.
+struct LegacyKeySource {
+    var read: (String) -> LegacyKeyResult
+    var delete: (String) -> Void
+
+    static let keychain = LegacyKeySource(read: { account in
+        var query = keychainQuery(account)
+        query[kSecReturnData as String] = true; query[kSecMatchLimit as String] = kSecMatchLimitOne
         var value: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &value)
-        if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = value as? Data, let text = String(data: data, encoding: .utf8) else {
-            throw AIError.message("无法读取钥匙串（\(status)），请重新保存 API Key")
+        switch SecItemCopyMatching(query as CFDictionary, &value) {
+        case errSecSuccess:
+            guard let data = value as? Data, let text = String(data: data, encoding: .utf8) else { return .failed }
+            return text.isEmpty ? .missing : .found(text)
+        case errSecItemNotFound: return .missing
+        case errSecUserCanceled, errSecAuthFailed: return .declined
+        case errSecInteractionNotAllowed, errSecNotAvailable: return .unavailable
+        default: return .failed
         }
-        return text
+    }, delete: { account in _ = SecItemDelete(keychainQuery(account) as CFDictionary) })
+
+    static let service = "local.shengjian.recorder.ai"
+    private static func keychainQuery(_ account: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
     }
-    static func save(_ key: String, endpoint: String) throws {
-        let data = Data(key.utf8)
-        let status = SecItemUpdate(query(endpoint) as CFDictionary, [kSecValueData as String:data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var q = query(endpoint); q[kSecValueData as String] = data
-            q[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            let added = SecItemAdd(q as CFDictionary, nil)
-            guard added == errSecSuccess else { throw AIError.message("无法保存 API Key（\(added)）") }
-        } else if status != errSecSuccess { throw AIError.message("无法更新 API Key（\(status)）") }
+}
+
+/// All API keys in one file, `<directory>/keys.json` (directory 0700, file 0600, replaced atomically).
+/// The file is read once per process and kept in memory; save/remove update both. An account missing from
+/// the file is looked up in the legacy Keychain at most once ever: the attempt is recorded in the file
+/// whatever its outcome, a migrated key is written here before its Keychain item is deleted, and a denied
+/// prompt stops every further Keychain lookup. Keys never go into config.json, logs or the backend.
+final class APIKeyFileStore {
+    struct Contents: Codable, Equatable {
+        static let schemaVersion = 1
+        var schemaVersion = Contents.schemaVersion
+        var keys: [String: String] = [:]
+        /// Accounts already looked up in (or superseded for) the legacy Keychain.
+        var legacyChecked: [String] = []
+        /// The user denied a Keychain prompt; never ask again.
+        var legacyDeclined = false
+        enum CodingKeys: String, CodingKey {
+            case schemaVersion = "schema_version", keys, legacyChecked = "legacy_checked", legacyDeclined = "legacy_declined"
+        }
     }
-    static func remove(endpoint: String) throws {
-        let status = SecItemDelete(query(endpoint) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw AIError.message("无法删除 API Key（\(status)）") }
+    private enum LoadError: Error { case corrupt, unreadable(Int) }
+
+    let directory: URL
+    var file: URL { directory.appendingPathComponent("keys.json") }
+    private let legacy: LegacyKeySource?
+    private let lock = NSLock()
+    private var cache: Contents?
+    /// Set when the Keychain cannot show a prompt in this process.
+    private var legacyUnavailable = false
+
+    init(directory: URL, legacy: LegacyKeySource? = nil) {
+        self.directory = directory; self.legacy = legacy
+    }
+
+    func read(_ account: String) throws -> String? {
+        lock.lock(); defer { lock.unlock() }
+        var contents: Contents
+        do { contents = try load() } catch { throw Self.readError(error) }
+        if let key = contents.keys[account] { return key }
+        guard let legacy, !legacyUnavailable, !contents.legacyDeclined, !contents.legacyChecked.contains(account) else { return nil }
+        var result = legacy.read(account)
+        if case .found(let key) = result, key.isEmpty { result = .missing }
+        switch result {
+        case .unavailable: legacyUnavailable = true; return nil
+        case .found(let key): contents.keys[account] = key
+        case .declined: contents.legacyDeclined = true
+        case .missing, .failed: break
+        }
+        contents.legacyChecked.append(account)
+        // Remember the attempt in memory even if the file cannot be written, so this process never asks twice.
+        cache = contents
+        let written = (try? write(contents)) != nil
+        if case .found(let key) = result {
+            if written { legacy.delete(account) }
+            return key
+        }
+        return nil
+    }
+
+    func save(_ key: String, account: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        var contents: Contents
+        do { contents = try loadForWrite() } catch { throw AIError.message("无法保存 API Key（\(Self.code(error))）") }
+        contents.keys[account] = key
+        if !contents.legacyChecked.contains(account) { contents.legacyChecked.append(account) }
+        do { try write(contents) } catch { throw AIError.message("无法保存 API Key（\(Self.code(error))）") }
+        cache = contents
+    }
+
+    func remove(_ account: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        var contents: Contents
+        do { contents = try loadForWrite() } catch { throw AIError.message("无法删除 API Key（\(Self.code(error))）") }
+        // Marking the account checked keeps a removed key from coming back out of the legacy Keychain.
+        guard contents.keys[account] != nil || !contents.legacyChecked.contains(account) else { return }
+        contents.keys[account] = nil
+        if !contents.legacyChecked.contains(account) { contents.legacyChecked.append(account) }
+        do { try write(contents) } catch { throw AIError.message("无法删除 API Key（\(Self.code(error))）") }
+        cache = contents
+    }
+
+    private func load() throws -> Contents {
+        if let cache { return cache }
+        let data: Data
+        do { data = try Data(contentsOf: file) } catch {
+            let ns = error as NSError, posix = Self.code(error)
+            if (ns.domain == NSCocoaErrorDomain && ns.code == NSFileReadNoSuchFileError) || posix == Int(ENOENT) || posix == Int(ENOTDIR) {
+                cache = Contents(); return Contents()
+            }
+            throw LoadError.unreadable(posix)
+        }
+        guard let contents = try? JSONDecoder().decode(Contents.self, from: data),
+              contents.schemaVersion == Contents.schemaVersion else { throw LoadError.corrupt }
+        cache = contents
+        return contents
+    }
+
+    /// A damaged file is moved aside to `keys.corrupt.json` (its keys are unreadable anyway) so a new key
+    /// can still be saved; an unreadable one (permissions, I/O) is an error.
+    private func loadForWrite() throws -> Contents {
+        do { return try load() } catch LoadError.corrupt {
+            let backup = directory.appendingPathComponent("keys.corrupt.json")
+            guard Foundation.rename(file.path, backup.path) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            cache = Contents()
+            return Contents()
+        }
+    }
+
+    private func write(_ contents: Contents) throws {
+        let manager = FileManager.default
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try manager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(contents)
+        let temp = directory.appendingPathComponent(".keys.\(UUID().uuidString).tmp").path
+        let fd = open(temp, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let ok = data.withUnsafeBytes { buffer -> Bool in
+            var offset = 0
+            while offset < buffer.count {
+                let n = Foundation.write(fd, buffer.baseAddress! + offset, buffer.count - offset)
+                if n <= 0 { return false }
+                offset += n
+            }
+            return fsync(fd) == 0
+        }
+        let failure = errno
+        close(fd)
+        guard ok, Foundation.rename(temp, file.path) == 0 else {
+            let code = ok ? errno : failure
+            unlink(temp)
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+    }
+
+    private static func readError(_ error: Error) -> AIError {
+        if case LoadError.unreadable(let code) = error { return .message("无法读取已保存的 API Key（\(code)），请重新保存 API Key") }
+        return .message("已保存的 API Key 文件已损坏，请重新保存 API Key")
+    }
+    private static func code(_ error: Error) -> Int {
+        if case LoadError.unreadable(let code) = error { return code }
+        let ns = error as NSError
+        return (ns.userInfo[NSUnderlyingErrorKey] as? NSError)?.code ?? ns.code
     }
 }
 

@@ -365,10 +365,10 @@ struct SettingsView: View {
                         if model.asrTesting { ProgressView().controlSize(.small) }
                     }
                     if !model.asrConnectionMessage.isEmpty { Text(verbatim: interface.localizeMessage(model.asrConnectionMessage)).font(.caption).textSelection(.enabled) }
-                    Text("测试只启动识别任务，不发送音频。转写时全部音频会发送到该服务，按音频时长计费；密钥存于钥匙串。")
+                    Text("测试只启动识别任务，不发送音频。转写时全部音频会发送到该服务，按音频时长计费；密钥仅保存在本机。")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
-                Text("使用兼容 OpenAI /audio/transcriptions 的服务。加载后，语音片段会发送到此地址，可能产生费用；密钥保存在钥匙串，音频不存盘。")
+                Text("使用兼容 OpenAI /audio/transcriptions 的服务。加载后，语音片段会发送到此地址，可能产生费用；密钥仅保存在本机，音频不存盘。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }

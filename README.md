@@ -155,7 +155,7 @@ Targets are Simplified Chinese, Traditional Chinese, English, Japanese, Korean, 
 - 目标语言：中文、英语、日语、韩语、法语、德语、西班牙语、俄语。默认中文使用 `zh`，不进行简繁转换。
 - 启用后关闭本地推理后端，停用其他识别、翻译及 AI 提问入口；下次启动直接进入 LiveTranslate 模式。关闭该模式可恢复原有服务配置。
 - 停止采集后等待尾句处理，最长 30 秒；录音及处理尾句期间不能修改连接或目标语言。连接出错时保留收到的文字，未完成句子会标注，不自动切换其他模型。
-- 服务地址、语言和开关保存在应用偏好设置；专用 API Key 按地址分别存入钥匙串，留空保存会保留已有密钥。音频持续上传至所选服务并可能产生费用；**测试连接只配置会话，不发送音频**。
+- 服务地址、语言和开关保存在应用偏好设置；专用 API Key 按地址分别保存在本机，留空保存会保留已有密钥。音频持续上传至所选服务并可能产生费用；**测试连接只配置会话，不发送音频**。
 
 协议依据：[模型页面](https://www.qianwenai.com/models/qwen3.8-livetranslate-flash-realtime)、[客户端事件](https://help.aliyun.com/en/model-studio/live-translator-client-events)、[服务端事件](https://help.aliyun.com/en/model-studio/live-translator-server-events)。模拟测试验证客户端行为；实际模型权限、翻译效果与延迟仍需使用有效 API Key 验证。
 
@@ -184,7 +184,7 @@ Targets are Simplified Chinese, Traditional Chinese, English, Japanese, Korean, 
 | Local Hy-SimulMT / 本地 Hy-SimulMT | Local helper and system speech synthesis; no upload or recording persistence / 本地辅助进程与系统语音合成，不上传或保存录音 |
 | AI prompt / AI 提问 | Sends the text in the prompt panel and the requested task / 发送提问面板中的文字及任务 |
 | Session history / 会话记录 | Finalized source text and translations are saved per session on this Mac in `~/Library/Application Support/LocalRecorder/sessions/` (on by default; turn off in Settings → 会话记录); never uploaded / 定稿的原文和译文按会话保存在本机上述目录（默认开启，可在设置 → 会话记录关闭），不会上传 |
-| Credentials / 凭据 | API keys are stored in macOS Keychain; LiveTranslate configuration lives in app preferences; other profile metadata lives in `~/Library/Application Support/LocalRecorder/` / 密钥保存在 macOS 钥匙串；LiveTranslate 配置保存在应用偏好设置，其他配置元数据位于上述目录 |
+| Credentials / 凭据 | API keys are stored on this Mac in `~/Library/Application Support/LocalRecorder/APIKeys/keys.json` (folder `0700`, file `0600`, readable only by your user account); they are sent only to the service they belong to, never logged or uploaded elsewhere. Keys saved in the login Keychain by earlier versions move there the first time each is needed (macOS may ask once; if you deny, enter the key again). LiveTranslate configuration lives in app preferences; other profile metadata lives in `~/Library/Application Support/LocalRecorder/` / 密钥保存在本机 `~/Library/Application Support/LocalRecorder/APIKeys/keys.json`（目录 `0700`、文件 `0600`，仅当前用户可读），只发送给对应服务，不写日志、不另行上传。旧版本存入登录钥匙串的密钥会在首次使用时迁移到该文件（macOS 可能询问一次；拒绝后重新填写即可）。LiveTranslate 配置保存在应用偏好设置，其他配置元数据位于上述目录 |
 
 The app never saves recordings, translated speech, or text that is still being recognized. Finalized transcripts and translations are kept on this Mac per session unless you turn off **保存会话记录**; with it off nothing is written, and earlier sessions can still be read, exported, or deleted. Sessions are never uploaded. System-audio capture uses macOS screen-and-system-audio permission but does not save screen images.
 应用从不保存录音、译音或识别中的文字。定稿的原文和译文默认按会话保存在本机；关闭「保存会话记录」后不再写盘，已有会话仍可查看、导出和删除。会话内容从不上传。系统声音采集需要 macOS 的屏幕与系统音频录制权限，但不会保存屏幕画面。
@@ -197,6 +197,7 @@ Model-free tests (local mock servers need only the system `python3`):
 ./scripts/test_backend.sh
 ./scripts/test_download.sh
 ./scripts/test_ai.sh
+./scripts/test_api_keys.sh
 ./scripts/test_audio.sh
 ./scripts/test_streaming_asr.sh
 ./scripts/test_livetranslate.sh

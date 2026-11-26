@@ -964,7 +964,7 @@ final class AppModel: ObservableObject {
         }
     }
     /// Streaming ASR uses a fixed endpoint and model. Configs saved with another address or model
-    /// (e.g. the former Qwen-Audio realtime chat endpoint) are rewritten, carrying their Keychain key over.
+    /// (e.g. the former Qwen-Audio realtime chat endpoint) are rewritten, carrying their saved key over.
     private func migrateLegacyStreamingConfig() {
         let old = asrAPIBaseURL
         guard asrProvider == "api", asrAPIProtocol == "qwen_realtime",
@@ -1058,7 +1058,7 @@ extension AppModel {
             let changedMode = next.enabled != liveEnabled || next.provider != liveConfiguration.provider
             if changedMode { shutdown() }
             liveConfiguration = next; liveProfile = next.profile; liveLanguage = next.language; liveKeyInput = ""
-            liveMessage = next.provider == .hyLocal ? "本地设置已保存，下次会话生效" : (key.isEmpty ? "设置已保存；保留此地址已有的密钥" : "设置已保存；专用 API Key 已存入钥匙串")
+            liveMessage = next.provider == .hyLocal ? "本地设置已保存，下次会话生效" : (key.isEmpty ? "设置已保存；保留此地址已有的密钥" : "设置已保存；专用 API Key 已保存到本机")
             if changedMode { launch(); loadChosenHyModel() }
             return true
         } catch { liveMessage = error.localizedDescription; return false }
