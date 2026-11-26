@@ -6,7 +6,7 @@ import Foundation
 struct StreamingASRConfiguration {
     static let endpoint = "wss://maas.qianwenaiapi.com/api-ws/v1/inference"
     static let model = "qwen-audio-3.0-asr-flash-streaming"
-    /// Keychain account of the key.
+    /// `APIKeyStore` account of the key.
     static let keyAccount = "asr:" + endpoint
     var endpoint = Self.endpoint
     var language = "auto"

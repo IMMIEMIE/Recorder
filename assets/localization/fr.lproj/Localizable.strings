@@ -84,8 +84,8 @@
 "API Key（留空使用已保存的密钥）" = "Clé API (laisser vide pour utiliser la clé enregistrée)";
 "固定使用千问AI平台的流式识别模型，只需填写该平台的 API Key，然后点击「保存 / 启用」。录音时音频持续发送到服务端，边说边出字，停顿后由服务端定稿整句。" = "Saisissez votre clé API Qwen puis cliquez sur Enregistrer / Activer. L’audio est diffusé pendant que vous parlez et chaque phrase est finalisée après une pause.";
 "测试连接" = "Tester la connexion";
-"测试只启动识别任务，不发送音频。转写时全部音频会发送到该服务，按音频时长计费；密钥存于钥匙串。" = "Le test lance une tâche sans envoyer d’audio. Pendant la transcription, tout l’audio est envoyé et facturé selon la durée. La clé est stockée dans le Trousseau.";
-"使用兼容 OpenAI /audio/transcriptions 的服务。加载后，语音片段会发送到此地址，可能产生费用；密钥保存在钥匙串，音频不存盘。" = "Utilise un service compatible OpenAI /audio/transcriptions. Les segments audio sont envoyés à cette adresse (frais possibles). La clé est stockée dans le Trousseau et l’audio n’est jamais enregistré.";
+"测试只启动识别任务，不发送音频。转写时全部音频会发送到该服务，按音频时长计费；密钥仅保存在本机。" = "Le test lance une tâche sans envoyer d’audio. Pendant la transcription, tout l’audio est envoyé et facturé selon la durée. La clé est stockée uniquement sur ce Mac.";
+"使用兼容 OpenAI /audio/transcriptions 的服务。加载后，语音片段会发送到此地址，可能产生费用；密钥仅保存在本机，音频不存盘。" = "Utilise un service compatible OpenAI /audio/transcriptions. Les segments audio sont envoyés à cette adresse (frais possibles). La clé est stockée uniquement sur ce Mac et l’audio n’est jamais enregistré.";
 "保存 / 启用" = "Enregistrer / Activer";
 "连接 / 切换" = "Connecter / Changer";
 "加载 / 切换" = "Charger / Changer";
@@ -204,7 +204,7 @@
 "测试本地会话" = "Tester la session locale";
 "停止本次译音播放" = "Arrêter la lecture traduite";
 "目标语言和音频输出修改后立即保存到本机，下次会话生效。模型单独缓存，不随应用打包；测试本地会话不采集音频。" = "Les modifications de langue et d’audio sont enregistrées immédiatement pour la prochaine session. Les modèles sont mis en cache à part et les tests ne capturent aucun audio.";
-"地址、目标语言、音频输出设置和开关会保存到本机。密钥独立存于系统钥匙串；切换地址时需配置该地址对应的密钥。修改后点击保存生效。" = "Les paramètres sont enregistrés sur ce Mac et les clés sont stockées dans le Trousseau par adresse. Saisissez la clé correspondante puis cliquez sur Enregistrer.";
+"地址、目标语言、音频输出设置和开关会保存到本机。密钥按地址分别保存在本机；切换地址时需配置该地址对应的密钥。修改后点击保存生效。" = "Les paramètres sont enregistrés sur ce Mac et les clés sont stockées sur ce Mac par adresse. Saisissez la clé correspondante puis cliquez sur Enregistrer.";
 "开始转写后，所选音源的音频会发送到该云端服务，可能产生费用；应用不保存录音。测试连接只建立会话，不采集或发送音频。" = "La transcription envoie la source audio choisie au service cloud (frais possibles) sans jamais l’enregistrer. Le test de connexion n’envoie aucun audio.";
 "始终显示原文＋译文字幕，可选播放译音。中文使用服务的 zh 选项，不进行简繁转换。" = "Les sous-titres affichent toujours source et traduction ; la lecture est facultative. Le chinois utilise l’option zh sans conversion.";
 "复制结果" = "Copier le résultat";
@@ -231,7 +231,7 @@
 "新增" = "Ajouter";
 "模型 ID" = "ID du modèle";
 "留空保留该 Base URL 已保存的密钥" = "Laisser vide pour garder la clé de cette Base URL";
-"地址、模型和当前选择会持久保存，重启后自动恢复。密钥存于系统钥匙串；输入框留空不会清除已保存密钥。" = "L’adresse, le modèle et le profil actif sont restaurés au lancement. Les clés sont dans le Trousseau ; un champ vide ne supprime pas la clé.";
+"地址、模型和当前选择会持久保存，重启后自动恢复。密钥仅保存在本机；输入框留空不会清除已保存密钥。" = "L’adresse, le modèle et le profil actif sont restaurés au lancement. Les clés restent sur ce Mac ; un champ vide ne supprime pas la clé.";
 "保存并使用" = "Enregistrer et utiliser";
 "删除配置" = "Supprimer le profil";
 "密钥已保存，重启后可继续使用" = "Clé enregistrée et conservée au redémarrage";
@@ -299,7 +299,8 @@
 "已保存" = "Enregistré";
 "请输入完整 HTTPS 接口地址，例如 https://api.deepseek.com/chat/completions" = "Saisissez une URL HTTPS complète, ex. https://api.deepseek.com/chat/completions";
 "请填写模型名称" = "Saisissez le nom du modèle";
-"无法读取钥匙串（%@），请重新保存 API Key" = "Impossible de lire le Trousseau (%@). Enregistrez à nouveau votre clé API.";
+"无法读取已保存的 API Key（%@），请重新保存 API Key" = "Impossible de lire la clé API enregistrée (%@). Enregistrez à nouveau votre clé API.";
+"已保存的 API Key 文件已损坏，请重新保存 API Key" = "Le fichier de la clé API enregistrée est endommagé. Enregistrez à nouveau votre clé API.";
 "无法保存 API Key（%@）" = "Impossible d’enregistrer la clé API (%@)";
 "无法更新 API Key（%@）" = "Impossible de mettre à jour la clé API (%@)";
 "无法删除 API Key（%@）" = "Impossible de supprimer la clé API (%@)";
@@ -371,7 +372,7 @@
 "已切换到「%@」" = "Passé à « %@ »";
 "本地设置已保存，下次会话生效" = "Réglages locaux enregistrés pour la prochaine session";
 "设置已保存；保留此地址已有的密钥" = "Paramètres enregistrés ; clé existante conservée";
-"设置已保存；专用 API Key 已存入钥匙串" = "Paramètres enregistrés ; clé API stockée dans le Trousseau";
+"设置已保存；专用 API Key 已保存到本机" = "Paramètres enregistrés ; clé API stockée sur ce Mac";
 "已切换翻译方式，并恢复该方式已保存的设置" = "Mode de traduction changé et réglages restaurés";
 "正在校验并加载本地 Hy-SimulMT…" = "Vérification et chargement de Hy-SimulMT local…";
 "Hy-SimulMT 已加载，可开始中英实时翻译" = "Hy-SimulMT chargé et prêt pour la traduction chinois–anglais";

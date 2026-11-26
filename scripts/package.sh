@@ -44,7 +44,7 @@ Qwen 约 4.08 GB，Whisper 约 1.61 GB；下载后可离线切换。
 本机试用构建使用临时签名，未通过 Apple 开发者签名与公证。
 不保存录音。定稿的文字与译文默认只保存在这台 Mac 上，不会上传；可在设置中关闭，也可删除任一会话。会话可导出为 TXT 或 Markdown。本地识别和本地 Hy-SimulMT 不上传音频；API 识别和云端 LiveTranslate 会发送音频到所选服务，API 翻译会发送原文。
 「AI 提问」支持摘要、翻译与自定义问题，在「设置 → AI 服务」中填写 Base URL、模型 ID 和 API Key。
-点击发送后原文会发给所选 AI 服务，可能产生服务商费用；API Key 保存在系统钥匙串。
+点击发送后原文会发给所选 AI 服务，可能产生服务商费用；API Key 仅保存在本机。
 TXT
 if [ ! -x "$app/Contents/Helpers/HySimulMTHelper" ]; then
   printf '\n此构建的 Hy-SimulMT 本地同传尚未通过真机验证，入口保持禁用；云端 LiveTranslate 和普通本地识别不受影响。\n' >> "$staging/安装说明.txt"

@@ -191,7 +191,7 @@ final class InterfaceLanguageSettings: ObservableObject {
 
         // Single-argument literal patterns (ordered most-specific first).
         let literalPatterns: [(prefix: String, suffix: String, key: String)] = [
-            ("无法读取钥匙串（", "），请重新保存 API Key", "无法读取钥匙串（%@），请重新保存 API Key"),
+            ("无法读取已保存的 API Key（", "），请重新保存 API Key", "无法读取已保存的 API Key（%@），请重新保存 API Key"),
             ("无法保存 API Key（", "）", "无法保存 API Key（%@）"),
             ("无法更新 API Key（", "）", "无法更新 API Key（%@）"),
             ("无法删除 API Key（", "）", "无法删除 API Key（%@）"),

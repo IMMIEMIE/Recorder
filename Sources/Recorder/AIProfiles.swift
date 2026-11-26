@@ -21,7 +21,7 @@ struct AIProfile: Codable, Equatable, Identifiable {
     }
 }
 
-/// One non-secret JSON file per normalized base URL. Credentials stay in Keychain.
+/// One non-secret JSON file per normalized base URL. Credentials live in `APIKeyStore`.
 struct AIProfileFiles {
     let directory: URL
     func file(for baseURL: String) -> URL {
@@ -140,7 +140,7 @@ struct AISettingsView: View {
             LabeledContent("Base URL") { TextField("https://api.example.com/v1", text: Binding(get: { base }, set: { base = $0; key = ""; keyStatus = "保存时将使用此地址对应的密钥" })) }
             LabeledContent("模型 ID") { TextField("模型 ID", text: $model) }
             LabeledContent("API Key") { SecureField("留空保留该 Base URL 已保存的密钥", text: $key) }
-            Text("地址、模型和当前选择会持久保存，重启后自动恢复。密钥存于系统钥匙串；输入框留空不会清除已保存密钥。").font(.caption).foregroundStyle(.secondary)
+            Text("地址、模型和当前选择会持久保存，重启后自动恢复。密钥仅保存在本机；输入框留空不会清除已保存密钥。").font(.caption).foregroundStyle(.secondary)
             Text(verbatim: interface.localizeMessage(keyStatus)).font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("保存并使用") {

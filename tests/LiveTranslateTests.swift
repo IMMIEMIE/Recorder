@@ -42,16 +42,19 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
 @main struct LiveTranslateTests {
     @MainActor static func main() async throws {
         setbuf(stdout, nil)
+        // API keys go to a temporary file store, never the real data root or the login Keychain.
+        let keyDirectory = ProcessInfo.processInfo.environment["RECORDER_TEST_KEY_DIR"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("live-keys-\(UUID().uuidString)")
+        APIKeyStore.shared = APIKeyFileStore(directory: keyDirectory)
         if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--read-profile" {
             let suite = UserDefaults(suiteName: CommandLine.arguments[2])!
             let saved = LiveTranslateConfiguration.load(defaults: suite)
             try check(saved.profile.id == CommandLine.arguments[3] && saved.catalog.profiles.count == 3, "selection in new process")
-            if ProcessInfo.processInfo.environment["RECORDER_LIVE_TEST_KEYCHAIN"] == "1" {
-                try check(try APIKeyStore.read(endpoint: saved.keyAccount) == (saved.profile.id == "c" ? "mock-c" : "mock-only"),
-                          "credential in new process")
-            }
+            try check(try APIKeyStore.read(endpoint: saved.keyAccount) == (saved.profile.id == "c" ? "mock-c" : "mock-only"),
+                      "credential in new process")
             return
         }
+        defer { try? FileManager.default.removeItem(at: keyDirectory) }
         let suite = "recorder.live.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -252,17 +255,11 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         let ab = base + "/profiles/ab", other = base + "/profiles/c"
         let legacyProfile = try JSONSerialization.data(withJSONObject: ["enabled": true, "endpoint": ab, "language": "zh"])
         profileDefaults.set(legacyProfile, forKey: "livetranslate.configuration.v1")
-        // Opt in to login Keychain coverage. Only the fixture's ephemeral loopback accounts are used.
-        let systemKeychain = ProcessInfo.processInfo.environment["RECORDER_LIVE_TEST_KEYCHAIN"] == "1"
-        var fixtureAccounts: [String] = []
-        defer { for account in fixtureAccounts { try? APIKeyStore.remove(endpoint: account) } }
-        if systemKeychain {
-            for (address, value) in [(ab, "mock-only"), (other, "mock-c")] {
-                let account = "livetranslate:" + address
-                try check(try APIKeyStore.read(endpoint: account) == nil, "fixture needs an unused Keychain account")
-                try APIKeyStore.save(value, endpoint: account)
-                fixtureAccounts.append(account)
-            }
+        // Keys per address in the temporary key store; the restarted process reads them back.
+        for (address, value) in [(ab, "mock-only"), (other, "mock-c")] {
+            let account = "livetranslate:" + address
+            try check(try APIKeyStore.read(endpoint: account) == nil, "fixture needs an unused key account")
+            try APIKeyStore.save(value, endpoint: account)
         }
         var profileClients = [LiveTranslateClient]()
         let profileApp = AppModel(defaults: profileDefaults, integrateSystem: false, liveAllowLocalhost: true,
@@ -271,10 +268,7 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
                 profileClients.append(client)
                 return client
             },
-            liveKeyReader: { account in
-                if systemKeychain { return try APIKeyStore.read(endpoint: account) }
-                return ["livetranslate:" + ab: "mock-only", "livetranslate:" + other: "mock-c"][account]
-            })
+            liveKeyReader: { try APIKeyStore.read(endpoint: $0) })
         defer { profileApp.shutdown() }
         var a = profileApp.liveProfile
         a.name = "A"; a.modelID = "model-a"; a.threshold = 0.4; a.silenceMS = 600
@@ -291,6 +285,7 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             let reopen = Process()
             reopen.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
             reopen.arguments = ["--read-profile", suite + "-profiles", profile.id]
+            reopen.environment = ProcessInfo.processInfo.environment.merging(["RECORDER_TEST_KEY_DIR": keyDirectory.path]) { $1 }
             try reopen.run(); reopen.waitUntilExit()
             try check(reopen.terminationStatus == 0, "restarted process restored selected profile")
             let restored = LiveTranslateConfiguration.load(defaults: profileDefaults)
@@ -327,7 +322,7 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         try await profileWait.wait { !profileApp.liveTesting }
         try check(!profileApp.liveMessage.contains("成功") && !profileApp.liveMessage.contains("mock-"), "model failure is safe")
         try check(LiveTranslateConfiguration.load(defaults: profileDefaults).profile == a, "failed test preserves saved model")
-        if systemKeychain { print("PASS: macOS Keychain legacy address account and isolated second endpoint") }
+        print("PASS: per-address API key files, read back by a restarted process")
         print("PASS: migrated credential account, A/B/C profile selection, shared handshake, recording and failed draft isolation")
         let mockConfig = LiveTranslateConfiguration(enabled: true, endpoint: base + "/ok")
         defaults.set(try JSONEncoder().encode(mockConfig), forKey: "livetranslate.configuration.v1")

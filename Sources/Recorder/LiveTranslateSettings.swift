@@ -87,7 +87,7 @@ struct LiveTranslateSettingsView: View {
             }.disabled(model.liveSettingsBusy)
             if model.livePlaying { Button("停止本次译音播放") { model.stopLivePlayback() } }
             Text(local ? "目标语言和音频输出修改后立即保存到本机，下次会话生效。模型单独缓存，不随应用打包；测试本地会话不采集音频。"
-                 : "地址、目标语言、音频输出设置和开关会保存到本机。密钥独立存于系统钥匙串；切换地址时需配置该地址对应的密钥。修改后点击保存生效。")
+                 : "地址、目标语言、音频输出设置和开关会保存到本机。密钥按地址分别保存在本机；切换地址时需配置该地址对应的密钥。修改后点击保存生效。")
                 .font(.caption).foregroundStyle(.secondary)
             if !local {
                 Text("开始转写后，所选音源的音频会发送到该云端服务，可能产生费用；应用不保存录音。测试连接只建立会话，不采集或发送音频。")
