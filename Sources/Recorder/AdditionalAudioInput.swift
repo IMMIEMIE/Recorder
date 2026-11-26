@@ -2,6 +2,276 @@ import AVFoundation
 import ScreenCaptureKit
 import CoreMedia
 
+/// Audio capture input modes supported on macOS.
+enum AudioInputSource: String, CaseIterable {
+    case microphone = "microphone"
+    case system = "system"
+    case systemMix = "system_mix"
+    case file = "file"
+
+    static let defaultsKey = "audio.input.source"
+    static let filePathKey = "audio.input.filePath"
+    /// Live capture modes shown in the main workspace mode bar and menu bar quick switcher.
+    static let liveModes: [AudioInputSource] = [.microphone, .system, .systemMix]
+
+    var titleKey: String {
+        switch self {
+        case .microphone: return "麦克风"
+        case .system: return "系统声音"
+        case .systemMix: return "系统声音 + 麦克风"
+        case .file: return "音频文件"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .microphone: return "mic.fill"
+        case .system: return "speaker.wave.2.fill"
+        case .systemMix: return "person.2.wave.2.fill"
+        case .file: return "doc.waveform"
+        }
+    }
+
+    var usesMicrophone: Bool { self == .microphone || self == .systemMix }
+    var usesSystemAudio: Bool { self == .system || self == .systemMix }
+
+    /// Restores the last selected audio source from UserDefaults.
+    /// If "file" was saved but the file is missing or unreadable, falls back safely to `.microphone`.
+    static func restore(
+        defaults: UserDefaults,
+        fileExists: (String) -> Bool = { FileManager.default.isReadableFile(atPath: $0) }
+    ) -> (source: AudioInputSource, fileURL: URL?) {
+        let savedPath = defaults.string(forKey: filePathKey)
+        let validFileURL: URL? = {
+            guard let path = savedPath, !path.isEmpty, fileExists(path) else { return nil }
+            return URL(fileURLWithPath: path)
+        }()
+        guard let raw = defaults.string(forKey: defaultsKey),
+              let saved = AudioInputSource(rawValue: raw) else {
+            return (.microphone, validFileURL)
+        }
+        if saved == .file {
+            guard let url = validFileURL else { return (.microphone, nil) }
+            return (.file, url)
+        }
+        return (saved, validFileURL)
+    }
+
+    static func save(source: AudioInputSource, fileURL: URL?, defaults: UserDefaults) {
+        defaults.set(source.rawValue, forKey: defaultsKey)
+        if let path = fileURL?.path, !path.isEmpty {
+            defaults.set(path, forKey: filePathKey)
+        } else {
+            defaults.removeObject(forKey: filePathKey)
+        }
+    }
+}
+
+/// Fixed-cadence software mixer that combines system audio and microphone PCM16 (16 kHz mono)
+/// streams without blocking either source. Soft-limits peaks above the knee to prevent clipping.
+final class PCM16AudioMixer {
+    enum Channel {
+        case system
+        case microphone
+    }
+
+    private struct SampleFIFO {
+        private var storage: [Int16] = []
+        private var head = 0
+
+        var count: Int { storage.count - head }
+        var isEmpty: Bool { head >= storage.count }
+
+        mutating func append(_ samples: [Int16], maxCount: Int) {
+            guard !samples.isEmpty else { return }
+            storage.append(contentsOf: samples)
+            if count > maxCount {
+                head = storage.count - maxCount
+            }
+            compactIfNeeded()
+        }
+
+        mutating func pop(upTo maxSamples: Int) -> [Int16] {
+            let available = min(maxSamples, count)
+            guard available > 0 else { return [] }
+            let slice = Array(storage[head..<(head + available)])
+            head += available
+            compactIfNeeded()
+            return slice
+        }
+
+        mutating func removeAll() {
+            storage.removeAll(keepingCapacity: false)
+            head = 0
+        }
+
+        private mutating func compactIfNeeded() {
+            if head >= storage.count {
+                storage.removeAll(keepingCapacity: true)
+                head = 0
+            } else if head >= 4096 && head * 2 >= storage.count {
+                storage.removeFirst(head)
+                head = 0
+            }
+        }
+    }
+
+    static let sampleRate = 16000
+    static let defaultFrameSamples = 320     // 20 ms at 16 kHz
+    static let defaultTickIntervalMs = 20
+    static let defaultMaxBufferedSamples = 8000  // 500 ms cap per channel
+
+    private static let softLimitKnee: Int32 = 28000
+    private static let softLimitCeiling: Double = 32767.0
+    private static let softLimitHeadroom: Double = 32767.0 - 28000.0
+
+    let frameSamples: Int
+    let tickIntervalMs: Int
+    let maxBufferedSamples: Int
+
+    var onPCM: ((Data, Float) -> Void)?
+
+    private let queue = DispatchQueue(label: "recorder.audio-mixer")
+    private var timer: DispatchSourceTimer?
+    private var active = false
+    private var systemBuffer = SampleFIFO()
+    private var micBuffer = SampleFIFO()
+
+    init(
+        frameSamples: Int = PCM16AudioMixer.defaultFrameSamples,
+        tickIntervalMs: Int = PCM16AudioMixer.defaultTickIntervalMs,
+        maxBufferedSamples: Int = PCM16AudioMixer.defaultMaxBufferedSamples
+    ) {
+        self.frameSamples = max(1, frameSamples)
+        self.tickIntervalMs = max(1, tickIntervalMs)
+        self.maxBufferedSamples = max(self.frameSamples, maxBufferedSamples)
+    }
+
+    func start() {
+        queue.sync {
+            timer?.cancel()
+            timer = nil
+            systemBuffer.removeAll()
+            micBuffer.removeAll()
+            active = true
+            let source = DispatchSource.makeTimerSource(queue: queue)
+            source.schedule(
+                deadline: .now() + .milliseconds(tickIntervalMs),
+                repeating: .milliseconds(tickIntervalMs),
+                leeway: .milliseconds(2)
+            )
+            source.setEventHandler { [weak self] in
+                guard let self, self.active else { return }
+                _ = self.mixNextFrameLocked(emitSilenceIfEmpty: true)
+            }
+            timer = source
+            source.resume()
+        }
+    }
+
+    func stop() {
+        queue.sync {
+            timer?.cancel()
+            timer = nil
+            let wasActive = active
+            active = false
+            if wasActive {
+                _ = drainLocked()
+            }
+            systemBuffer.removeAll()
+            micBuffer.removeAll()
+        }
+    }
+
+    func append(_ data: Data, to channel: Channel) {
+        let count = data.count / 2
+        guard count > 0 else { return }
+        var samples = [Int16](repeating: 0, count: count)
+        data.withUnsafeBytes { raw in
+            for i in 0..<count {
+                samples[i] = Int16(littleEndian: raw.loadUnaligned(fromByteOffset: i * 2, as: Int16.self))
+            }
+        }
+        queue.sync {
+            switch channel {
+            case .system:
+                systemBuffer.append(samples, maxCount: maxBufferedSamples)
+            case .microphone:
+                micBuffer.append(samples, maxCount: maxBufferedSamples)
+            }
+        }
+    }
+
+    func bufferedSampleCounts() -> (system: Int, microphone: Int) {
+        queue.sync { (systemBuffer.count, micBuffer.count) }
+    }
+
+    @discardableResult
+    func mixNextFrame(emitSilenceIfEmpty: Bool = true) -> (data: Data, rms: Float)? {
+        queue.sync { mixNextFrameLocked(emitSilenceIfEmpty: emitSilenceIfEmpty) }
+    }
+
+    @discardableResult
+    func drain() -> [(data: Data, rms: Float)] {
+        queue.sync { drainLocked() }
+    }
+
+    private func mixNextFrameLocked(emitSilenceIfEmpty: Bool) -> (data: Data, rms: Float)? {
+        if !emitSilenceIfEmpty && systemBuffer.isEmpty && micBuffer.isEmpty {
+            return nil
+        }
+        let sys = systemBuffer.pop(upTo: frameSamples)
+        let mic = micBuffer.pop(upTo: frameSamples)
+        return emitMixed(system: sys, mic: mic, count: frameSamples)
+    }
+
+    private func drainLocked() -> [(data: Data, rms: Float)] {
+        var emitted: [(data: Data, rms: Float)] = []
+        while max(systemBuffer.count, micBuffer.count) > 0 {
+            let remaining = max(systemBuffer.count, micBuffer.count)
+            let count = min(frameSamples, remaining)
+            let sys = systemBuffer.pop(upTo: count)
+            let mic = micBuffer.pop(upTo: count)
+            emitted.append(emitMixed(system: sys, mic: mic, count: count))
+        }
+        return emitted
+    }
+
+    private func emitMixed(system: [Int16], mic: [Int16], count: Int) -> (data: Data, rms: Float) {
+        var mixed = [Int16](repeating: 0, count: count)
+        var sumSquares: Float = 0
+        for i in 0..<count {
+            let s = i < system.count ? system[i] : 0
+            let m = i < mic.count ? mic[i] : 0
+            let out = Self.mixSample(s, m)
+            mixed[i] = out
+            let norm = Float(out) / 32768.0
+            sumSquares += norm * norm
+        }
+        let rms = count > 0 ? sqrt(sumSquares / Float(count)) : 0
+        let data = mixed.withUnsafeBufferPointer { ptr -> Data in
+            guard let base = ptr.baseAddress else { return Data() }
+            return Data(bytes: base, count: count * 2)
+        }
+        onPCM?(data, rms)
+        return (data, rms)
+    }
+
+    /// Mixes two PCM16 samples with unity gain below the soft-limit knee and smooth tanh compression above it.
+    static func mixSample(_ a: Int16, _ b: Int16) -> Int16 {
+        let sum = Int32(a) + Int32(b)
+        let magnitude = abs(sum)
+        if magnitude <= softLimitKnee {
+            return Int16(sum)
+        }
+        let excess = Double(magnitude - softLimitKnee)
+        let compressed = Double(softLimitKnee) + softLimitHeadroom * tanh(excess / softLimitHeadroom)
+        let signed = sum >= 0 ? compressed : -compressed
+        let clamped = max(-32768.0, min(softLimitCeiling, signed.rounded()))
+        return Int16(clamped)
+    }
+}
+
 /// Converts bounded input buffers; all access is serialized on the input queue.
 final class InputPCMConverter {
     private var converter: AVAudioConverter?

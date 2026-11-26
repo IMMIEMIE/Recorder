@@ -127,6 +127,20 @@ struct InterfaceLanguageTests {
             if choice != .simplifiedChinese {
                 precondition(!httpErr.contains("API Key 无效或无权访问该模型"), "Untranslated HTTP error in \(choice.rawValue): \(httpErr)")
             }
+
+            let mixMicErr = restored.localizeMessage("麦克风采集异常：音频设备发生变化；已停止录音，请刷新设备后重新开始")
+            precondition(!mixMicErr.isEmpty)
+            if choice != .simplifiedChinese {
+                precondition(!mixMicErr.contains("麦克风采集异常") && !mixMicErr.contains("音频设备发生变化"),
+                             "Untranslated mix mic error in \(choice.rawValue): \(mixMicErr)")
+            }
+
+            let mixSysErr = restored.localizeMessage("系统声音采集异常：未找到可采集系统声音的显示器。请在系统设置 → 隐私与安全性中允许声笺录制屏幕与系统音频；如刚开启权限，请重启声笺后重试。")
+            precondition(!mixSysErr.isEmpty)
+            if choice != .simplifiedChinese {
+                precondition(!mixSysErr.contains("系统声音采集异常") && !mixSysErr.contains("未找到可采集系统声音的显示器"),
+                             "Untranslated mix system error in \(choice.rawValue): \(mixSysErr)")
+            }
         }
 
         // Verify plain String variables do not trigger implicit SwiftUI lookup (which is why UI uses localizeMessage / LocalizedStringKey).

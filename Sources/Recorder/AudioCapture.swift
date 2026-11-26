@@ -28,9 +28,63 @@ final class AudioCapture {
             var nameAddress = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
             var name: Unmanaged<CFString>?
             var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-            _ = AudioObjectGetPropertyData(id, &nameAddress, 0, nil, &nameSize, &name)
-            return Microphone(id: id, name: name?.takeUnretainedValue() as String? ?? "麦克风")
+            let nameStatus = AudioObjectGetPropertyData(id, &nameAddress, 0, nil, &nameSize, &name)
+            let title = nameStatus == noErr ? (name?.takeRetainedValue() as String? ?? "麦克风") : "麦克风"
+            return Microphone(id: id, name: title)
         }
+    }
+
+    static func isHeadphonesLikelyConnected() -> Bool {
+        var defaultAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &defaultAddress, 0, nil, &size, &deviceID) == noErr,
+              deviceID != 0 else { return false }
+
+        var transportAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var transport: UInt32 = 0
+        var transportSize = UInt32(MemoryLayout<UInt32>.size)
+        if AudioObjectGetPropertyData(deviceID, &transportAddress, 0, nil, &transportSize, &transport) == noErr {
+            if transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE {
+                return true
+            }
+        }
+
+        var sourceAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDataSource,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var dataSource: UInt32 = 0
+        var sourceSize = UInt32(MemoryLayout<UInt32>.size)
+        if AudioObjectGetPropertyData(deviceID, &sourceAddress, 0, nil, &sourceSize, &dataSource) == noErr {
+            if dataSource == 0x6864706E { return true }   // 'hdpn' (headphones)
+            if dataSource == 0x6973706B { return false }  // 'ispk' (internal speakers)
+        }
+
+        var nameAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var name: Unmanaged<CFString>?
+        var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        if AudioObjectGetPropertyData(deviceID, &nameAddress, 0, nil, &nameSize, &name) == noErr,
+           let deviceName = name?.takeRetainedValue() as String? {
+            let lower = deviceName.lowercased()
+            if ["headphone", "airpods", "earbud", "headset", "耳机"].contains(where: { lower.contains($0) }) {
+                return true
+            }
+        }
+        return false
     }
 
     func start(device: AudioDeviceID) throws {
@@ -51,6 +105,7 @@ final class AudioCapture {
             guard let self else { return }
             self.conversionLock.lock()
             defer { self.conversionLock.unlock() }
+            guard self.engine != nil else { return }
             let capacity = AVAudioFrameCount(ceil(Double(inputBuffer.frameLength) * 16000 / source.sampleRate)) + 64
             guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
             var supplied = false
