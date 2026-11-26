@@ -7,11 +7,11 @@ struct RecorderApp: App {
     var body: some Scene {
         WindowGroup(Text(verbatim: interface.string("声笺 · 实时转写")), id: "main") {
             MainView(model: model)
-                .frame(minWidth: 1000, minHeight: 570)
+                .frame(minWidth: 1100, minHeight: 600)
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.shutdown() }
         }
         .environment(\.locale, interface.locale)
-        .defaultSize(width: 1280, height: 720)
+        .defaultSize(width: 1440, height: 820)
         Settings {
             TabView {
                 ScrollView { SettingsView(model: model).padding(24) }.tabItem { Label("转写", systemImage: "waveform") }
@@ -151,22 +151,10 @@ struct MainView: View {
             }.padding(24).frame(width: 255).frame(maxHeight: .infinity).background(DesignTokens.surfaceContainerLow)
             Divider()
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .center) {
-                    displayedTitle.font(.system(size: 15, weight: .semibold)).lineLimit(1).truncationMode(.tail)
-                        .help(displayedTitle)
-                    Spacer()
-                    Button { model.setSubtitleMode(!model.subtitleMode) } label: { Image(systemName: model.subtitleMode ? "captions.bubble.fill" : "captions.bubble") }
-                        .help(model.subtitleMode ? "关闭字幕模式" : "打开字幕模式").accessibilityLabel("字幕模式")
-                    Button { floating.toggle(); NSApp.keyWindow?.level = floating ? .floating : .normal } label: { Image(systemName: floating ? "pin.fill" : "pin") }.help("窗口置顶").accessibilityLabel("窗口置顶")
-                    TranslationMenu(model: model).equatable()
-                        .help(Text(model.translationSummary))
-                    Button { ai.prepare(text: model.joinedText, recordingID: model.viewedSession?.id ?? model.activeSessionID); showAI = true } label: { Label("AI 提问", systemImage: "sparkles") }
-                        .disabled(!model.displayedHasText || model.liveEnabled)
-                    if model.livePlaying { Button("停止译音", systemImage: "speaker.slash") { model.stopLivePlayback() } }
-                    Button { model.exportRequest = SessionExportRequest(sessionID: nil) } label: { Label("导出会话…", systemImage: "square.and.arrow.up") }
-                        .disabled(!model.displayedHasText).help("将此会话的已定稿文字导出为 TXT 或 Markdown")
-                    Button { model.copyText() } label: { Label("复制", systemImage: "doc.on.doc") }.disabled(!model.displayedHasText)
-                }.buttonStyle(ToolbarActionStyle()).menuStyle(.borderedButton)
+                ViewThatFits(in: .horizontal) {
+                    ForEach(ToolbarDensity.allCases, id: \.self) { transcriptToolbar($0) }
+                }
+                .buttonStyle(ToolbarActionStyle()).menuStyle(.button).menuIndicator(.hidden)
                 .padding(.horizontal, 24).padding(.vertical, 14)
                 if let viewed = model.viewedSession, model.recordingSessionID != nil {
                     HStack(spacing: 10) {
@@ -225,6 +213,70 @@ struct MainView: View {
         }.tint(accent).sheet(isPresented: $showAI) { AIWorkspaceView(ai: ai) }
             .onChange(of: model.liveEnabled) { _, enabled in if enabled { ai.cancel(); showAI = false } }
     }
+
+    /// The transcript pane's header. The title reserves at most 280 pt while a variant is
+    /// chosen, so secondary actions collapse before a typical title is cut; past that it
+    /// truncates in the middle. Subtitle, pin, the translation menu and 停止译音 always stay.
+    private func transcriptToolbar(_ density: ToolbarDensity) -> some View {
+        HStack(alignment: .center, spacing: DesignTokens.spaceSm) {
+            IdealWidthCap(cap: 280) {
+                displayedTitle.font(.system(size: 15, weight: .semibold)).lineLimit(1).truncationMode(.middle)
+                    .help(displayedTitle)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, DesignTokens.spaceSm)
+            Button { model.setSubtitleMode(!model.subtitleMode) } label: { Image(systemName: model.subtitleMode ? "captions.bubble.fill" : "captions.bubble") }
+                .help(model.subtitleMode ? "关闭字幕模式" : "打开字幕模式").accessibilityLabel("字幕模式")
+            Button { floating.toggle(); NSApp.keyWindow?.level = floating ? .floating : .normal } label: { Image(systemName: floating ? "pin.fill" : "pin") }.help("窗口置顶").accessibilityLabel("窗口置顶")
+            TranslationMenu(model: model).equatable()
+                .help(Text(model.translationSummary))
+            if model.livePlaying {
+                toolbarAction("停止译音", systemImage: "speaker.slash", iconOnly: density != .full) { model.stopLivePlayback() }
+            }
+            switch density {
+            case .full, .compact:
+                let iconOnly = density == .compact
+                toolbarAction("AI 提问", systemImage: "sparkles", iconOnly: iconOnly, action: askAI)
+                    .disabled(!canAskAI)
+                toolbarAction("导出会话…", systemImage: "square.and.arrow.up", iconOnly: iconOnly, help: "将此会话的已定稿文字导出为 TXT 或 Markdown", action: exportSession)
+                    .disabled(!model.displayedHasText)
+                toolbarAction("复制", systemImage: "doc.on.doc", iconOnly: iconOnly) { model.copyText() }
+                    .disabled(!model.displayedHasText)
+            case .overflow:
+                Menu {
+                    Button(action: askAI) { Label("AI 提问", systemImage: "sparkles") }.disabled(!canAskAI)
+                    Button(action: exportSession) { Label("导出会话…", systemImage: "square.and.arrow.up") }.disabled(!model.displayedHasText)
+                    Button { model.copyText() } label: { Label("复制", systemImage: "doc.on.doc") }.disabled(!model.displayedHasText)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .fixedSize()
+                .help("更多操作").accessibilityLabel("更多操作")
+            }
+        }
+    }
+
+    /// A labelled toolbar button; icon-only variants show their name as a tooltip
+    /// (unless a longer `help` is given) and keep it as the accessibility label.
+    private func toolbarAction(_ title: LocalizedStringKey, systemImage: String, iconOnly: Bool, help: LocalizedStringKey? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            if iconOnly {
+                Label(title, systemImage: systemImage).labelStyle(.iconOnly)
+            } else {
+                Label(title, systemImage: systemImage)
+            }
+        }
+        .help(help ?? (iconOnly ? title : ""))
+    }
+
+    private var canAskAI: Bool { model.displayedHasText && !model.liveEnabled }
+
+    private func askAI() {
+        ai.prepare(text: model.joinedText, recordingID: model.viewedSession?.id ?? model.activeSessionID)
+        showAI = true
+    }
+
+    private func exportSession() { model.exportRequest = SessionExportRequest(sessionID: nil) }
 
     private var displayedTitle: Text {
         model.selectedSessionID == nil ? Text("新会话") : Text(verbatim: model.displayedTitle)

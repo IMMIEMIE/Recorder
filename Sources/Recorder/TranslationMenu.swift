@@ -50,9 +50,13 @@ struct TranslationMenu: View, Equatable {
             Divider()
             SettingsLink { Text("翻译设置…") }
         } label: {
-            Label(mode.title, systemImage: "character.bubble")
+            // The transcript toolbar supplies `.menuStyle(.button)` + `ToolbarActionStyle`, so this
+            // menu matches the buttons beside it; that style draws no indicator, hence the chevron.
+            HStack(spacing: DesignTokens.spaceXs) {
+                Label(mode.title, systemImage: "character.bubble")
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).accessibilityHidden(true)
+            }
         }
-        .menuStyle(.borderedButton)
         .fixedSize()
     }
 }

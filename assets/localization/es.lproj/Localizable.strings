@@ -589,3 +589,4 @@
 "无法采集系统声音：%@。请在系统设置 → 隐私与安全性中允许声笺录制屏幕与系统音频；如刚开启权限，请重启声笺后重试。" = "No se pudo capturar el audio del sistema: %@. Permite Shengjian en Ajustes del Sistema → Privacidad y seguridad; si acabas de activarlo, reinicia Shengjian e inténtalo de nuevo.";
 "系统声音采集异常：%@。请在系统设置 → 隐私与安全性中允许声笺录制屏幕与系统音频；如刚开启权限，请重启声笺后重试。" = "Error de captura de audio del sistema: %@. Permite Shengjian en Ajustes del Sistema → Privacidad y seguridad; si acabas de activarlo, reinicia Shengjian e inténtalo de nuevo.";
 "麦克风采集异常：%@" = "Error de captura del micrófono: %@";
+"更多操作" = "Más acciones";
