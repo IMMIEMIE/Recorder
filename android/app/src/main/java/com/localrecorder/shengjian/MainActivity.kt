@@ -1,12 +1,14 @@
 package com.localrecorder.shengjian
 
 import android.Manifest
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -74,6 +76,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.localrecorder.live.AudioSourceMode
 import com.localrecorder.live.SessionState
 import com.localrecorder.live.SubtitleRow
 import com.localrecorder.sessions.ExportContent
@@ -110,11 +113,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        (application as ShengjianApp).controller.setAppForeground(true)
+    }
+
     override fun onResume() {
         super.onResume()
+        val controller = (application as ShengjianApp).controller
         if (AppLocale.syncFromSystem(this)) {
-            (application as ShengjianApp).controller.onInterfaceLanguageChanged()
+            controller.onInterfaceLanguageChanged()
         }
+        controller.refreshOverlayPermission()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -125,8 +135,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        val controller = (application as ShengjianApp).controller
+        controller.setAppForeground(false)
         // In the background the process may be killed at any time: write finalized rows now.
-        (application as ShengjianApp).controller.flush()
+        controller.flush()
     }
 
     fun keepScreenOn(on: Boolean) {
@@ -577,22 +589,52 @@ private fun TranscriptScreen(
     val context = LocalContext.current
     val activity = context.findMainActivity()
     val session = ui.session
-    val active = session.state != SessionState.IDLE
+    val active = session.state != SessionState.IDLE || ui.startingProjection
     val zone = remember { ZoneId.systemDefault() }
     DisposableEffect(active) {
         activity?.keepScreenOn(active)
         onDispose { activity?.keepScreenOn(false) }
     }
+    val projectionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) {
+            controller.startWithProjection(result.resultCode, data)
+        } else {
+            controller.notifySystemAudioDenied()
+        }
+    }
+    fun launchSystemAudioConsent() {
+        val mgr = context.getSystemService(MediaProjectionManager::class.java)
+        if (mgr == null) {
+            controller.notifySystemAudioDenied()
+        } else {
+            projectionLauncher.launch(mgr.createScreenCaptureIntent())
+        }
+    }
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        if (result[Manifest.permission.RECORD_AUDIO] == true || context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) controller.start()
-        else Toast.makeText(context, R.string.mic_permission_required, Toast.LENGTH_LONG).show()
+        val mode = controller.ui.value.effectiveAudioMode
+        val granted = result[Manifest.permission.RECORD_AUDIO] == true ||
+            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            val deniedMsg = if (mode == AudioSourceMode.SYSTEM_AUDIO) R.string.err_system_audio_permission_denied else R.string.mic_permission_required
+            Toast.makeText(context, deniedMsg, Toast.LENGTH_LONG).show()
+        } else if (mode.usesSystemAudio) {
+            launchSystemAudioConsent()
+        } else {
+            controller.start()
+        }
     }
     fun requestStart() {
+        val mode = controller.ui.value.effectiveAudioMode
         val needed = buildList {
             add(Manifest.permission.RECORD_AUDIO)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
         }.filter { context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-        if (needed.isEmpty()) controller.start() else permissions.launch(needed.toTypedArray())
+        when {
+            needed.isNotEmpty() -> permissions.launch(needed.toTypedArray())
+            mode.usesSystemAudio -> launchSystemAudioConsent()
+            else -> controller.start()
+        }
     }
 
     val selectedId = ui.selectedId
@@ -603,7 +645,11 @@ private fun TranscriptScreen(
         else -> remember(ui.viewed) { ui.viewed?.subtitleRows(zone).orEmpty() }
     }
     val emptyText = when {
-        ui.viewingRecording || (selectedId == null && !active) -> stringResource(R.string.start_hint)
+        ui.viewingRecording || (selectedId == null && !active) -> when (ui.effectiveAudioMode) {
+            AudioSourceMode.MICROPHONE -> stringResource(R.string.start_hint)
+            AudioSourceMode.SYSTEM_AUDIO -> stringResource(R.string.start_hint_system_audio)
+            AudioSourceMode.SYSTEM_AND_MIC -> stringResource(R.string.start_hint_mixed)
+        }
         selectedId == null -> stringResource(R.string.other_recording)
         ui.viewError.isNotEmpty() -> ui.viewError
         ui.viewed == null -> stringResource(R.string.loading_session)
@@ -634,7 +680,18 @@ private fun TranscriptScreen(
     }
     var showDialogueCost by rememberSaveable { mutableStateOf(false) }
     var showLanguageSheet by rememberSaveable { mutableStateOf(false) }
+    var showOverlayDialog by rememberSaveable { mutableStateOf(false) }
     val appearance = remember(context) { context.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE) }
+    if (showOverlayDialog) {
+        OverlayPermissionDialog(
+            onDismiss = { showOverlayDialog = false },
+            onConfirm = {
+                showOverlayDialog = false
+                controller.markPendingOverlayPermission()
+                openOverlayPermissionSettings(context)
+            },
+        )
+    }
     if (showDialogueCost) {
         AlertDialog(
             onDismissRequest = { showDialogueCost = false },
@@ -702,7 +759,7 @@ private fun TranscriptScreen(
                                 onClick = {
                                     if (appearance.getBoolean("dialogueCostSeen", false)) enterDialogue() else showDialogueCost = true
                                 },
-                                enabled = session.state != SessionState.FINISHING,
+                                enabled = session.state != SessionState.FINISHING && !ui.startingProjection && !(active && ui.options.audioSourceMode.usesSystemAudio),
                                 shape = CircleShape,
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                 modifier = Modifier.heightIn(min = 40.dp),
@@ -758,30 +815,49 @@ private fun TranscriptScreen(
                     }
                 },
                 bottomBar = {
-                    val primaryLabel = when (session.state) {
-                        SessionState.CONNECTING -> stringResource(R.string.cancel_connection)
-                        SessionState.RECONNECTING -> stringResource(R.string.stop_reconnecting)
-                        SessionState.RECORDING -> stringResource(R.string.stop_translation)
-                        SessionState.FINISHING -> stringResource(R.string.finishing)
-                        SessionState.IDLE -> if (selectedId == null) stringResource(R.string.start_live) else stringResource(R.string.resume_recording)
+                    val primaryLabel = when {
+                        ui.startingProjection -> stringResource(R.string.cancel_connection)
+                        session.state == SessionState.CONNECTING -> stringResource(R.string.cancel_connection)
+                        session.state == SessionState.RECONNECTING -> stringResource(R.string.stop_reconnecting)
+                        session.state == SessionState.RECORDING -> stringResource(R.string.stop_translation)
+                        session.state == SessionState.FINISHING -> stringResource(R.string.finishing)
+                        else -> if (selectedId == null) stringResource(R.string.start_live) else stringResource(R.string.resume_recording)
                     }
-                    BottomActionDock(
-                        languageLabel = stringResource(R.string.target_pill, ui.config.languageName),
-                        languageEnabled = session.state != SessionState.FINISHING,
-                        onOpenLanguage = { showLanguageSheet = true },
-                        audioOutput = ui.config.audioOutput,
-                        audioEnabled = session.state != SessionState.FINISHING,
-                        onToggleAudio = { enabled ->
-                            controller.saveSettings(ui.config.copy(audioOutput = enabled), "", ui.options)
-                        },
-                        playing = session.playing,
-                        onStopPlayback = if (session.playing) controller::stopPlayback else null,
-                        active = active,
-                        primaryLabel = primaryLabel,
-                        primaryEnabled = startEnabled,
-                        onPrimaryClick = toggleRecording,
-                        returnToRecording = if (active && !ui.viewingRecording) ({ controller.select(ui.recordingId) }) else null,
-                    )
+                    val idleIcon = when (ui.effectiveAudioMode) {
+                        AudioSourceMode.MICROPHONE -> R.drawable.ic_mic
+                        AudioSourceMode.SYSTEM_AUDIO -> R.drawable.ic_volume_up
+                        AudioSourceMode.SYSTEM_AND_MIC -> R.drawable.ic_graphic_eq
+                    }
+                    Column(Modifier.fillMaxWidth()) {
+                        AudioSourceBar(
+                            selected = ui.effectiveAudioMode,
+                            canSwitch = !active,
+                            systemAudioSupported = ui.systemAudioSupported,
+                            floatingSubtitleEnabled = ui.options.floatingSubtitle,
+                            overlayPermissionGranted = ui.overlayPermissionGranted,
+                            onSelect = controller::setAudioSourceMode,
+                            onToggleFloatingSubtitle = controller::setFloatingSubtitleEnabled,
+                            onRequestOverlayPermission = { showOverlayDialog = true },
+                        )
+                        BottomActionDock(
+                            languageLabel = stringResource(R.string.target_pill, ui.config.languageName),
+                            languageEnabled = session.state != SessionState.FINISHING,
+                            onOpenLanguage = { showLanguageSheet = true },
+                            audioOutput = ui.config.audioOutput,
+                            audioEnabled = session.state != SessionState.FINISHING,
+                            onToggleAudio = { enabled ->
+                                controller.saveSettings(ui.config.copy(audioOutput = enabled), "", ui.options)
+                            },
+                            playing = session.playing,
+                            onStopPlayback = if (session.playing) controller::stopPlayback else null,
+                            active = active,
+                            primaryLabel = primaryLabel,
+                            primaryEnabled = startEnabled,
+                            onPrimaryClick = toggleRecording,
+                            returnToRecording = if (active && !ui.viewingRecording) ({ controller.select(ui.recordingId) }) else null,
+                            idlePrimaryIcon = idleIcon,
+                        )
+                    }
                 },
             ) { padding ->
                 Column(Modifier.padding(padding).fillMaxSize()) {

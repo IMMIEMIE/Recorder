@@ -253,6 +253,30 @@ sealed interface LiveMessage {
     data object MicOccupied : LiveMessage {
         override val defaultText = "麦克风被通话或其他应用占用，已停止录音；已有文字已保留"
     }
+    data object SystemAudioUnsupported : LiveMessage {
+        override val defaultText = "系统声音捕获需要 Android 10 及以上版本"
+    }
+    data object SystemAudioPermissionDenied : LiveMessage {
+        override val defaultText = "未授予系统声音捕获权限"
+    }
+    data object SystemAudioOpenFailed : LiveMessage {
+        override val defaultText = "无法启动系统声音捕获，请重试"
+    }
+    data object SystemAudioStartFailed : LiveMessage {
+        override val defaultText = "系统声音采集启动失败"
+    }
+    data class SystemAudioReadFailed(val code: Int) : LiveMessage {
+        override val defaultText = "系统声音读取失败（$code），已停止录制；已有文字已保留"
+    }
+    data object SystemAudioProjectionStopped : LiveMessage {
+        override val defaultText = "系统已停止音频投射，已停止录制；已有文字已保留"
+    }
+    data object SystemAudioSilentNotice : LiveMessage {
+        override val defaultText = "未检测到系统声音：部分受保护内容（如 DRM 媒体、通话或禁止捕获的应用）不允许录制内部音频"
+    }
+    data object MixedModeHeadphonesNotice : LiveMessage {
+        override val defaultText = "混音模式下未检测到耳机：建议佩戴耳机，以减少扬声器外放串入麦克风造成回声"
+    }
     data object AudioFocusLost : LiveMessage {
         override val defaultText = "通话或其他应用占用了音频输出，已停止译音；字幕继续更新"
     }

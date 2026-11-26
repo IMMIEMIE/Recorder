@@ -1151,6 +1151,34 @@ class LiveSessionTest {
         assertEquals("00000000-0000-4000-8000-000000000002" to null, ended.last())
         assertNull(recorder.record)
     }
+
+    @Test
+    fun systemAudioProjectionStoppedEndsSessionAndKeepsReceivedText() {
+        val device = Device()
+        device.record()
+        device.utter("s1", "System playback line.", "系统声音内容。")
+        assertEquals(1, device.captureStarts)
+
+        // Non-blocking silent notice does not interrupt recording.
+        device.session.notice(LiveMessage.SystemAudioSilentNotice)
+        assertEquals(SessionState.RECORDING, device.state)
+        assertEquals(LiveMessage.SystemAudioSilentNotice, device.session.snapshot.noticeMessage)
+
+        // Reconnecting inside the session keeps the same capture stream open (no re-prompt).
+        device.transport.listener.onEnd(LOST, true)
+        device.advance(LiveSession.RECONNECT_DELAYS_MS[0])
+        device.transport.listener.onReady()
+        assertEquals(SessionState.RECORDING, device.state)
+        assertEquals("capture must stay alive across in-session reconnect", 1, device.captureStarts)
+
+        // System revocation stops capture & session cleanly and keeps received text.
+        device.session.captureInterrupted(LiveMessage.SystemAudioProjectionStopped)
+        assertEquals(SessionState.IDLE, device.state)
+        assertFalse(device.active)
+        assertNull(device.onChunk)
+        assertEquals(LiveMessage.SystemAudioProjectionStopped, device.session.snapshot.errorMessage)
+        assertTrue(device.session.snapshot.rows.any { it.translation == "系统声音内容。" })
+    }
 }
 
 private const val BREAK = LiveSession.BREAK_MARKER
