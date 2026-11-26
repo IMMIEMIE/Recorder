@@ -139,7 +139,6 @@ final class AppModel: ObservableObject {
     private var activeObserver: NSObjectProtocol?
     private let integrateSystem: Bool
     private let screenCaptureAuthorizedCheck: () -> Bool
-    private let screenCaptureAccessRequester: () -> Bool
     private let microphoneAccessRequester: (@escaping (Bool) -> Void) -> Void
     @Published private var pendingStart = false
     private var generation = UUID()
@@ -298,11 +297,9 @@ final class AppModel: ObservableObject {
          replaySpeech: (any LocalSpeechOutputting)? = nil,
          sessionStore: SessionStore? = nil,
          screenCaptureAuthorized: @escaping () -> Bool = { CGPreflightScreenCaptureAccess() },
-         requestScreenCaptureAccess: @escaping () -> Bool = { CGRequestScreenCaptureAccess() },
          requestMicrophoneAccess: @escaping (@escaping (Bool) -> Void) -> Void = { AVCaptureDevice.requestAccess(for: .audio, completionHandler: $0) }) {
         self.integrateSystem = integrateSystem
         self.screenCaptureAuthorizedCheck = screenCaptureAuthorized
-        self.screenCaptureAccessRequester = requestScreenCaptureAccess
         self.microphoneAccessRequester = requestMicrophoneAccess
         self.liveClientFactory = liveClientFactory; self.liveKeyReader = liveKeyReader
         self.liveSessionFactory = liveSessionFactory
@@ -679,16 +676,6 @@ final class AppModel: ObservableObject {
             if self.streamingActive { self.connectStreaming(); return }
             self.command("start", extra: ["endpoint_mode": self.endpointMode, "endpoint_silence_ms": self.silence])
         }
-        let ensureScreenAccess = { [weak self] () -> Bool in
-            guard let self else { return false }
-            if self.screenCaptureAuthorizedCheck() {
-                self.screenCaptureAuthorized = true
-                return true
-            }
-            let granted = self.screenCaptureAccessRequester()
-            self.screenCaptureAuthorized = granted || self.screenCaptureAuthorizedCheck()
-            return self.screenCaptureAuthorized
-        }
         switch mode {
         case .microphone:
             microphoneAccessRequester { [weak self] granted in DispatchQueue.main.async {
@@ -698,32 +685,21 @@ final class AppModel: ObservableObject {
                 proceed()
             } }
         case .system:
-            guard ensureScreenAccess() else {
-                pendingStart = false
-                error = "未获得屏幕与系统音频录制权限。请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中允许声笺；开启权限后若仍无法采集，请重启声笺。"
-                return
-            }
+            // Do not hard-block on CGPreflightScreenCaptureAccess(), which can return false
+            // even when ScreenCaptureKit audio capture is authorized on macOS 14.2+/15+.
+            // SCShareableContent / SCStream.startCapture() in beginCapture() is authoritative.
+            updateScreenCapturePermission()
             proceed()
         case .systemMix:
             microphoneAccessRequester { [weak self] micGranted in DispatchQueue.main.async {
                 guard let self, self.pendingStart, self.startAttempt == attempt else { return }
                 if self.integrateSystem { self.updatePermission() }
-                let screenGranted = ensureScreenAccess()
-                if !micGranted && !screenGranted {
-                    self.pendingStart = false
-                    self.error = "未获得麦克风及屏幕与系统音频录制权限。请在系统设置 → 隐私与安全性中分别允许声笺访问，开启屏幕录制权限后如未生效请重启声笺。"
-                    return
-                }
-                if !micGranted {
+                guard micGranted else {
                     self.pendingStart = false
                     self.error = "混音模式需要麦克风权限，请在系统设置 → 隐私与安全性 → 麦克风中允许声笺。"
                     return
                 }
-                if !screenGranted {
-                    self.pendingStart = false
-                    self.error = "混音模式需要屏幕与系统音频录制权限。请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制中允许声笺；开启权限后若仍无法采集，请重启声笺。"
-                    return
-                }
+                self.updateScreenCapturePermission()
                 proceed()
             } }
         case .file:
@@ -802,8 +778,11 @@ final class AppModel: ObservableObject {
                 additionalInput.onPCM = { [weak self] pcm, rms in self?.audio(pcm, rms: rms) }
                 Task { @MainActor [weak self] in
                     guard let self, self.session == currentSession, self.recording else { return }
-                    do { try await self.additionalInput.startSystem() }
-                    catch {
+                    do {
+                        try await self.additionalInput.startSystem()
+                        guard self.session == currentSession, self.recording else { return }
+                        self.screenCaptureAuthorized = true
+                    } catch {
                         guard self.session == currentSession, self.recording else { return }
                         self.updateScreenCapturePermission()
                         self.stop()
@@ -824,8 +803,11 @@ final class AppModel: ObservableObject {
                 }
                 Task { @MainActor [weak self] in
                     guard let self, self.session == currentSession, self.recording else { return }
-                    do { try await self.additionalInput.startSystem() }
-                    catch {
+                    do {
+                        try await self.additionalInput.startSystem()
+                        guard self.session == currentSession, self.recording else { return }
+                        self.screenCaptureAuthorized = true
+                    } catch {
                         guard self.session == currentSession, self.recording else { return }
                         self.updateScreenCapturePermission()
                         self.stop()

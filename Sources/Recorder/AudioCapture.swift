@@ -28,8 +28,9 @@ final class AudioCapture {
             var nameAddress = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
             var name: Unmanaged<CFString>?
             var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-            _ = AudioObjectGetPropertyData(id, &nameAddress, 0, nil, &nameSize, &name)
-            return Microphone(id: id, name: name?.takeUnretainedValue() as String? ?? "麦克风")
+            let nameStatus = AudioObjectGetPropertyData(id, &nameAddress, 0, nil, &nameSize, &name)
+            let title = nameStatus == noErr ? (name?.takeRetainedValue() as String? ?? "麦克风") : "麦克风"
+            return Microphone(id: id, name: title)
         }
     }
 
@@ -77,7 +78,7 @@ final class AudioCapture {
         var name: Unmanaged<CFString>?
         var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
         if AudioObjectGetPropertyData(deviceID, &nameAddress, 0, nil, &nameSize, &name) == noErr,
-           let deviceName = name?.takeUnretainedValue() as String? {
+           let deviceName = name?.takeRetainedValue() as String? {
             let lower = deviceName.lowercased()
             if ["headphone", "airpods", "earbud", "headset", "耳机"].contains(where: { lower.contains($0) }) {
                 return true

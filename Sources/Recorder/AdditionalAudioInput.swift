@@ -188,10 +188,8 @@ final class PCM16AudioMixer {
         guard count > 0 else { return }
         var samples = [Int16](repeating: 0, count: count)
         data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            let bound = base.assumingMemoryBound(to: Int16.self)
             for i in 0..<count {
-                samples[i] = Int16(littleEndian: bound[i])
+                samples[i] = Int16(littleEndian: raw.loadUnaligned(fromByteOffset: i * 2, as: Int16.self))
             }
         }
         queue.sync {

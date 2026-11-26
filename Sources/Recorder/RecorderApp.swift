@@ -22,7 +22,7 @@ struct RecorderApp: App {
             }.frame(minWidth: 640, idealWidth: 680, minHeight: 600).tint(DesignTokens.primary)
         }
         .environment(\.locale, interface.locale)
-        MenuBarExtra(interface.string("声笺"), systemImage: model.recording ? (model.audioSource == AudioInputSource.system.rawValue ? "speaker.wave.2.fill" : "mic.fill") : "waveform") {
+        MenuBarExtra(interface.string("声笺"), systemImage: model.recording ? (AudioInputSource(rawValue: model.audioSource) ?? .microphone).systemImage : "waveform") {
             MenuContent(model: model)
         }
         .environment(\.locale, interface.locale)

@@ -176,7 +176,18 @@ func testMixerAlignmentSilencePaddingAndDrain() throws {
     try check(drainedSamples[0..<200].allSatisfy { $0 == 1500 }, "Overlapping drained tail must be mixed")
     try check(drainedSamples[200..<450].allSatisfy { $0 == 1000 }, "Non-overlapping drained tail must be preserved")
     try check(mixer.drain().isEmpty, "Second drain must emit nothing")
-    print("PASS: PCM16AudioMixer dual-source alignment, silence padding, backlog cap and exact drain")
+
+    // 7. Unaligned (odd byte-offset) Data slices must decode safely without UB.
+    var padded = Data([0x7F])
+    padded.append(encodePCM16([1234, -5678, 9012, -3456]))
+    let oddSlice = padded.dropFirst(1)
+    mixer.append(oddSlice, to: .system)
+    var paddedMic = Data([0xAA])
+    paddedMic.append(encodePCM16([100, -100, 200, -200]))
+    mixer.append(paddedMic.dropFirst(1), to: .microphone)
+    let unalignedDrained = mixer.drain().flatMap { decodePCM16($0.data) }
+    try check(unalignedDrained == [1334, -5778, 9212, -3656], "Odd-offset Data slices must mix accurately: \(unalignedDrained)")
+    print("PASS: PCM16AudioMixer dual-source alignment, silence padding, backlog cap, unaligned slice safety and exact drain")
 }
 
 func testMixerLiveStartStopAndRestart() async throws {

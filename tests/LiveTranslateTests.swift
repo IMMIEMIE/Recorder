@@ -487,7 +487,6 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             integrateSystem: false,
             liveAllowLocalhost: true,
             screenCaptureAuthorized: { screenGranted },
-            requestScreenCaptureAccess: { screenGranted },
             requestMicrophoneAccess: { $0(micGranted) }
         )
         defer { audioApp.shutdown() }
@@ -509,7 +508,6 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             integrateSystem: false,
             liveAllowLocalhost: true,
             screenCaptureAuthorized: { true },
-            requestScreenCaptureAccess: { true },
             requestMicrophoneAccess: { $0(true) }
         )
         defer { restoredAudioApp.shutdown() }
@@ -525,36 +523,37 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         restoredAudioApp.setAudioSource("system")
         try check(restoredAudioApp.audioSource == "system", "audioSource unlocks when idle/ready")
 
-        // Permission gates in system and system_mix modes.
+        // Permission gates in system and system_mix modes:
+        // - CGPreflightScreenCaptureAccess() == false must NOT hard-block start() (SCShareableContent/SCStream is authoritative).
+        // - Microphone permission IS strictly gated in system_mix mode.
         func waitCondition(_ condition: () -> Bool) async throws {
             for _ in 0..<200 {
                 if condition() { return }
                 try await Task.sleep(nanoseconds: 10_000_000)
             }
-            throw LiveTestError(message: "Timed out waiting for audio permission error")
+            throw LiveTestError(message: "Timed out waiting for audio permission check")
         }
         audioApp.state = "ready"
         audioApp.setAudioSource("system")
+        screenGranted = false
         audioApp.start()
-        try check(audioApp.error.contains("屏幕与系统音频录制权限") && audioApp.error.contains("重启声笺"), "system mode missing permission gives clear relaunch guidance: \(audioApp.error)")
+        try check(audioApp.error.isEmpty && audioApp.canStop, "system mode must not hard-block start() when CGPreflightScreenCaptureAccess() is false: \(audioApp.error)")
+        audioApp.stop()
 
+        audioApp.state = "ready"
         audioApp.setAudioSource("system_mix")
         micGranted = false; screenGranted = false
         audioApp.start()
         try await waitCondition { !audioApp.error.isEmpty }
-        try check(audioApp.error.contains("麦克风") && audioApp.error.contains("屏幕与系统音频录制权限"), "system_mix missing both permissions reports both: \(audioApp.error)")
+        try check(audioApp.error.contains("麦克风权限"), "system_mix missing mic permission must block with mic guidance: \(audioApp.error)")
 
         audioApp.error = ""
+        audioApp.state = "ready"
         micGranted = true; screenGranted = false
         audioApp.start()
-        try await waitCondition { !audioApp.error.isEmpty }
-        try check(audioApp.error.contains("屏幕与系统音频录制权限") && audioApp.error.contains("重启声笺"), "system_mix missing screen permission reports screen guidance: \(audioApp.error)")
-
-        audioApp.error = ""
-        micGranted = false; screenGranted = true
-        audioApp.start()
-        try await waitCondition { !audioApp.error.isEmpty }
-        try check(audioApp.error.contains("麦克风权限"), "system_mix missing mic permission reports mic guidance: \(audioApp.error)")
+        try await waitCondition { audioApp.canStop }
+        try check(audioApp.error.isEmpty, "system_mix with mic granted must not hard-block on CGPreflightScreenCaptureAccess(): \(audioApp.error)")
+        audioApp.stop()
 
         print("PASS: configuration, credential namespace, independent startup, model bypass, mode locks and restoration")
         print("PASS: WebSocket handshake, PCM ordering, association, duplicate events, Unicode, tail drain, empty session, cancellation, repeated sessions, errors and timeouts")
