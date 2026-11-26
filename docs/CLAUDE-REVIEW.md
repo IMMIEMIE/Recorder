@@ -14,12 +14,12 @@
 ## 流程
 
 1. **`prepare`**（不调用 Claude）：解析 PR；草稿、已关闭和 fork 发起的 PR 直接跳过，不写状态。其他 PR 把 `claude-review` 设为 `pending`。
-2. **`review`**：检出 PR head（完整历史），安装 Java 17 + Gradle、Python 3、.NET 10，收集关联 issue 写入 `tmp/review/issues.md`，然后以只读工具运行 Claude，并要求按 JSON schema 给出结论。
+2. **`review`**：检出 PR head（完整历史），安装 Java 17 + Gradle、Python 3、.NET 10，收集关联 issue 写入 `$RUNNER_TEMP/review/issues.md`，然后以只读工具运行 Claude，并要求按 JSON schema 给出结论。
 3. **`Report status`**（总会运行）：解析结论，写入最终状态并发表评论。
 
 关联 issue 的来源：GitHub 的关联（`closingIssuesReferences`）、PR 描述里的 `Closes/Fixes/Resolves #N`（忽略 HTML 注释和代码块），以及分支名 `fix/<N>-`；最多 10 个，PR 编号会被跳过。没有关联 issue 时，需求正确性一项为 `unverified`。
 
-审查分三个维度：需求正确性（逐条核对验收标准）、实现一致性（测试覆盖，并运行能在 Linux 上跑的现有测试：Android `core`/`app`、`check_version.sh`、`check_localization.py`、`design_tokens.py --check`、`test_hy_session.py`、`test_windows_portable.sh`），以及系统级正确性（跨平台一致、版本号、本地化、并发、隐私与安全，以及改动接口的其他调用方）。Swift 测试脚本需要 macOS，这里只读代码核对，评论中会写明。
+审查分三个维度：需求正确性（逐条核对验收标准）、实现一致性（测试覆盖，并运行能在 Linux 上跑的现有测试：Android `core`/`app`、`check_version.sh`、`check_localization.py`、`design_tokens.py --check`、`make_icon.py --check-android`、`test_hy_session.py`、`test_windows_portable.sh`），以及系统级正确性（跨平台一致、版本号、本地化、并发、隐私与安全，以及改动接口的其他调用方）。Swift 测试脚本需要 macOS，这里只读代码核对，评论中会写明。
 
 Claude 只能读文件、看 PR/issue、看 git 历史、运行上面列出的检查和发表行内评论；不能改代码、推送，也不能自己发 PR 评论。
 
