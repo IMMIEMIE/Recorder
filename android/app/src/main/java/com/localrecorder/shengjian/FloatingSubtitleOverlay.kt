@@ -7,6 +7,8 @@ import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.provider.Settings
+import android.text.Layout
+import android.text.StaticLayout
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
@@ -21,6 +23,7 @@ import android.widget.TextView
 import com.localrecorder.live.SessionSnapshot
 import com.localrecorder.live.SessionState
 import com.localrecorder.live.SubtitleRow
+import com.localrecorder.live.SubtitleTailWindow
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -57,6 +60,20 @@ class FloatingSubtitleOverlay(
     private var closeBtn: ImageButton? = null
 
     private var controlsExpanded = false
+    private var lastSnapshot: SessionSnapshot? = null
+    private var lastBilingual = true
+    private var lastDark = false
+    private var lastTextWidthPx = 0
+
+    private data class TailCacheKey(
+        val text: String,
+        val widthPx: Int,
+        val maxLines: Int,
+        val textSizePx: Float,
+        val bold: Boolean,
+    )
+
+    private val tailCache = LinkedHashMap<TailCacheKey, String>(MAX_TAIL_CACHE_SIZE + 1, 0.75f, true)
 
     val isShowing: Boolean get() = rootView != null
 
@@ -77,8 +94,8 @@ class FloatingSubtitleOverlay(
             hide()
             attachView(dark, existingX, existingY)
         }
-        bindContent(snapshot, bilingual, dark)
         clampWindowPosition()
+        bindContent(snapshot, bilingual, dark)
     }
 
     fun hide() {
@@ -97,6 +114,9 @@ class FloatingSubtitleOverlay(
         openAppBtn = null
         stopBtn = null
         closeBtn = null
+        lastSnapshot = null
+        lastTextWidthPx = 0
+        tailCache.clear()
         try {
             windowManager?.removeViewImmediate(view)
         } catch (_: Exception) {
@@ -113,11 +133,11 @@ class FloatingSubtitleOverlay(
         val localized = AppLocale.localizedContext(appContext)
         val palette = if (dark) DARK_PALETTE else LIGHT_PALETTE
         val metrics = appContext.resources.displayMetrics
-        val maxWidthPx = minOf((metrics.widthPixels * 0.90f).roundToInt(), dp(420))
+        val maxWidthPx = overlayWidthPx(metrics)
 
         val container = LinearLayout(localized).apply {
             orientation = LinearLayout.VERTICAL
-            val padH = dp(14)
+            val padH = dp(CONTAINER_PADDING_H_DP)
             val padV = dp(10)
             setPadding(padH, padV, padH, padV)
             elevation = dp(8).toFloat()
@@ -169,43 +189,42 @@ class FloatingSubtitleOverlay(
         header.addView(dragPill)
         container.addView(header)
 
-        // Previous row (optional, compact)
-        val prevTransView = TextView(localized).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            setTextColor(palette.translation)
-            alpha = 0.72f
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(6), 0, 0)
-            visibility = View.GONE
-        }
-        val prevSrcView = TextView(localized).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setTextColor(palette.source)
-            alpha = 0.68f
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(1), 0, 0)
-            visibility = View.GONE
-        }
+        // Previous row (optional, compact) — tail-windowed so the ending bridges smoothly into the latest row.
+        val prevTransView = makeSubtitleView(
+            context = localized,
+            textSizeSp = 14f,
+            color = palette.translation,
+            bold = false,
+            topPaddingDp = 6,
+            initialAlpha = 0.72f,
+            initialVisibility = View.GONE,
+        )
+        val prevSrcView = makeSubtitleView(
+            context = localized,
+            textSizeSp = 12f,
+            color = palette.source,
+            bold = false,
+            topPaddingDp = 1,
+            initialAlpha = 0.68f,
+            initialVisibility = View.GONE,
+        )
 
-        // Current / latest row (prominent)
-        val curTransView = TextView(localized).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            setTextColor(palette.translation)
-            maxLines = 3
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(6), 0, 0)
-        }
-        val curSrcView = TextView(localized).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setTextColor(palette.source)
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(2), 0, 0)
-            visibility = View.GONE
-        }
+        // Current / latest row (prominent) — tail-windowed so newly streamed words are always visible promptly.
+        val curTransView = makeSubtitleView(
+            context = localized,
+            textSizeSp = 16f,
+            color = palette.translation,
+            bold = true,
+            topPaddingDp = 6,
+        )
+        val curSrcView = makeSubtitleView(
+            context = localized,
+            textSizeSp = 13f,
+            color = palette.source,
+            bold = false,
+            topPaddingDp = 2,
+            initialVisibility = View.GONE,
+        )
 
         container.addView(prevTransView)
         container.addView(prevSrcView)
@@ -319,6 +338,21 @@ class FloatingSubtitleOverlay(
             }
         }
 
+        container.addOnLayoutChangeListener { v, left, _, right, _, oldLeft, _, oldRight, _ ->
+            val newWidth = right - left
+            val oldWidth = oldRight - oldLeft
+            if (newWidth > 0 && newWidth != oldWidth) {
+                val contentWidth = (newWidth - v.paddingLeft - v.paddingRight).coerceAtLeast(1)
+                if (contentWidth != lastTextWidthPx) {
+                    v.post {
+                        val snapshot = lastSnapshot ?: return@post
+                        if (rootView !== v) return@post
+                        bindContent(snapshot, lastBilingual, lastDark, overrideContainerWidthPx = newWidth)
+                    }
+                }
+            }
+        }
+
         try {
             wm.addView(container, layoutParams)
             rootView = container
@@ -342,7 +376,18 @@ class FloatingSubtitleOverlay(
         }
     }
 
-    private fun bindContent(snapshot: SessionSnapshot, bilingual: Boolean, dark: Boolean) {
+    private fun bindContent(
+        snapshot: SessionSnapshot,
+        bilingual: Boolean,
+        dark: Boolean,
+        overrideContainerWidthPx: Int? = null,
+    ) {
+        lastSnapshot = snapshot
+        lastBilingual = bilingual
+        lastDark = dark
+        val textWidthPx = currentTextWidthPx(overrideContainerWidthPx)
+        lastTextWidthPx = textWidthPx
+
         val localized = AppLocale.localizedContext(appContext)
         val palette = if (dark) DARK_PALETTE else LIGHT_PALETTE
 
@@ -380,19 +425,47 @@ class FloatingSubtitleOverlay(
             currentTranslation?.apply {
                 visibility = View.VISIBLE
                 alpha = 0.72f
-                text = localized.getString(R.string.floating_waiting_audio)
+                val waiting = localized.getString(R.string.floating_waiting_audio)
+                if (text?.toString() != waiting) text = waiting
             }
             currentSource?.visibility = View.GONE
             return
         }
 
         if (recent.size == 2) {
-            bindRow(recent[0], bilingual, prevTranslation, prevSource, baseAlpha = 0.72f)
-            bindRow(recent[1], bilingual, currentTranslation, currentSource, baseAlpha = 1f)
+            bindRow(
+                row = recent[0],
+                bilingual = bilingual,
+                translationView = prevTranslation,
+                sourceView = prevSource,
+                translationMaxLines = PREV_TRANSLATION_MAX_LINES,
+                sourceMaxLines = PREV_SOURCE_MAX_LINES,
+                textWidthPx = textWidthPx,
+                baseAlpha = 0.72f,
+            )
+            bindRow(
+                row = recent[1],
+                bilingual = bilingual,
+                translationView = currentTranslation,
+                sourceView = currentSource,
+                translationMaxLines = CURRENT_TRANSLATION_MAX_LINES,
+                sourceMaxLines = CURRENT_SOURCE_MAX_LINES,
+                textWidthPx = textWidthPx,
+                baseAlpha = 1f,
+            )
         } else {
             prevTranslation?.visibility = View.GONE
             prevSource?.visibility = View.GONE
-            bindRow(recent[0], bilingual, currentTranslation, currentSource, baseAlpha = 1f)
+            bindRow(
+                row = recent[0],
+                bilingual = bilingual,
+                translationView = currentTranslation,
+                sourceView = currentSource,
+                translationMaxLines = CURRENT_TRANSLATION_MAX_LINES,
+                sourceMaxLines = CURRENT_SOURCE_MAX_LINES,
+                textWidthPx = textWidthPx,
+                baseAlpha = 1f,
+            )
         }
     }
 
@@ -401,13 +474,17 @@ class FloatingSubtitleOverlay(
         bilingual: Boolean,
         translationView: TextView?,
         sourceView: TextView?,
+        translationMaxLines: Int,
+        sourceMaxLines: Int,
+        textWidthPx: Int,
         baseAlpha: Float,
     ) {
         val primaryText = row.translation.ifBlank { row.source }
         val primaryDone = if (row.translation.isNotBlank()) row.translationDone else row.sourceDone
         translationView?.apply {
             visibility = View.VISIBLE
-            text = primaryText
+            val display = tailText(this, primaryText, textWidthPx, translationMaxLines)
+            if (text?.toString() != display) text = display
             alpha = if (primaryDone) baseAlpha else baseAlpha * DRAFT_OPACITY
         }
 
@@ -415,7 +492,8 @@ class FloatingSubtitleOverlay(
         sourceView?.apply {
             if (showSource) {
                 visibility = View.VISIBLE
-                text = row.source
+                val display = tailText(this, row.source, textWidthPx, sourceMaxLines)
+                if (text?.toString() != display) text = display
                 alpha = if (row.sourceDone) baseAlpha else baseAlpha * DRAFT_OPACITY
             } else {
                 visibility = View.GONE
@@ -423,11 +501,90 @@ class FloatingSubtitleOverlay(
         }
     }
 
+    private fun makeSubtitleView(
+        context: Context,
+        textSizeSp: Float,
+        color: Int,
+        bold: Boolean,
+        topPaddingDp: Int,
+        initialAlpha: Float = 1f,
+        initialVisibility: Int = View.VISIBLE,
+    ): TextView = TextView(context).apply {
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        )
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, textSizeSp)
+        if (bold) typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        setTextColor(color)
+        alpha = initialAlpha
+        // Tail-windowing bounds the visible line count while keeping the newest words intact;
+        // greedy line breaking prevents earlier visible lines from reflowing on each incoming token.
+        maxLines = Int.MAX_VALUE
+        ellipsize = null
+        breakStrategy = Layout.BREAK_STRATEGY_SIMPLE
+        hyphenationFrequency = Layout.HYPHENATION_FREQUENCY_NONE
+        setPadding(0, dp(topPaddingDp), 0, 0)
+        visibility = initialVisibility
+    }
+
+    private fun tailText(view: TextView, raw: String, containerContentWidthPx: Int, maxLines: Int): String {
+        val normalized = raw.trim()
+        if (normalized.isEmpty() || maxLines <= 0) return ""
+        val availableWidth = (containerContentWidthPx - view.totalPaddingLeft - view.totalPaddingRight).coerceAtLeast(1)
+        val key = TailCacheKey(
+            text = normalized,
+            widthPx = availableWidth,
+            maxLines = maxLines,
+            textSizePx = view.textSize,
+            bold = view.typeface?.isBold == true,
+        )
+        tailCache[key]?.let { return it }
+        val result = SubtitleTailWindow.tail(normalized, maxLines) { text ->
+            val layout = StaticLayout.Builder.obtain(text, 0, text.length, view.paint, availableWidth)
+                .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+                .setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
+                .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
+                .setIncludePad(view.includeFontPadding)
+                .setLineSpacing(view.lineSpacingExtra, view.lineSpacingMultiplier)
+                .build()
+            List(layout.lineCount) { i ->
+                text.substring(layout.getLineStart(i), layout.getLineEnd(i))
+            }
+        }
+        if (tailCache.size >= MAX_TAIL_CACHE_SIZE) {
+            val eldest = tailCache.entries.iterator()
+            if (eldest.hasNext()) {
+                eldest.next()
+                eldest.remove()
+            }
+        }
+        tailCache[key] = result
+        return result
+    }
+
+    private fun currentTextWidthPx(overrideContainerWidthPx: Int? = null): Int {
+        val dm = appContext.resources.displayMetrics
+        val container = rootView
+        val containerWidth = overrideContainerWidthPx?.takeIf { it > 0 }
+            ?: params?.width?.takeIf { it > 0 }
+            ?: overlayWidthPx(dm)
+        val horizontalPadding = if (container != null) {
+            container.paddingLeft + container.paddingRight
+        } else {
+            dp(CONTAINER_PADDING_H_DP) * 2
+        }
+        return (containerWidth - horizontalPadding).coerceAtLeast(1)
+    }
+
+    private fun overlayWidthPx(dm: android.util.DisplayMetrics): Int =
+        minOf((dm.widthPixels * 0.90f).roundToInt(), dp(420))
+
     private fun clampWindowPosition() {
         val view = rootView ?: return
         val lp = params ?: return
         val dm = appContext.resources.displayMetrics
-        val targetWidth = minOf((dm.widthPixels * 0.90f).roundToInt(), dp(420))
+        val targetWidth = overlayWidthPx(dm)
         val clampedX = clampX(lp.x, targetWidth, dm.widthPixels)
         val clampedY = clampY(lp.y, dm.heightPixels)
         if (lp.width != targetWidth || lp.x != clampedX || lp.y != clampedY) {
@@ -497,6 +654,12 @@ class FloatingSubtitleOverlay(
 
     private companion object {
         const val DRAFT_OPACITY = 0.84f
+        const val CONTAINER_PADDING_H_DP = 14
+        const val PREV_TRANSLATION_MAX_LINES = 2
+        const val PREV_SOURCE_MAX_LINES = 1
+        const val CURRENT_TRANSLATION_MAX_LINES = 3
+        const val CURRENT_SOURCE_MAX_LINES = 2
+        const val MAX_TAIL_CACHE_SIZE = 32
 
         val LIGHT_PALETTE = Palette(
             surface = 0xF2F1F5F1.toInt(),
