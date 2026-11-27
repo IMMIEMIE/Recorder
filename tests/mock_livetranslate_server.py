@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import socket
 import struct
 import sys
 import threading
@@ -29,6 +30,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def close(self, code, reason):
         self.frame(struct.pack('!H', code) + reason.encode(), 8)
+        # Half-close and drain unread client frames so closing the socket never triggers a TCP RST
+        # that discards the in-flight error/close frames before the client reads them.
+        try:
+            self.connection.shutdown(socket.SHUT_WR)
+            self.connection.settimeout(0.5)
+            while self.connection.recv(4096):
+                pass
+        except OSError:
+            pass
 
     def read_frame(self):
         header = self.rfile.read(2)
