@@ -22,6 +22,7 @@ data class LiveServiceProfile(
      */
     val appKey: String = "",
 ) {
+    val isGeminiLive: Boolean get() = protocolID == GEMINI_PROTOCOL_ID
     val isVolcAst: Boolean get() = protocolID == VOLC_AST_PROTOCOL_ID
 
     fun resolvedSourceLanguage(targetLanguage: String): String {
@@ -30,58 +31,66 @@ data class LiveServiceProfile(
         return if (targetLanguage == "zh") "en" else "zh"
     }
 
-    fun switchingProtocol(nextProtocolID: String): LiveServiceProfile {
-        if (nextProtocolID == protocolID) return this
+    fun switchingProtocol(targetProtocolID: String): LiveServiceProfile {
+        if (targetProtocolID == protocolID) return this
+        val targetProtocol: String
+        val targetVersion: String
+        val targetEndpoint: String
+        val targetModel: String
+        val targetName: String
+        when (targetProtocolID) {
+            GEMINI_PROTOCOL_ID -> {
+                targetProtocol = GEMINI_PROTOCOL_ID
+                targetVersion = GEMINI_VERSION
+                targetEndpoint = GEMINI_DEFAULT_ENDPOINT
+                targetModel = GEMINI_DEFAULT_MODEL
+                targetName = "Gemini Live"
+            }
+            VOLC_AST_PROTOCOL_ID -> {
+                targetProtocol = VOLC_AST_PROTOCOL_ID
+                targetVersion = VOLC_AST_VERSION
+                targetEndpoint = VOLC_AST_DEFAULT_ENDPOINT
+                targetModel = VOLC_AST_DEFAULT_RESOURCE_ID
+                targetName = "Seed-LiveInterpret 2.0"
+            }
+            else -> {
+                targetProtocol = QWEN_PROTOCOL_ID
+                targetVersion = QWEN_VERSION
+                targetEndpoint = LiveTranslateConfig.DEFAULT_ENDPOINT
+                targetModel = LiveTranslateConfig.MODEL
+                targetName = "Qwen LiveTranslate"
+            }
+        }
+
+        val knownEndpoints = setOf(LiveTranslateConfig.DEFAULT_ENDPOINT, GEMINI_DEFAULT_ENDPOINT, VOLC_AST_DEFAULT_ENDPOINT)
+        val knownModels = setOf(LiveTranslateConfig.MODEL, GEMINI_DEFAULT_MODEL, VOLC_AST_DEFAULT_RESOURCE_ID)
+        val knownNames = setOf("Qwen LiveTranslate", "Gemini Live", "Seed-LiveInterpret 2.0")
+
         val trimmedEndpoint = endpoint.trim()
         val trimmedModel = modelID.trim()
-        return if (nextProtocolID == VOLC_AST_PROTOCOL_ID) {
-            copy(
-                protocolID = VOLC_AST_PROTOCOL_ID,
-                version = VOLC_AST_VERSION,
-                endpoint = if (trimmedEndpoint.isEmpty() || trimmedEndpoint == LiveTranslateConfig.DEFAULT_ENDPOINT) {
-                    VOLC_AST_DEFAULT_ENDPOINT
-                } else {
-                    endpoint
-                },
-                modelID = if (trimmedModel.isEmpty() || trimmedModel == LiveTranslateConfig.MODEL) {
-                    VOLC_AST_DEFAULT_RESOURCE_ID
-                } else {
-                    modelID
-                },
-                name = if (name == "Qwen LiveTranslate") "Seed-LiveInterpret 2.0" else name,
-            )
-        } else {
-            copy(
-                protocolID = QWEN_PROTOCOL_ID,
-                version = QWEN_VERSION,
-                endpoint = if (trimmedEndpoint.isEmpty() || trimmedEndpoint == VOLC_AST_DEFAULT_ENDPOINT) {
-                    LiveTranslateConfig.DEFAULT_ENDPOINT
-                } else {
-                    endpoint
-                },
-                modelID = if (trimmedModel.isEmpty() || trimmedModel == VOLC_AST_DEFAULT_RESOURCE_ID) {
-                    LiveTranslateConfig.MODEL
-                } else {
-                    modelID
-                },
-                name = if (name == "Seed-LiveInterpret 2.0") "Qwen LiveTranslate" else name,
-            )
-        }
+        return copy(
+            protocolID = targetProtocol,
+            version = targetVersion,
+            endpoint = if (trimmedEndpoint.isEmpty() || trimmedEndpoint in knownEndpoints) targetEndpoint else endpoint,
+            modelID = if (trimmedModel.isEmpty() || trimmedModel in knownModels) targetModel else modelID,
+            name = if (name in knownNames) targetName else name,
+        )
     }
 
     fun transport(listener: LiveTransport.Listener, executor: java.util.concurrent.Executor, allowLocalhost: Boolean): LiveTransport {
         validate()
-        return if (isVolcAst) {
-            SeedLiveInterpretClient(listener, executor, allowLocalhost = allowLocalhost)
-        } else {
-            LiveTranslateClient(listener, executor, allowLocalhost = allowLocalhost)
+        return when {
+            isGeminiLive -> GeminiLiveClient(listener, executor, allowLocalhost = allowLocalhost)
+            isVolcAst -> SeedLiveInterpretClient(listener, executor, allowLocalhost = allowLocalhost)
+            else -> LiveTranslateClient(listener, executor, allowLocalhost = allowLocalhost)
         }
     }
 
     fun validate() {
-        val supported = (protocolID == QWEN_PROTOCOL_ID && version == QWEN_VERSION) ||
+        val supportedProtocol = (protocolID == QWEN_PROTOCOL_ID && version == QWEN_VERSION) ||
+            (protocolID == GEMINI_PROTOCOL_ID && version == GEMINI_VERSION) ||
             (protocolID == VOLC_AST_PROTOCOL_ID && version == VOLC_AST_VERSION)
-        if (!supported || inputFormat != "pcm")
+        if (!supportedProtocol || inputFormat != "pcm")
             throw LiveTranslateException(LiveMessage.UnsupportedProtocol)
         if (name.isBlank() || modelID.isBlank() || modelID.any { it.isWhitespace() || it.isISOControl() })
             throw LiveTranslateException(LiveMessage.InvalidProfileNameOrModel)
@@ -91,7 +100,7 @@ data class LiveServiceProfile(
             val trimmedAppKey = appKey.trim()
             if (trimmedAppKey.isNotEmpty() && trimmedAppKey.any { it.code !in 33..126 })
                 throw LiveTranslateException(LiveMessage.InvalidAppKeyFormat)
-        } else {
+        } else if (!isGeminiLive) {
             if (turnDetection !in setOf("server_vad", "speaker_detection") || threshold !in 0.0..1.0 || silenceMS !in 1..60000)
                 throw LiveTranslateException(LiveMessage.InvalidTurnDetection)
         }
@@ -113,6 +122,10 @@ data class LiveServiceProfile(
     companion object {
         const val QWEN_PROTOCOL_ID = "qwen-livetranslate"
         const val QWEN_VERSION = "3.8"
+        const val GEMINI_PROTOCOL_ID = GeminiLiveAdapter.PROTOCOL_ID
+        const val GEMINI_VERSION = GeminiLiveAdapter.VERSION
+        const val GEMINI_DEFAULT_ENDPOINT = GeminiLiveAdapter.DEFAULT_ENDPOINT
+        const val GEMINI_DEFAULT_MODEL = GeminiLiveAdapter.DEFAULT_MODEL
         const val VOLC_AST_PROTOCOL_ID = "volc-ast"
         const val VOLC_AST_VERSION = "2.0"
         const val VOLC_AST_DEFAULT_ENDPOINT = "wss://openspeech.bytedance.com/api/v4/ast/v2/translate"
@@ -139,8 +152,8 @@ data class LiveServiceProfile(
         fun parse(json: JSONObject) = LiveServiceProfile(
             id = json.getString("id"), name = json.getString("name"), endpoint = json.getString("endpoint"),
             modelID = json.getString("modelID"), protocolID = json.getString("protocolID"), version = json.getString("version"),
-            inputFormat = json.getString("inputFormat"), turnDetection = json.getString("turnDetection"),
-            threshold = json.getDouble("threshold"), silenceMS = json.getInt("silenceMS"),
+            inputFormat = json.optString("inputFormat", "pcm"), turnDetection = json.optString("turnDetection", "server_vad"),
+            threshold = json.optDouble("threshold", 0.5), silenceMS = json.optInt("silenceMS", 1000),
             sourceLanguage = json.optString("sourceLanguage", ""),
             appKey = json.optString("appKey", ""),
         )

@@ -6,6 +6,11 @@ struct LiveServiceProfile: Codable, Equatable, Identifiable {
     static let qwenDefaultEndpoint = "wss://maas.qianwenaiapi.com/api-ws/v1/realtime"
     static let qwenDefaultModelID = "qwen3.8-livetranslate-flash-realtime"
 
+    static let geminiProtocolID = GeminiLiveProtocol.protocolID
+    static let geminiVersion = GeminiLiveProtocol.version
+    static let geminiDefaultEndpoint = GeminiLiveProtocol.defaultEndpoint
+    static let geminiDefaultModelID = GeminiLiveProtocol.defaultModelID
+
     static let volcAstProtocolID = "volc-ast"
     static let volcAstVersion = "2.0"
     static let volcAstDefaultEndpoint = "wss://openspeech.bytedance.com/api/v4/ast/v2/translate"
@@ -32,10 +37,13 @@ struct LiveServiceProfile: Codable, Equatable, Identifiable {
     /// Leave blank to authenticate with the single `X-Api-Key` header. Never stores the secret API/Access Key.
     var appKey = ""
 
+    var isGeminiLive: Bool { protocolID == Self.geminiProtocolID }
     var isVolcAst: Bool { protocolID == Self.volcAstProtocolID }
 
     var protocolDisplayName: String {
-        isVolcAst ? "Seed-LiveInterpret 2.0" : "Qwen LiveTranslate 3.8"
+        if isGeminiLive { return "Gemini Live 1.0" }
+        if isVolcAst { return "Seed-LiveInterpret 2.0" }
+        return "Qwen LiveTranslate 3.8"
     }
 
     static func seedLiveInterpret(
@@ -58,37 +66,51 @@ struct LiveServiceProfile: Codable, Equatable, Identifiable {
         )
     }
 
-    func switchingProtocol(to nextProtocolID: String) -> LiveServiceProfile {
-        guard nextProtocolID != protocolID else { return self }
-        var copy = self
-        let trimmedEndpoint = copy.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedModel = copy.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        if nextProtocolID == Self.volcAstProtocolID {
-            copy.protocolID = Self.volcAstProtocolID
-            copy.version = Self.volcAstVersion
-            if trimmedEndpoint.isEmpty || trimmedEndpoint == Self.qwenDefaultEndpoint {
-                copy.endpoint = Self.volcAstDefaultEndpoint
-            }
-            if trimmedModel.isEmpty || trimmedModel == Self.qwenDefaultModelID {
-                copy.modelID = Self.volcAstDefaultResourceID
-            }
-            if copy.name == "Qwen LiveTranslate" {
-                copy.name = "Seed-LiveInterpret 2.0"
-            }
-        } else {
-            copy.protocolID = Self.qwenProtocolID
-            copy.version = Self.qwenVersion
-            if trimmedEndpoint.isEmpty || trimmedEndpoint == Self.volcAstDefaultEndpoint {
-                copy.endpoint = Self.qwenDefaultEndpoint
-            }
-            if trimmedModel.isEmpty || trimmedModel == Self.volcAstDefaultResourceID {
-                copy.modelID = Self.qwenDefaultModelID
-            }
-            if copy.name == "Seed-LiveInterpret 2.0" {
-                copy.name = "Qwen LiveTranslate"
-            }
+    func switchingProtocol(to targetProtocolID: String) -> LiveServiceProfile {
+        guard targetProtocolID != protocolID else { return self }
+        var next = self
+        let targetVersion: String
+        let targetEndpoint: String
+        let targetModel: String
+        let targetName: String
+        switch targetProtocolID {
+        case Self.geminiProtocolID:
+            next.protocolID = Self.geminiProtocolID
+            targetVersion = Self.geminiVersion
+            targetEndpoint = Self.geminiDefaultEndpoint
+            targetModel = Self.geminiDefaultModelID
+            targetName = "Gemini Live"
+        case Self.volcAstProtocolID:
+            next.protocolID = Self.volcAstProtocolID
+            targetVersion = Self.volcAstVersion
+            targetEndpoint = Self.volcAstDefaultEndpoint
+            targetModel = Self.volcAstDefaultResourceID
+            targetName = "Seed-LiveInterpret 2.0"
+        default:
+            next.protocolID = Self.qwenProtocolID
+            targetVersion = Self.qwenVersion
+            targetEndpoint = Self.qwenDefaultEndpoint
+            targetModel = Self.qwenDefaultModelID
+            targetName = "Qwen LiveTranslate"
         }
-        return copy
+        next.version = targetVersion
+
+        let knownEndpoints = [Self.qwenDefaultEndpoint, Self.geminiDefaultEndpoint, Self.volcAstDefaultEndpoint]
+        let knownModels = [Self.qwenDefaultModelID, Self.geminiDefaultModelID, Self.volcAstDefaultResourceID]
+        let knownNames = ["Qwen LiveTranslate", "Gemini Live", "Seed-LiveInterpret 2.0"]
+
+        let trimmedEndpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedEndpoint.isEmpty || knownEndpoints.contains(trimmedEndpoint) {
+            next.endpoint = targetEndpoint
+        }
+        let trimmedModel = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedModel.isEmpty || knownModels.contains(trimmedModel) {
+            next.modelID = targetModel
+        }
+        if knownNames.contains(name) {
+            next.name = targetName
+        }
+        return next
     }
 
     func resolvedSourceLanguage(targetLanguage: String) -> String {
@@ -99,6 +121,9 @@ struct LiveServiceProfile: Codable, Equatable, Identifiable {
 
     func makeSession(clientFactory: () -> LiveTranslateClient, allowLocalhost: Bool = false) throws -> any LiveTranslationSession {
         try validate()
+        if isGeminiLive {
+            return GeminiLiveSession(allowLocalhost: allowLocalhost)
+        }
         if isVolcAst {
             return SeedLiveInterpretSession(client: SeedLiveInterpretClient(allowLocalhost: allowLocalhost))
         }
@@ -107,6 +132,7 @@ struct LiveServiceProfile: Codable, Equatable, Identifiable {
 
     func validate() throws {
         let supportedProtocol = (protocolID == Self.qwenProtocolID && version == Self.qwenVersion)
+            || (protocolID == Self.geminiProtocolID && version == Self.geminiVersion)
             || (protocolID == Self.volcAstProtocolID && version == Self.volcAstVersion)
         guard supportedProtocol, inputFormat == "pcm" else {
             throw AIError.message("此协议版本或上行音频格式尚不受支持")
@@ -124,7 +150,7 @@ struct LiveServiceProfile: Codable, Equatable, Identifiable {
             guard trimmedAppKey.isEmpty || trimmedAppKey.utf8.allSatisfy({ (33...126).contains($0) }) else {
                 throw AIError.message("App Key 格式无效，请重新填写")
             }
-        } else {
+        } else if !isGeminiLive {
             guard ["server_vad", "speaker_detection"].contains(turnDetection),
                   (0...1).contains(threshold), (1...60000).contains(silenceMS) else {
                 throw AIError.message("请检查断句方式、阈值及静音时长")

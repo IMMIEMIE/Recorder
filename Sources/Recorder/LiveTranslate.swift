@@ -72,28 +72,28 @@ struct LiveTranslateConfiguration: Codable, Equatable {
     func url(allowLocalhost: Bool = false) throws -> URL {
         guard provider == .qwenCloud else { throw AIError.message("本地 Hy-SimulMT 不使用云端服务地址") }
         try profile.validate()
-        guard var parts = URLComponents(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            throw AIError.message("请填写有效的 WSS 实时服务地址，并选择支持的目标语言")
-        }
-        let queryValid = profile.isVolcAst
-            ? (parts.queryItems ?? []).isEmpty
-            : (parts.queryItems ?? []).allSatisfy({ $0.name == "model" })
-        guard let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil, parts.fragment == nil,
+        guard var parts = URLComponents(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil, parts.fragment == nil,
               parts.scheme == "wss" || (allowLocalhost && parts.scheme == "ws" && host == "127.0.0.1"),
               (parts.port.map { (1...65535).contains($0) } ?? true),
               !parts.path.isEmpty, parts.path != "/",
-              queryValid,
               volume.isFinite, (0...1).contains(volume),
               Self.languages.contains(where: { $0.0 == language }) else {
             throw AIError.message("请填写有效的 WSS 实时服务地址，并选择支持的目标语言")
         }
-        if profile.isVolcAst {
-            parts.queryItems = nil
-        } else {
-            parts.queryItems = [URLQueryItem(name: "model", value: profile.modelID)]
-            // Common server query decoders treat a literal plus as a space.
-            parts.percentEncodedQuery = parts.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
+        if profile.isGeminiLive || profile.isVolcAst {
+            guard parts.query == nil else {
+                throw AIError.message("请填写有效的 WSS 实时服务地址，并选择支持的目标语言")
+            }
+            guard let url = parts.url else { throw AIError.message("LiveTranslate 地址无效") }
+            return url
         }
+        guard (parts.queryItems ?? []).allSatisfy({ $0.name == "model" }) else {
+            throw AIError.message("请填写有效的 WSS 实时服务地址，并选择支持的目标语言")
+        }
+        parts.queryItems = [URLQueryItem(name: "model", value: profile.modelID)]
+        // Common server query decoders treat a literal plus as a space.
+        parts.percentEncodedQuery = parts.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         guard let url = parts.url else { throw AIError.message("LiveTranslate 地址无效") }
         return url
     }
@@ -108,7 +108,7 @@ struct LiveTranslateConfiguration: Codable, Equatable {
         }
         var parts = URLComponents(url: try url(allowLocalhost: allowLocalhost), resolvingAgainstBaseURL: false)!
         parts.query = nil; parts.host = parts.host?.lowercased()
-        if parts.port == 443 { parts.port = nil }
+        if parts.scheme == "wss" && parts.port == 443 { parts.port = nil }
         result.endpoint = parts.url!.absoluteString
         result.rememberActivePreferences()
         return result

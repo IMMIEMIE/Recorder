@@ -80,19 +80,19 @@ data class LiveTranslateConfig(
         val host = uri.host
         val scheme = uri.scheme
         val path = uri.rawPath
-        val queryNames = uri.rawQuery?.split('&')?.map { it.substringBefore('=') } ?: emptyList()
-        val queryValid = if (profile.isVolcAst) queryNames.isEmpty() else queryNames.all { it == "model" }
         if (host.isNullOrEmpty() || uri.rawUserInfo != null || uri.rawFragment != null ||
             !(scheme == "wss" || (allowLocalhost && scheme == "ws" && host == "127.0.0.1")) ||
             path.isNullOrEmpty() || path == "/" || uri.port == 0 || uri.port > 65535 ||
-            !queryValid ||
             !volume.isFinite() || volume !in 0f..1f ||
             LANGUAGES.none { it.first == language }
         ) throw invalid
         val port = if (uri.port == -1) "" else ":${uri.port}"
-        if (profile.isVolcAst) {
+        if (profile.isGeminiLive || profile.isVolcAst) {
+            if (uri.rawQuery != null) throw invalid
             return "$scheme://$host$port$path"
         }
+        val queryNames = uri.rawQuery?.split('&')?.map { it.substringBefore('=') } ?: emptyList()
+        if (!queryNames.all { it == "model" }) throw invalid
         val model = java.net.URLEncoder.encode(profile.modelID, "UTF-8")
         return "$scheme://$host$port$path?model=$model"
     }

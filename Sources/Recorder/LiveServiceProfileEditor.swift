@@ -6,6 +6,8 @@ struct LiveServiceProfileEditor: View {
     var body: some View {
         let profiles = model.liveConfiguration.catalog.profiles
         let isVolcAst = model.liveProfile.isVolcAst
+        let isGeminiLive = model.liveProfile.isGeminiLive
+        let knownProtocols = [LiveServiceProfile.qwenProtocolID, LiveServiceProfile.geminiProtocolID, LiveServiceProfile.volcAstProtocolID]
         HStack {
             Picker("服务配置", selection: Binding(get: { model.liveProfile.id }, set: model.selectLiveProfile)) {
                 ForEach(profiles) { Text($0.name).tag($0.id) }
@@ -21,14 +23,18 @@ struct LiveServiceProfileEditor: View {
             get: { model.liveProfile.protocolID },
             set: { model.liveProfile = model.liveProfile.switchingProtocol(to: $0) }
         )) {
-            Text("Qwen LiveTranslate 3.8").tag(LiveServiceProfile.qwenProtocolID)
-            Text("Seed-LiveInterpret 2.0 (volc-ast)").tag(LiveServiceProfile.volcAstProtocolID)
+            Text(verbatim: "Qwen LiveTranslate 3.8").tag(LiveServiceProfile.qwenProtocolID)
+            Text(verbatim: "Gemini Live 1.0").tag(LiveServiceProfile.geminiProtocolID)
+            Text(verbatim: "Seed-LiveInterpret 2.0 (volc-ast)").tag(LiveServiceProfile.volcAstProtocolID)
+            if !knownProtocols.contains(model.liveProfile.protocolID) {
+                Text(verbatim: model.liveProfile.protocolID + " · " + model.liveProfile.version).tag(model.liveProfile.protocolID)
+            }
         }
         LabeledContent("服务地址") {
-            TextField(
-                isVolcAst ? LiveServiceProfile.volcAstDefaultEndpoint : "wss://…/api-ws/v1/realtime",
-                text: $model.liveProfile.endpoint
-            )
+            let placeholder = isVolcAst
+                ? LiveServiceProfile.volcAstDefaultEndpoint
+                : (isGeminiLive ? "wss://generativelanguage.googleapis.com/ws/…" : "wss://…/api-ws/v1/realtime")
+            TextField(placeholder, text: $model.liveProfile.endpoint)
         }
         LabeledContent(isVolcAst ? "资源 ID" : "模型 ID") {
             TextField(isVolcAst ? LiveServiceProfile.volcAstDefaultResourceID : "模型 ID", text: $model.liveProfile.modelID)
@@ -47,7 +53,7 @@ struct LiveServiceProfileEditor: View {
                 }
                 Text("默认仅填写下方专用 API Key（X-Api-Key）。如使用旧版火山语音双凭证，请在此填写 App Key 并在下方填写 Access Key。")
                     .font(.caption).foregroundStyle(.secondary)
-            } else {
+            } else if !isGeminiLive {
                 Picker("断句方式", selection: $model.liveProfile.turnDetection) {
                     Text("静音检测").tag("server_vad")
                     Text("说话人检测").tag("speaker_detection")

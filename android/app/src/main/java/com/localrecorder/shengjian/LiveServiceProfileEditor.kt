@@ -106,8 +106,12 @@ internal fun LiveServiceProfileEditor(
     }
 
     ProfileField(stringResource(R.string.profile_name), profile.name, !testing) { onEdit(profile.copy(name = it)) }
-
-    // Protocol selector: Qwen LiveTranslate 3.8 vs Seed-LiveInterpret 2.0 (volc-ast)
+    // Protocol selector: Qwen LiveTranslate 3.8 / Gemini Live 1.0 / Seed-LiveInterpret 2.0
+    val protocols = listOf(
+        LiveServiceProfile.QWEN_PROTOCOL_ID to stringResource(R.string.protocol_qwen_38),
+        LiveServiceProfile.GEMINI_PROTOCOL_ID to "Gemini Live 1.0",
+        LiveServiceProfile.VOLC_AST_PROTOCOL_ID to stringResource(R.string.protocol_volc_ast_20),
+    )
     Row(
         Modifier
             .fillMaxWidth()
@@ -115,26 +119,36 @@ internal fun LiveServiceProfileEditor(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val protocols = listOf(
-            LiveServiceProfile.QWEN_PROTOCOL_ID to stringResource(R.string.protocol_qwen_38),
-            LiveServiceProfile.VOLC_AST_PROTOCOL_ID to stringResource(R.string.protocol_volc_ast_20),
-        )
-        protocols.forEach { (id, label) ->
-            val selected = profile.protocolID == id
+        protocols.forEach { (protocolID, label) ->
+            val selected = profile.protocolID == protocolID
             Surface(
-                onClick = { onEdit(profile.switchingProtocol(id)) },
+                onClick = { if (!selected) onEdit(profile.switchingProtocol(protocolID)) },
                 enabled = canSwitch,
                 shape = CircleShape,
-                color = if (selected) colors.primaryContainer else colors.surfaceContainer,
+                color = if (selected) colors.secondaryContainer else colors.surfaceContainerLowest,
                 border = BorderStroke(1.dp, if (selected) colors.primary else colors.outlineVariant),
+                modifier = Modifier.heightIn(min = 36.dp),
             ) {
                 Text(
                     label,
-                    style = Design.caption.copy(fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal),
-                    color = if (selected) colors.onPrimaryContainer else colors.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                    style = Design.caption.copy(fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium),
+                    color = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                 )
             }
+        }
+    }
+    if (protocols.none { it.first == profile.protocolID }) {
+        Surface(
+            color = colors.surfaceContainer,
+            shape = RoundedCornerShape(Design.radiusInput),
+        ) {
+            Text(
+                stringResource(R.string.protocol_detail, profile.protocolID, profile.version),
+                style = Design.caption,
+                color = colors.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            )
         }
     }
 
@@ -221,7 +235,7 @@ internal fun LiveServiceProfileEditor(
                     onEdit(profile.copy(appKey = it))
                 }
                 Text(stringResource(R.string.app_key_hint), style = Design.caption, color = colors.onSurfaceVariant)
-            } else {
+            } else if (!profile.isGeminiLive) {
                 val vad = profile.turnDetection == "server_vad"
                 OutlinedButton(
                     onClick = { onEdit(profile.copy(turnDetection = if (vad) "speaker_detection" else "server_vad")) },

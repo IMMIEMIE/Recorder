@@ -20,8 +20,9 @@ dependencies {
 }
 
 tasks.test {
-    // The WebSocket tests run against tests/mock_livetranslate_server.py and tests/mock_volc_ast_server.py from the repository root.
+    // The WebSocket tests run against the Python mock servers from the repository root.
     systemProperty("livetranslate.mock", rootProject.projectDir.resolve("../tests/mock_livetranslate_server.py").absolutePath)
+    systemProperty("gemini.live.mock", rootProject.projectDir.resolve("../tests/mock_gemini_live_server.py").absolutePath)
     systemProperty("volc.ast.mock", rootProject.projectDir.resolve("../tests/mock_volc_ast_server.py").absolutePath)
     // The session export fixtures shared with macOS (docs/SESSIONS.md, scripts/make_session_export_fixtures.py).
     systemProperty("session.fixtures", rootProject.projectDir.resolve("../tests/fixtures/session_export").absolutePath)

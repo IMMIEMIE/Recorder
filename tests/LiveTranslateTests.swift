@@ -554,7 +554,399 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         print("PASS: WebSocket handshake, PCM ordering, association, duplicate events, Unicode, tail drain, empty session, cancellation, repeated sessions, errors and timeouts")
         print("PASS: audio source persistence, idle-only switching lock, echo hint and system/mix permission gates")
 
+        // MARK: - Gemini Live API tests
+        try await runGeminiLiveTests(audioURL: audioURL)
         try await runSeedLiveInterpretTests(qwenBase: base, audioURL: audioURL)
+    }
+
+    @MainActor static func runGeminiLiveTests(audioURL: URL) async throws {
+        // 1. Protocol switching, model normalization, URL validation, and backward-compatible decoding.
+        let qwenDefault = LiveServiceProfile()
+        let switchedToGemini = qwenDefault.switchingProtocol(to: LiveServiceProfile.geminiProtocolID)
+        try check(switchedToGemini.protocolID == "gemini-live" && switchedToGemini.version == "1.0", "switch to Gemini Live")
+        try check(switchedToGemini.endpoint == GeminiLiveProtocol.defaultEndpoint, "Gemini default endpoint populated")
+        try check(switchedToGemini.modelID == GeminiLiveProtocol.defaultModelID, "Gemini default model populated")
+        let switchedBack = switchedToGemini.switchingProtocol(to: LiveServiceProfile.qwenProtocolID)
+        try check(switchedBack.endpoint == LiveServiceProfile.qwenDefaultEndpoint && switchedBack.modelID == LiveServiceProfile.qwenDefaultModelID, "switch back to Qwen defaults")
+
+        var custom = qwenDefault
+        custom.endpoint = "wss://proxy.example.com/live"
+        custom.modelID = "custom-model"
+        let customGemini = custom.switchingProtocol(to: LiveServiceProfile.geminiProtocolID)
+        try check(customGemini.endpoint == "wss://proxy.example.com/live" && customGemini.modelID == "custom-model", "custom values preserved across protocol switch")
+
+        try check(GeminiLiveProtocol.normalizedModelName("gemini-2.5-flash-native-audio-preview-12-2025") == "models/gemini-2.5-flash-native-audio-preview-12-2025", "auto-prefix models/")
+        try check(GeminiLiveProtocol.normalizedModelName("models/gemini-2.0-flash-exp") == "models/gemini-2.0-flash-exp", "keep models/ prefix")
+        let vertexModel = "projects/p/locations/us-central1/publishers/google/models/gemini-live-2.5-flash-native-audio"
+        try check(GeminiLiveProtocol.normalizedModelName(vertexModel) == vertexModel, "preserve Vertex AI model path")
+
+        let minimalGeminiJSON = Data(#"{"id":"g1","name":"Gemini","endpoint":"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent","modelID":"gemini-2.5-flash-native-audio-preview-12-2025","protocolID":"gemini-live","version":"1.0"}"#.utf8)
+        let decodedGemini = try JSONDecoder().decode(LiveServiceProfile.self, from: minimalGeminiJSON)
+        try check(decodedGemini.isGeminiLive && decodedGemini.inputFormat == "pcm", "minimal Gemini profile decodes cleanly")
+        try decodedGemini.validate()
+
+        var aiStudioConfig = LiveTranslateConfiguration()
+        aiStudioConfig.catalog.use(LiveServiceProfile(
+            id: "g-ai", name: "Gemini AI Studio",
+            endpoint: "wss://GENERATIVELANGUAGE.GOOGLEAPIS.COM:443/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent",
+            modelID: GeminiLiveProtocol.defaultModelID,
+            protocolID: LiveServiceProfile.geminiProtocolID, version: LiveServiceProfile.geminiVersion
+        ))
+        let normAI = try aiStudioConfig.normalized()
+        try check(normAI.endpoint == GeminiLiveProtocol.defaultEndpoint, "Gemini AI Studio endpoint normalized")
+        try check(try normAI.url().absoluteString == GeminiLiveProtocol.defaultEndpoint, "Gemini URL has no ?model= query")
+        try check(!GeminiLiveProtocol.usesBearerAuth(url: try normAI.url(), key: "AIzaMock"), "AI Studio uses x-goog-api-key")
+        try check(GeminiLiveProtocol.usesBearerAuth(url: try normAI.url(), key: "ya29.mock"), "OAuth2 token uses Bearer")
+
+        let vertexEndpoint = "wss://us-central1-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent"
+        var vertexConfig = LiveTranslateConfiguration()
+        vertexConfig.catalog.use(LiveServiceProfile(
+            id: "g-vx", name: "Vertex AI", endpoint: vertexEndpoint, modelID: vertexModel,
+            protocolID: LiveServiceProfile.geminiProtocolID, version: LiveServiceProfile.geminiVersion
+        ))
+        try check(try vertexConfig.url().absoluteString == vertexEndpoint, "Vertex AI URL accepted")
+        try check(GeminiLiveProtocol.usesBearerAuth(url: try vertexConfig.url(), key: "oauth-token"), "Vertex AI uses Bearer auth")
+
+        for bad in [
+            GeminiLiveProtocol.defaultEndpoint + "?key=secret",
+            GeminiLiveProtocol.defaultEndpoint + "?model=x",
+            "https://generativelanguage.googleapis.com/ws/foo",
+            "wss://user:secret@generativelanguage.googleapis.com/ws/foo",
+            "wss://generativelanguage.googleapis.com/"
+        ] {
+            var badCfg = LiveTranslateConfiguration()
+            badCfg.catalog.use(LiveServiceProfile(
+                id: "bad", name: "Bad", endpoint: bad, modelID: GeminiLiveProtocol.defaultModelID,
+                protocolID: LiveServiceProfile.geminiProtocolID, version: LiveServiceProfile.geminiVersion
+            ))
+            try check((try? badCfg.url()) == nil, "unsafe Gemini URL rejected: \(bad)")
+        }
+
+        // Verify setup payload modality rules.
+        let nativeSetup = (GeminiLiveProtocol.setupPayload(configuration: normAI)["setup"] as! [String: Any])
+        let nativeModalities = ((nativeSetup["generationConfig"] as! [String: Any])["responseModalities"] as! [String])
+        try check(nativeModalities == ["AUDIO"] && nativeSetup["outputAudioTranscription"] != nil && nativeSetup["inputAudioTranscription"] != nil,
+                  "native-audio model requests AUDIO + outputAudioTranscription even when audioOutput is false")
+        var textOnlyConfig = normAI
+        var textProfile = normAI.profile; textProfile.modelID = "gemini-2.0-flash-exp"
+        textOnlyConfig.catalog.use(textProfile)
+        let textSetup = (GeminiLiveProtocol.setupPayload(configuration: textOnlyConfig)["setup"] as! [String: Any])
+        let textModalities = ((textSetup["generationConfig"] as! [String: Any])["responseModalities"] as! [String])
+        try check(textModalities == ["TEXT"] && textSetup["outputAudioTranscription"] == nil,
+                  "non-native-audio model uses TEXT modality when audioOutput is false")
+
+        // Verify output audio PCM MIME type and sample rate validation.
+        try check(GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType("audio/pcm"), "omitted rate defaults to 24 kHz")
+        try check(GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType("audio/pcm;rate=24000"), "explicit 24 kHz rate accepted")
+        try check(GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType("AUDIO/PCM; rate = 24000 ; endian=little"), "parameter spacing & case accepted")
+        try check(!GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType("audio/pcm;rate=16000"), "16 kHz output audio rejected")
+        try check(!GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType("audio/pcm;rate=bad"), "non-numeric rate rejected")
+        try check(!GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType("audio/wav;rate=24000"), "non-PCM MIME rejected")
+
+        guard let geminiBase = ProcessInfo.processInfo.environment["RECORDER_GEMINI_MOCK"] else {
+            throw LiveTestError(message: "Use scripts/test_livetranslate.sh (RECORDER_GEMINI_MOCK missing)")
+        }
+
+        func makeGeminiConfig(route: String, audio: Bool = false, timing: LiveTranslatePlaybackTiming = .streaming,
+                              modelID: String = GeminiLiveProtocol.defaultModelID) -> LiveTranslateConfiguration {
+            var cfg = LiveTranslateConfiguration(enabled: true, language: "zh", audioOutput: audio, playbackTiming: timing)
+            cfg.catalog.use(LiveServiceProfile(
+                id: "gemini-test", name: "Gemini Live", endpoint: geminiBase + route, modelID: modelID,
+                protocolID: LiveServiceProfile.geminiProtocolID, version: LiveServiceProfile.geminiVersion
+            ))
+            return cfg
+        }
+
+        func wait(_ condition: () -> Bool) async throws {
+            for _ in 0..<600 {
+                if condition() { return }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            throw LiveTestError(message: "Timed out waiting for Gemini mock fixture")
+        }
+
+        // 2. Connection test (0 audio) finishes immediately and cleanly.
+        do {
+            let session = GeminiLiveSession(allowLocalhost: true)
+            var ready = false, ended = false, endError: String? = nil
+            var updates: [LiveTranslationUpdate] = []
+            session.onReady = { ready = true; session.finish() }
+            session.onEvent = { if case .update(let u) = $0 { updates.append(u) } }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: makeGeminiConfig(route: "/ok"), key: "mock-gemini", sessionID: "t1")
+            try await wait { ended }
+            try check(ready && endError == nil && updates.isEmpty, "Gemini connection test succeeds without audio")
+        }
+
+        // 3. TEXT modality (non-native-audio model), native-audio silent mode, and AUDIO playback (.streaming & .afterFinal).
+        do {
+            let session = GeminiLiveSession(allowLocalhost: true)
+            var ready = false, ended = false, endError: String? = nil
+            var lastUpdate: LiveTranslationUpdate?
+            var audioBytes = 0
+            session.onReady = { ready = true }
+            session.onEvent = {
+                switch $0 {
+                case .update(let u): lastUpdate = u
+                case .audio(let d): audioBytes += d.count
+                default: break
+                }
+            }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: makeGeminiConfig(route: "/ok", audio: false, modelID: "gemini-2.0-flash-exp"), key: "mock-gemini", sessionID: "t2")
+            try await wait { ready || ended }
+            try check(ready, "TEXT modality ready")
+            try check(session.append(Data(repeating: 0, count: 640)), "append audio accepted")
+            session.finish()
+            try await wait { ended }
+            try check(endError == nil && audioBytes == 0, "TEXT modality completed cleanly")
+            try check(lastUpdate?.source == "Hello world." && lastUpdate?.translation == "你好，世界🌏。" && lastUpdate?.committed == true,
+                      "TEXT modality source and translation finalized without thought leak")
+        }
+
+        do {
+            let session = GeminiLiveSession(allowLocalhost: true)
+            var ready = false, ended = false, endError: String? = nil
+            var audioBytes = 0
+            var lastUpdate: LiveTranslationUpdate?
+            session.onReady = { ready = true }
+            session.onEvent = {
+                switch $0 {
+                case .update(let u): lastUpdate = u
+                case .audio(let d): audioBytes += d.count
+                default: break
+                }
+            }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: makeGeminiConfig(route: "/ok", audio: false), key: "mock-gemini", sessionID: "t3")
+            try await wait { ready || ended }
+            try check(ready && session.append(Data(repeating: 0, count: 640)), "native-audio silent ready")
+            session.finish()
+            try await wait { ended }
+            try check(endError == nil && audioBytes == 0 && lastUpdate?.translation == "你好，世界🌏。",
+                      "native-audio with audioOutput=false discards audio and preserves subtitles")
+        }
+
+        for timing in [LiveTranslatePlaybackTiming.streaming, .afterFinal] {
+            let session = GeminiLiveSession(allowLocalhost: true)
+            var ready = false, ended = false, endError: String? = nil
+            var audioBytes = 0
+            var replayBytes = 0
+            session.onReady = { ready = true }
+            session.onEvent = {
+                switch $0 {
+                case .audio(let d): audioBytes += d.count
+                case .replayClip(_, let pcm): replayBytes += pcm.count
+                default: break
+                }
+            }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: makeGeminiConfig(route: "/ok", audio: true, timing: timing), key: "mock-gemini", sessionID: "t4-\(timing)")
+            try await wait { ready || ended }
+            try check(ready && session.append(Data(repeating: 0, count: 640)), "audio mode ready")
+            session.finish()
+            try await wait { ended }
+            try check(endError == nil && audioBytes == 4800 && replayBytes == 4800,
+                      "Gemini 24 kHz PCM odd-byte reassembly and replay clip (\(timing))")
+        }
+
+        // 4. Bearer auth, interrupted turn preservation, goAway, malformed audio warning, and failure classification.
+        do {
+            let session = GeminiLiveSession(allowLocalhost: true)
+            var ready = false, ended = false, endError: String? = nil
+            session.onReady = { ready = true; session.finish() }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: makeGeminiConfig(route: "/bearer"), key: "ya29.mock-token", sessionID: "t5")
+            try await wait { ended }
+            try check(ready && endError == nil, "Gemini Bearer auth succeeded")
+        }
+
+        do {
+            let session = GeminiLiveSession(allowLocalhost: true)
+            var ready = false, ended = false, endError: String? = nil
+            var finalized: [String: LiveTranslationUpdate] = [:]
+            session.onReady = { ready = true }
+            session.onEvent = {
+                if case .update(let u) = $0, u.committed { finalized[u.segmentID] = u }
+            }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: makeGeminiConfig(route: "/interrupted"), key: "mock-gemini", sessionID: "t6")
+            try await wait { ready }
+            try check(session.append(Data(repeating: 0, count: 640)), "append for interrupted test")
+            try await wait { finalized["turn-1"] != nil }
+            session.finish()
+            try await wait { ended }
+            try check(endError == nil && finalized["turn-1"]?.source == "First part" && finalized["turn-1"]?.translation == "第一段",
+                      "interrupted turn preserves subtitles")
+            try check(finalized["turn-2"]?.source == "Second part." && finalized["turn-2"]?.translation == "第二段。",
+                      "turn after interruption advances cleanly")
+        }
+
+        do {
+            let session = GeminiLiveSession(allowLocalhost: true)
+            var ready = false, ended = false, endError: String? = nil
+            var warning: String?
+            var lastUpdate: LiveTranslationUpdate?
+            session.onReady = { ready = true }
+            session.onEvent = {
+                switch $0 {
+                case .playbackWarning(let m): warning = m
+                case .update(let u): lastUpdate = u
+                default: break
+                }
+            }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: makeGeminiConfig(route: "/bad-audio", audio: true), key: "mock-gemini", sessionID: "t7")
+            try await wait { ready }
+            _ = session.append(Data(repeating: 0, count: 640))
+            session.finish()
+            try await wait { ended }
+            try check(endError == nil && warning != nil && lastUpdate?.translation == "你好，世界🌏。",
+                      "malformed audio emits playback warning without dropping subtitles")
+        }
+
+        // Unsupported output audio sample rate (e.g. rate=16000) warns and drops audio while keeping subtitles.
+        do {
+            let session = GeminiLiveSession(allowLocalhost: true)
+            var ready = false, ended = false, endError: String? = nil
+            var warning: String?
+            var audioBytes = 0
+            var lastUpdate: LiveTranslationUpdate?
+            session.onReady = { ready = true }
+            session.onEvent = {
+                switch $0 {
+                case .playbackWarning(let m): warning = m
+                case .audio(let d): audioBytes += d.count
+                case .update(let u): lastUpdate = u
+                default: break
+                }
+            }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: makeGeminiConfig(route: "/wrong-audio-rate", audio: true), key: "mock-gemini", sessionID: "t7-rate")
+            try await wait { ready }
+            _ = session.append(Data(repeating: 0, count: 640))
+            session.finish()
+            try await wait { ended }
+            try check(endError == nil && warning == "译音数据格式无效，已停止播放" && audioBytes == 0 && lastUpdate?.translation == "你好，世界🌏。",
+                      "non-24kHz audio emits playback warning, drops audio, and preserves subtitles")
+        }
+
+        // Post-turn finish timeout: <= 32,000 bytes (<= 1 s trailing silence) finishes cleanly;
+        // > 32,000 bytes (a new utterance stopped right away) surfaces FinishTimeout.
+        do {
+            let shortSilence = GeminiLiveSession(finishTimeout: 0.15, allowLocalhost: true)
+            var ready = false, turnDone = false, ended = false, endError: String? = nil
+            shortSilence.onReady = { ready = true }
+            shortSilence.onEvent = { if case .update(let u) = $0, u.committed { turnDone = true } }
+            shortSilence.onEnd = { endError = $0; ended = true }
+            try shortSilence.start(configuration: makeGeminiConfig(route: "/post-turn-hang"), key: "mock-gemini", sessionID: "t7-silence")
+            try await wait { ready }
+            _ = shortSilence.append(Data(repeating: 0, count: 640))
+            try await wait { turnDone }
+            _ = shortSilence.append(Data(repeating: 0, count: 32_000))
+            shortSilence.finish()
+            try await wait { ended }
+            try check(endError == nil, "short trailing silence (<= 1 s) after completed turn finishes cleanly")
+
+            let newUtterance = GeminiLiveSession(finishTimeout: 0.15, allowLocalhost: true)
+            ready = false; turnDone = false; ended = false; endError = nil
+            var preservedText = ""
+            newUtterance.onReady = { ready = true }
+            newUtterance.onEvent = {
+                if case .update(let u) = $0, u.committed { turnDone = true; preservedText = u.translation }
+            }
+            newUtterance.onEnd = { endError = $0; ended = true }
+            try newUtterance.start(configuration: makeGeminiConfig(route: "/post-turn-hang"), key: "mock-gemini", sessionID: "t7-utterance")
+            try await wait { ready }
+            _ = newUtterance.append(Data(repeating: 0, count: 640))
+            try await wait { turnDone }
+            _ = newUtterance.append(Data(repeating: 0, count: 32_640))
+            newUtterance.finish()
+            try await wait { ended }
+            try check(endError == "LiveTranslate 尾句处理超时，已保留收到的文字，末句可能不完整" && preservedText == "你好，世界🌏。",
+                      "new utterance (> 1 s) stopped immediately surfaces finish timeout while preserving prior text")
+        }
+
+        do {
+            let session = GeminiLiveSession(allowLocalhost: true)
+            var ready = false, ended = false, endError: String? = nil
+            var lastUpdate: LiveTranslationUpdate?
+            session.onReady = { ready = true }
+            session.onEvent = { if case .update(let u) = $0 { lastUpdate = u } }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: makeGeminiConfig(route: "/go-away"), key: "mock-gemini", sessionID: "t8")
+            try await wait { ready }
+            _ = session.append(Data(repeating: 0, count: 640))
+            try await wait { ended }
+            try check(endError != nil && lastUpdate?.translation == "你好，世界🌏。", "goAway ends cleanly while preserving text")
+        }
+
+        for (route, expectedKind) in [
+            ("/unauthorized", LiveCloudEndKind.other),
+            ("/forbidden", .other),
+            ("/http-429", .rateLimited),
+            ("/redirect", .other),
+            ("/rate-limited", .rateLimited),
+            ("/json-error-auth", .other),
+            ("/json-error-rate", .rateLimited),
+            ("/close-1007", .other),
+            ("/timeout", .other)
+        ] {
+            let session = GeminiLiveSession(finishTimeout: 0.15, allowLocalhost: true)
+            var ready = false, ended = false, endError: String? = nil
+            session.onReady = { ready = true }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: makeGeminiConfig(route: route), key: "mock-gemini", sessionID: "err-\(route)")
+            try await wait { ready || ended }
+            if ready {
+                _ = session.append(Data(repeating: 0, count: 640))
+                session.finish()
+            }
+            try await wait { ended }
+            try check(endError != nil, "Gemini failure surfaced: \(route)")
+            try check(!endError!.contains("mock-gemini"), "Gemini error never leaks key: \(route)")
+            try check(session.endKind == expectedKind, "Gemini endKind classified for \(route)")
+        }
+
+        // Bounded queue & silent cancel.
+        do {
+            let session = GeminiLiveSession(allowLocalhost: true)
+            var ready = false, ended = false, callbacks = 0
+            session.onReady = { ready = true; callbacks += 1 }
+            session.onEvent = { _ in callbacks += 1 }
+            session.onEnd = { _ in ended = true; callbacks += 1 }
+            try session.start(configuration: makeGeminiConfig(route: "/ok"), key: "mock-gemini", sessionID: "cancel")
+            try await wait { ready }
+            try check(!session.append(Data(repeating: 0, count: 320_001)), "Gemini bounded 320 KB queue")
+            session.cancel()
+            try await Task.sleep(nanoseconds: 100_000_000)
+            let snap = callbacks
+            try await Task.sleep(nanoseconds: 150_000_000)
+            try check(callbacks == snap && !ended, "Gemini cancel suppresses subsequent callbacks")
+        }
+
+        // 5. AppModel end-to-end test with Gemini Live profile (save, test connection, file recording).
+        let geminiSuite = "recorder.gemini.app.\(UUID().uuidString)"
+        let geminiDefaults = UserDefaults(suiteName: geminiSuite)!
+        defer { geminiDefaults.removePersistentDomain(forName: geminiSuite) }
+        let appConfig = makeGeminiConfig(route: "/ok")
+        try appConfig.save(defaults: geminiDefaults, allowLocalhost: true)
+        try APIKeyStore.save("mock-gemini", endpoint: appConfig.keyAccount)
+        let app = AppModel(defaults: geminiDefaults, integrateSystem: false, liveAllowLocalhost: true,
+                           liveKeyReader: { try APIKeyStore.read(endpoint: $0) })
+        defer { app.shutdown() }
+        app.testLiveConnection()
+        try await wait { !app.liveTesting }
+        try check(app.liveMessage.contains("连接成功") && app.finalText.isEmpty, "AppModel Gemini connection test passed")
+        app.audioSource = "file"
+        app.audioFileURL = audioURL
+        app.start()
+        try await wait { app.finalText.count == 1 && app.state == "ready" }
+        try check(app.finalText[0].text == "Hello world." && app.finalText[0].translation == "你好，世界🌏。",
+                  "AppModel Gemini file recording produced finalized bilingual row")
+        try check(app.finalText[0].sourceDone && !app.finalText[0].incomplete, "AppModel Gemini row finalized")
+
+        print("PASS: Gemini Live protocol, normalization, auth, AUDIO/TEXT modalities, interruption, goAway, errors and AppModel end-to-end")
     }
 
     @MainActor static func runSeedLiveInterpretTests(qwenBase: String, audioURL: URL) async throws {
