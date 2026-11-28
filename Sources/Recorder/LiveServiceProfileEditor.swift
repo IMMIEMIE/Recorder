@@ -19,7 +19,7 @@ struct LiveServiceProfileEditor: View {
         LabeledContent("配置名称") { TextField("名称", text: $model.liveProfile.name) }
         Picker("协议", selection: Binding(
             get: { model.liveProfile.protocolID },
-            set: { model.liveProfile.switchProtocol(to: $0) }
+            set: { model.liveProfile = model.liveProfile.switchingProtocol(to: $0) }
         )) {
             Text("Qwen LiveTranslate 3.8").tag(LiveServiceProfile.qwenProtocolID)
             Text("Seed-LiveInterpret 2.0 (volc-ast)").tag(LiveServiceProfile.volcAstProtocolID)

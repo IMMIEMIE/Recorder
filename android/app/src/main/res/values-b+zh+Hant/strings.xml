@@ -326,4 +326,15 @@
     <string name="err_system_audio_projection_stopped">系統已停止音訊投射，已停止錄製；已有文字已保留</string>
     <string name="notice_system_audio_silent">未偵測到系統聲音：部分受保護內容（如 DRM 媒體、通話或禁止擷取的應用程式）不允許錄製內部音訊</string>
     <string name="notice_mixed_mode_headphones">混音模式下未偵測到耳機：建議配戴耳機，以減少揚聲器外放串入麥克風造成回音</string>
+    <string name="protocol_qwen_38">Qwen LiveTranslate 3.8</string>
+    <string name="protocol_volc_ast_20">Seed-LiveInterpret 2.0 (volc-ast)</string>
+    <string name="resource_id">資源 ID</string>
+    <string name="source_language_label">來源語言 · %1$s ▾</string>
+    <string name="source_language_auto">自動</string>
+    <string name="source_language_zhen">中英雙語 (zhen)</string>
+    <string name="profile_advanced_volc">驗證與上行音訊</string>
+    <string name="app_key_optional">App Key（選填）</string>
+    <string name="app_key_hint">預設留空使用新版單一 API Key（X-Api-Key）。僅舊版雙憑證驗證時填寫 App Key，並在下方填寫 Access Key。</string>
+    <string name="err_invalid_source_language">請選擇支援的來源語言</string>
+    <string name="err_invalid_app_key_format">App Key 格式無效，請重新填寫</string>
 </resources>

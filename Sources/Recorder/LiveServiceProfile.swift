@@ -58,35 +58,37 @@ struct LiveServiceProfile: Codable, Equatable, Identifiable {
         )
     }
 
-    mutating func switchProtocol(to nextProtocolID: String) {
-        guard nextProtocolID != protocolID else { return }
-        let trimmedEndpoint = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedModel = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+    func switchingProtocol(to nextProtocolID: String) -> LiveServiceProfile {
+        guard nextProtocolID != protocolID else { return self }
+        var copy = self
+        let trimmedEndpoint = copy.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = copy.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         if nextProtocolID == Self.volcAstProtocolID {
-            protocolID = Self.volcAstProtocolID
-            version = Self.volcAstVersion
+            copy.protocolID = Self.volcAstProtocolID
+            copy.version = Self.volcAstVersion
             if trimmedEndpoint.isEmpty || trimmedEndpoint == Self.qwenDefaultEndpoint {
-                endpoint = Self.volcAstDefaultEndpoint
+                copy.endpoint = Self.volcAstDefaultEndpoint
             }
             if trimmedModel.isEmpty || trimmedModel == Self.qwenDefaultModelID {
-                modelID = Self.volcAstDefaultResourceID
+                copy.modelID = Self.volcAstDefaultResourceID
             }
-            if name == "Qwen LiveTranslate" {
-                name = "Seed-LiveInterpret 2.0"
+            if copy.name == "Qwen LiveTranslate" {
+                copy.name = "Seed-LiveInterpret 2.0"
             }
         } else {
-            protocolID = Self.qwenProtocolID
-            version = Self.qwenVersion
+            copy.protocolID = Self.qwenProtocolID
+            copy.version = Self.qwenVersion
             if trimmedEndpoint.isEmpty || trimmedEndpoint == Self.volcAstDefaultEndpoint {
-                endpoint = Self.qwenDefaultEndpoint
+                copy.endpoint = Self.qwenDefaultEndpoint
             }
             if trimmedModel.isEmpty || trimmedModel == Self.volcAstDefaultResourceID {
-                modelID = Self.qwenDefaultModelID
+                copy.modelID = Self.qwenDefaultModelID
             }
-            if name == "Seed-LiveInterpret 2.0" {
-                name = "Qwen LiveTranslate"
+            if copy.name == "Seed-LiveInterpret 2.0" {
+                copy.name = "Qwen LiveTranslate"
             }
         }
+        return copy
     }
 
     func resolvedSourceLanguage(targetLanguage: String) -> String {
@@ -175,10 +177,10 @@ struct LiveServiceProfile: Codable, Equatable, Identifiable {
         modelID = try c.decode(String.self, forKey: .modelID)
         protocolID = try c.decode(String.self, forKey: .protocolID)
         version = try c.decode(String.self, forKey: .version)
-        turnDetection = try c.decode(String.self, forKey: .turnDetection)
-        threshold = try c.decode(Double.self, forKey: .threshold)
-        silenceMS = try c.decode(Int.self, forKey: .silenceMS)
-        inputFormat = try c.decode(String.self, forKey: .inputFormat)
+        turnDetection = try c.decodeIfPresent(String.self, forKey: .turnDetection) ?? "server_vad"
+        threshold = try c.decodeIfPresent(Double.self, forKey: .threshold) ?? 0.5
+        silenceMS = try c.decodeIfPresent(Int.self, forKey: .silenceMS) ?? 1000
+        inputFormat = try c.decodeIfPresent(String.self, forKey: .inputFormat) ?? "pcm"
         sourceLanguage = try c.decodeIfPresent(String.self, forKey: .sourceLanguage) ?? ""
         appKey = try c.decodeIfPresent(String.self, forKey: .appKey) ?? ""
     }

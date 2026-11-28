@@ -326,4 +326,15 @@
     <string name="err_system_audio_projection_stopped">La projection audio système a été arrêtée ; enregistrement interrompu. Le texte existant a été conservé.</string>
     <string name="notice_system_audio_silent">Aucun audio système détecté : certains contenus protégés (DRM, appels ou apps interdisant la capture) ne peuvent pas être enregistrés.</string>
     <string name="notice_mixed_mode_headphones">Aucun casque détecté en mode mixte : le port d’un casque est recommandé pour limiter l’écho du haut-parleur dans le microphone.</string>
+    <string name="protocol_qwen_38">Qwen LiveTranslate 3.8</string>
+    <string name="protocol_volc_ast_20">Seed-LiveInterpret 2.0 (volc-ast)</string>
+    <string name="resource_id">ID de ressource</string>
+    <string name="source_language_label">Langue source · %1$s ▾</string>
+    <string name="source_language_auto">Automatique</string>
+    <string name="source_language_zhen">Chinois-Anglais (zhen)</string>
+    <string name="profile_advanced_volc">Authentification et audio entrant</string>
+    <string name="app_key_optional">App Key (facultatif)</string>
+    <string name="app_key_hint">Laissez vide pour l’authentification par X-Api-Key unique. Renseignez App Key uniquement pour l’ancienne double authentification (X-Api-App-Key + X-Api-Access-Key).</string>
+    <string name="err_invalid_source_language">Choisissez une langue source prise en charge.</string>
+    <string name="err_invalid_app_key_format">Format de l’App Key invalide. Veuillez la saisir à nouveau.</string>
 </resources>

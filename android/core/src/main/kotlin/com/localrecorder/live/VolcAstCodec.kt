@@ -367,24 +367,17 @@ data class VolcAstTranslateResponse(
     }
 }
 
-/** Merges streaming AST subtitle updates whether a cluster emits incremental deltas or cumulative prefixes. */
+/**
+ * Appends pure incremental AST 2.0 subtitle deltas (`SourceSubtitleResponse` / `TranslationSubtitleResponse`).
+ *
+ * Verified against live AST 2.0 wire captures: `Response` (651 / 654) carries incremental text pieces
+ * while `End` (652 / 655) carries the authoritative complete sentence (or empty string to finalize the
+ * accumulated pieces). Verbatim concatenation preserves speaker repetitions (e.g. `"yes "` + `"yes"`)
+ * and short-prefix tokens (e.g. `"to "` + `"today"`, `"to"` + `"day"`) without destructive prefix guessing.
+ */
 object VolcAstSubtitleMerger {
-    private const val RIGHT_NO_SPACE = ",.;:!?)]}，。、；：！？）】》"
-    private const val LEFT_NO_SPACE = "([{（【《"
-
-    fun merge(existing: String, incoming: String): String {
+    fun append(existing: String, incoming: String): String {
         if (incoming.isEmpty()) return existing
-        if (existing.isEmpty()) return incoming
-        if (incoming.startsWith(existing)) return incoming
-        if (existing.startsWith(incoming)) return existing
-        return if (shouldInsertSpace(existing.last(), incoming.first())) "$existing $incoming" else existing + incoming
-    }
-
-    private fun shouldInsertSpace(left: Char, right: Char): Boolean {
-        if (left.isWhitespace() || right.isWhitespace()) return false
-        if (right in RIGHT_NO_SPACE || left in LEFT_NO_SPACE) return false
-        val leftAscii = left in '0'..'9' || left in 'A'..'Z' || left in 'a'..'z' || left in ",.;:!?"
-        val rightAscii = right in '0'..'9' || right in 'A'..'Z' || right in 'a'..'z'
-        return leftAscii && rightAscii
+        return existing + incoming
     }
 }

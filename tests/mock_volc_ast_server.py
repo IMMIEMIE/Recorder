@@ -352,12 +352,23 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_ws(encode_translate_response(655, session_id=sid, text="第一句。", start_time=100, end_time=900))
                         return
                     if not sent:
+                        if route.path == "/repeat-words":
+                            self.send_ws(encode_translate_response(650, session_id=sid, start_time=400))
+                            self.send_ws(encode_translate_response(651, session_id=sid, text="yes "))
+                            self.send_ws(encode_translate_response(651, session_id=sid, text="yes "))
+                            self.send_ws(encode_translate_response(651, session_id=sid, text="to "))
+                            self.send_ws(encode_translate_response(651, session_id=sid, text="today"))
+                            self.send_ws(encode_translate_response(653, session_id=sid, start_time=400))
+                            self.send_ws(encode_translate_response(654, session_id=sid, text="你好"))
+                            self.send_ws(encode_translate_response(654, session_id=sid, text="世"))
+                            sent = True
+                            continue
                         self.send_ws(encode_translate_response(650, session_id=sid, start_time=1200))
                         self.send_ws(encode_translate_response(651, session_id=sid, text="Hello"))
-                        self.send_ws(encode_translate_response(651, session_id=sid, text="world"))
+                        self.send_ws(encode_translate_response(651, session_id=sid, text=" world"))
                         self.send_ws(encode_translate_response(653, session_id=sid, start_time=1200))
                         self.send_ws(encode_translate_response(654, session_id=sid, text="你好"))
-                        self.send_ws(encode_translate_response(654, session_id=sid, text="你好，世界"))
+                        self.send_ws(encode_translate_response(654, session_id=sid, text="，世界"))
                         if audio_output:
                             self.send_ws(encode_translate_response(350, session_id=sid))
                             if route.path == "/ogg-audio":
@@ -374,8 +385,13 @@ class Handler(BaseHTTPRequestHandler):
                         threading.Event().wait(2)
                         return
                     if sent:
-                        self.send_ws(encode_translate_response(652, session_id=sid, text="Hello world.", start_time=1200, end_time=2400))
-                        self.send_ws(encode_translate_response(655, session_id=sid, text="你好，世界🌏。", start_time=1200, end_time=2400))
+                        if route.path == "/repeat-words":
+                            # Empty source End retains accumulated repeated words; non-empty translation End replaces provisional text authoritatively.
+                            self.send_ws(encode_translate_response(652, session_id=sid, text="", start_time=400, end_time=1100))
+                            self.send_ws(encode_translate_response(655, session_id=sid, text="你好，世界！", start_time=400, end_time=1100))
+                        else:
+                            self.send_ws(encode_translate_response(652, session_id=sid, text="Hello world.", start_time=1200, end_time=2400))
+                            self.send_ws(encode_translate_response(655, session_id=sid, text="你好，世界🌏。", start_time=1200, end_time=2400))
                         if audio_output:
                             self.send_ws(encode_translate_response(359, session_id=sid))
                     self.send_ws(encode_translate_response(152, session_id=sid, status_code=20000000, message=f"audio_bytes={total}"))

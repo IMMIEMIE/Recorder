@@ -145,7 +145,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var liveConfiguration = LiveTranslateConfiguration()
     @Published var liveProfile = LiveServiceProfile() {
         didSet {
-            if oldValue.endpoint != liveProfile.endpoint || oldValue.id != liveProfile.id { liveKeyInput = "" }
+            if oldValue.endpoint != liveProfile.endpoint || oldValue.id != liveProfile.id || oldValue.protocolID != liveProfile.protocolID { liveKeyInput = "" }
         }
     }
     var liveEndpoint: String {

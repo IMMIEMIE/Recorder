@@ -159,9 +159,12 @@ class SeedLiveInterpretTests {
         assertTrue(decoded.spkChg)
         assertEquals(250, decoded.mutedDurationMs)
 
-        assertEquals("Hello world", VolcAstSubtitleMerger.merge("Hello", "world"))
-        assertEquals("你好，世界", VolcAstSubtitleMerger.merge("你好", "你好，世界"))
-        assertEquals("你好世界", VolcAstSubtitleMerger.merge("你好", "世界"))
+        assertEquals("yes yes", VolcAstSubtitleMerger.append("yes ", "yes"))
+        assertEquals("yesyes", VolcAstSubtitleMerger.append("yes", "yes"))
+        assertEquals("to today", VolcAstSubtitleMerger.append("to ", "today"))
+        assertEquals("today", VolcAstSubtitleMerger.append("to", "day"))
+        assertEquals("a and", VolcAstSubtitleMerger.append("a ", "and"))
+        assertEquals("你好，世界", VolcAstSubtitleMerger.append("你好", "，世界"))
     }
 
     @Test
@@ -252,6 +255,22 @@ class SeedLiveInterpretTests {
         assertNull(s2s.error)
         assertNull(s2s.audioError)
         assertEquals(4800, s2s.audioBytes)
+
+        // Repeated words, short prefixes, and authoritative End replacement over wire
+        val repeatProbe = Probe()
+        repeatProbe.connect("/repeat-words")
+        repeatProbe.waitFor { repeatProbe.ready || repeatProbe.ended }
+        assertTrue(repeatProbe.ready)
+        assertEquals(AppendResult.SENT, repeatProbe.client.append(ByteArray(640) { 1 }))
+        repeatProbe.waitFor { repeatProbe.events.rows.values.any { it.source.text == "yes yes to today" } }
+        repeatProbe.client.finish()
+        repeatProbe.waitFor { repeatProbe.ended }
+        assertNull(repeatProbe.error)
+        val repeatRow = repeatProbe.events.rows.values.single()
+        assertEquals("yes yes to today", repeatRow.source.text)
+        assertTrue(repeatRow.source.done)
+        assertEquals("你好，世界！", repeatProbe.events.translation(repeatRow).text)
+        assertTrue(repeatProbe.events.translation(repeatRow).done)
 
         // OggS defensive rejection stops audio without breaking subtitles
         val ogg = Probe()

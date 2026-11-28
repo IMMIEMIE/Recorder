@@ -3,7 +3,7 @@ import Foundation
 /// Binary WebSocket transport for Volcengine / BytePlus Seed-LiveInterpret 2.0 (`volc-ast`).
 /// Wire framing: raw Protobuf `TranslateRequest` / `TranslateResponse` per binary WebSocket frame.
 /// All transport state lives on one serial queue; audio producers only enqueue bounded data.
-final class SeedLiveInterpretClient: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+final class SeedLiveInterpretClient: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
     private(set) var endKind = LiveCloudEndKind.other
     var onSlowService: ((Bool) -> Void)?
     var onReady: (() -> Void)?
@@ -13,6 +13,7 @@ final class SeedLiveInterpretClient: NSObject, URLSessionTaskDelegate, @unchecke
     private let queue = DispatchQueue(label: "recorder.seed-liveinterpret")
     private var session: URLSession?
     private var socket: URLSessionWebSocketTask?
+    private var pendingStartFrame: Data?
     private var pending: [(Data, Int)] = []
     private var buffered = 0
     private var sending = false
@@ -41,6 +42,15 @@ final class SeedLiveInterpretClient: NSObject, URLSessionTaskDelegate, @unchecke
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         completionHandler(nil)
+    }
+
+    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+        queue.async { [weak self] in
+            guard let self, !self.closed, self.socket === webSocketTask,
+                  let frame = self.pendingStartFrame else { return }
+            self.pendingStartFrame = nil
+            self.enqueue(frame, bytes: 0)
+        }
     }
 
     func connect(configuration: LiveTranslateConfiguration, key: String, allowLocalhost: Bool = false) throws {
@@ -76,6 +86,7 @@ final class SeedLiveInterpretClient: NSObject, URLSessionTaskDelegate, @unchecke
             self.sessionID = sid
             self.connectionID = connID
             self.sequence = 1
+            self.pendingStartFrame = startRequest.encode()
             let session = URLSession(configuration: settings, delegate: self, delegateQueue: nil)
             self.session = session
             let socket = session.webSocketTask(with: request)
@@ -83,7 +94,6 @@ final class SeedLiveInterpretClient: NSObject, URLSessionTaskDelegate, @unchecke
             self.socket = socket
             socket.resume()
             armTimeout(20, message: "LiveTranslate 连接或会话配置超时，请检查网络和服务地址")
-            enqueue(startRequest.encode(), bytes: 0)
             receive()
         }
     }
@@ -299,7 +309,7 @@ final class SeedLiveInterpretClient: NSObject, URLSessionTaskDelegate, @unchecke
     private func end(_ error: String?, notify: Bool = true) {
         guard !closed else { return }
         closed = true; ready = false; deadline?.cancel(); deadline = nil
-        pending.removeAll(); buffered = 0
+        pendingStartFrame = nil; pending.removeAll(); buffered = 0
         socket?.cancel(with: .normalClosure, reason: nil); socket = nil
         session?.invalidateAndCancel(); session = nil
         if notify {
@@ -442,7 +452,7 @@ final class SeedLiveInterpretSession: LiveTranslationSession {
             }
             if !response.text.isEmpty {
                 let existing = turns[nextSourceTurn]?.source ?? ""
-                turns[nextSourceTurn]?.source = VolcAstSubtitleMerger.merge(existing: existing, incoming: response.text)
+                turns[nextSourceTurn]?.source = VolcAstSubtitleMerger.append(existing: existing, incoming: response.text)
             }
         case .sourceSubtitleResponse:
             let turn: Int
@@ -459,7 +469,7 @@ final class SeedLiveInterpretSession: LiveTranslationSession {
             }
             if !response.text.isEmpty {
                 let existing = turns[turn]?.source ?? ""
-                turns[turn]?.source = VolcAstSubtitleMerger.merge(existing: existing, incoming: response.text)
+                turns[turn]?.source = VolcAstSubtitleMerger.append(existing: existing, incoming: response.text)
             }
         case .sourceSubtitleEnd:
             let turn: Int
@@ -494,7 +504,7 @@ final class SeedLiveInterpretSession: LiveTranslationSession {
             }
             if !response.text.isEmpty {
                 let existing = turns[nextTranslationTurn]?.translation ?? ""
-                turns[nextTranslationTurn]?.translation = VolcAstSubtitleMerger.merge(existing: existing, incoming: response.text)
+                turns[nextTranslationTurn]?.translation = VolcAstSubtitleMerger.append(existing: existing, incoming: response.text)
             }
         case .translationSubtitleResponse:
             let turn: Int
@@ -511,7 +521,7 @@ final class SeedLiveInterpretSession: LiveTranslationSession {
             }
             if !response.text.isEmpty {
                 let existing = turns[turn]?.translation ?? ""
-                turns[turn]?.translation = VolcAstSubtitleMerger.merge(existing: existing, incoming: response.text)
+                turns[turn]?.translation = VolcAstSubtitleMerger.append(existing: existing, incoming: response.text)
             }
         case .translationSubtitleEnd:
             let turn: Int

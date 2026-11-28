@@ -590,3 +590,18 @@
 "系统声音采集异常：%@。请在系统设置 → 隐私与安全性中允许声笺录制屏幕与系统音频；如刚开启权限，请重启声笺后重试。" = "Erreur de capture audio système : %@. Autorisez Shengjian dans Réglages Système → Confidentialité et sécurité ; si vous venez d’activer l’autorisation, relancez Shengjian et réessayez.";
 "麦克风采集异常：%@" = "Erreur de capture du microphone : %@";
 "更多操作" = "Plus d’actions";
+
+"关闭时使用云端实时转译服务。" = "Désactivé, le service cloud de traduction en direct est utilisé.";
+"资源 ID" = "ID de ressource";
+"源语言" = "Langue source";
+"中英双语 (zhen)" = "Chinois-Anglais (zhen)";
+"鉴权与上行音频" = "Authentification et audio entrant";
+"App Key（选填）" = "App Key (facultatif)";
+"留空使用新版单 API Key；旧版双凭证填 App Key" = "Laissez vide pour X-Api-Key unique ; saisissez App Key pour l’ancien mode";
+"默认仅填写下方专用 API Key（X-Api-Key）。如使用旧版火山语音双凭证，请在此填写 App Key 并在下方填写 Access Key。" = "Par défaut, saisissez uniquement la clé API dédiée ci-dessous (X-Api-Key). Pour l’ancienne double authentification, renseignez App Key ici et Access Key ci-dessous.";
+"请填写配置名称和有效的资源 ID" = "Saisissez un nom de profil et un ID de ressource valide";
+"请选择支持的源语言" = "Choisissez une langue source prise en charge";
+"App Key 格式无效，请重新填写" = "Format de l’App Key invalide. Veuillez la saisir à nouveau.";
+"LiveTranslate API Key 无效、资源未开通或无权访问，请核对密钥、App Key 及资源 ID" = "Clé API LiveTranslate invalide, ressource non activée ou accès refusé. Vérifiez la clé, l’App Key et l’ID de ressource.";
+"LiveTranslate 服务处理失败，请检查资源权限和会话配置；已有文字已保留" = "Échec du traitement LiveTranslate. Vérifiez les droits de la ressource et la configuration ; le texte existant a été conservé.";
+"服务端返回了不支持的压缩译音格式，已停止播放；字幕继续更新" = "Le serveur a renvoyé un format audio compressé non pris en charge. Lecture arrêtée ; les sous-titres continuent.";

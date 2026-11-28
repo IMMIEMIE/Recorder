@@ -584,13 +584,15 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         try check(!decoded.hasErrorStatus && decoded.event == .translationSubtitleEnd, "decode event and success status")
         try check(decoded.data == Data([0x00, 0x40]) && decoded.text == "你好，世界🌏。", "decode payload and UTF-8 text")
         try check(decoded.startTime == 1200 && decoded.endTime == 2400 && decoded.spkChg && decoded.mutedDurationMS == 300, "decode timestamps and flags")
-        try check(VolcAstSubtitleMerger.merge(existing: "Hello", incoming: "world") == "Hello world", "incremental ASCII merge adds space")
-        try check(VolcAstSubtitleMerger.merge(existing: "你好", incoming: "你好，世界") == "你好，世界", "cumulative prefix merge replaces")
-        try check(VolcAstSubtitleMerger.merge(existing: "你好", incoming: "世界") == "你好世界", "CJK incremental merge without space")
+        try check(VolcAstSubtitleMerger.append(existing: "yes ", incoming: "yes") == "yes yes", "repeated words with space preserved")
+        try check(VolcAstSubtitleMerger.append(existing: "yes", incoming: "yes") == "yesyes", "identical tokens never swallowed")
+        try check(VolcAstSubtitleMerger.append(existing: "to ", incoming: "today") == "to today", "short prefix word preserved")
+        try check(VolcAstSubtitleMerger.append(existing: "to", incoming: "day") == "today", "subword delta concatenated cleanly")
+        try check(VolcAstSubtitleMerger.append(existing: "a ", incoming: "and") == "a and", "short article prefix preserved")
+        try check(VolcAstSubtitleMerger.append(existing: "你好", incoming: "，世界") == "你好，世界", "Chinese incremental delta preserved")
 
         // 2. Profile protocol switching, validation, URL formatting and backward-compatible JSON.
-        var switched = LiveServiceProfile()
-        switched.switchProtocol(to: LiveServiceProfile.volcAstProtocolID)
+        var switched = LiveServiceProfile().switchingProtocol(to: LiveServiceProfile.volcAstProtocolID)
         try check(switched.isVolcAst && switched.version == "2.0", "switched to volc-ast 2.0")
         try check(switched.endpoint == LiveServiceProfile.volcAstDefaultEndpoint, "default volc-ast endpoint")
         try check(switched.modelID == LiveServiceProfile.volcAstDefaultResourceID, "default volc-ast resource ID")
@@ -605,6 +607,10 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         let encodedProfile = try JSONEncoder().encode(switched)
         let decodedProfile = try JSONDecoder().decode(LiveServiceProfile.self, from: encodedProfile)
         try check(decodedProfile == switched, "volc-ast profile JSON round-trip")
+        // Minimal profile JSON omitting optional Qwen VAD/audio fields still decodes cleanly.
+        let minimalProfile = Data(#"{"id":"v-min","name":"Seed","endpoint":"wss://openspeech.bytedance.com/api/v4/ast/v2/translate","modelID":"volc.service_type.10053","protocolID":"volc-ast","version":"2.0"}"#.utf8)
+        let decodedMinimal = try JSONDecoder().decode(LiveServiceProfile.self, from: minimalProfile)
+        try check(decodedMinimal.isVolcAst && decodedMinimal.inputFormat == "pcm" && decodedMinimal.turnDetection == "server_vad", "minimal profile JSON decodes with defaults")
         var badAppKey = switched; badAppKey.appKey = "bad key\n"
         try check((try? badAppKey.validate()) == nil, "invalid App Key rejected")
         var badSource = switched; badSource.sourceLanguage = "xx"
@@ -679,6 +685,27 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             try check(last.startSample == 1200 * 16, "start_time mapped to samples")
             try check(audioBytes == (audioOutput ? 4800 : 0), "24kHz PCM audio reassembled across odd byte split")
             try check(replayBytes == (audioOutput ? 4800 : 0), "replay clip cached on completion")
+        }
+
+        // 5b. Repeated words, short prefixes, and authoritative End replacement over wire.
+        do {
+            var cfg = LiveTranslateConfiguration(enabled: true, language: "zh")
+            cfg.catalog.use(.seedLiveInterpret(id: "v-rep", endpoint: volcBase + "/repeat-words"))
+            let session = SeedLiveInterpretSession(client: SeedLiveInterpretClient(allowLocalhost: true))
+            var ready = false, ended = false
+            var updates: [LiveTranslationUpdate] = []
+            session.onReady = { ready = true }
+            session.onEvent = { if case .update(let u) = $0 { updates.append(u) } }
+            session.onEnd = { _ in ended = true }
+            try session.start(configuration: cfg, key: "mock-volc-key", sessionID: "s-rep")
+            try await waitFor { ready || ended }
+            _ = session.append(Data(repeating: 1, count: 640))
+            try await waitFor { updates.contains { $0.source == "yes yes to today" && $0.translation == "你好世" } }
+            session.finish()
+            try await waitFor { ended }
+            let last = updates.last!
+            try check(last.source == "yes yes to today" && last.sourceDone, "empty End preserves accumulated repeated/prefix words")
+            try check(last.translation == "你好，世界！" && last.translationDone, "non-empty End replaces provisional Chinese text cleanly")
         }
 
         // 5. Defensive OggS audio warning keeps subtitles running.
@@ -766,6 +793,10 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         app.start()
         try await waitFor { app.finalText.count == 2 && app.state == "ready" }
         try check(store.list().singleOrNil?.rows.count == 2, "both volc-ast and Qwen recordings persisted cleanly")
+        // Verify switching protocolID on liveProfile synchronously clears draft liveKeyInput.
+        app.liveKeyInput = "draft-secret"
+        app.liveProfile = app.liveProfile.switchingProtocol(to: LiveServiceProfile.volcAstProtocolID)
+        try check(app.liveKeyInput.isEmpty, "switching protocol clears draft liveKeyInput")
         print("PASS: Seed-LiveInterpret 2.0 Protobuf codec, auth modes, S2T/S2S, OggS guard, errors, and AppModel Qwen<->Seed switching")
     }
 }

@@ -345,27 +345,15 @@ struct VolcAstTranslateResponse: Equatable {
     }
 }
 
-/// Merges streaming AST subtitle updates whether a cluster emits incremental deltas or cumulative prefixes.
+/// Appends pure incremental AST 2.0 subtitle deltas (`SourceSubtitleResponse` / `TranslationSubtitleResponse`).
+///
+/// Verified against live AST 2.0 wire captures: `Response` (651 / 654) carries incremental text pieces
+/// while `End` (652 / 655) carries the authoritative complete sentence (or empty string to finalize the
+/// accumulated pieces). Verbatim concatenation preserves speaker repetitions (e.g. `"yes "` + `"yes"`)
+/// and short-prefix tokens (e.g. `"to "` + `"today"`, `"to"` + `"day"`) without destructive prefix guessing.
 enum VolcAstSubtitleMerger {
-    static func merge(existing: String, incoming: String) -> String {
+    static func append(existing: String, incoming: String) -> String {
         guard !incoming.isEmpty else { return existing }
-        if existing.isEmpty { return incoming }
-        if incoming.hasPrefix(existing) { return incoming }
-        if existing.hasPrefix(incoming) { return existing }
-        if shouldInsertSpace(left: existing.last, right: incoming.first) {
-            return existing + " " + incoming
-        }
         return existing + incoming
-    }
-
-    private static func shouldInsertSpace(left: Character?, right: Character?) -> Bool {
-        guard let left, let right else { return false }
-        if left.isWhitespace || right.isWhitespace { return false }
-        let rightNoSpace = ",.;:!?)]}，。、；：！？）】》"
-        let leftNoSpace = "([{（【《"
-        if rightNoSpace.contains(right) || leftNoSpace.contains(left) { return false }
-        let leftAscii = left.asciiValue.map { ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90) || ($0 >= 97 && $0 <= 122) || ",.;:!?".contains(left) } ?? false
-        let rightAscii = right.asciiValue.map { ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90) || ($0 >= 97 && $0 <= 122) } ?? false
-        return leftAscii && rightAscii
     }
 }

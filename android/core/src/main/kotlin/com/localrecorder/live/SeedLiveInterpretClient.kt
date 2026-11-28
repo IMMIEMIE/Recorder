@@ -115,9 +115,7 @@ class SeedLiveInterpretClient(
     private var activeTranslationTurn: Int? = null
     private var activeTtsTurn: Int? = null
     private var sourceBuffer = ""
-    private var sourceEmitted = ""
     private var translationBuffer = ""
-    private var translationEmitted = ""
     private val linkedTurns = HashSet<Int>()
     private var eventSeq = 0
 
@@ -247,7 +245,6 @@ class SeedLiveInterpretClient(
             }
             activeSourceTurn = null
             sourceBuffer = ""
-            sourceEmitted = ""
         }
         activeTranslationTurn?.let { turn ->
             if (translationBuffer.isNotEmpty()) {
@@ -255,7 +252,6 @@ class SeedLiveInterpretClient(
             }
             activeTranslationTurn = null
             translationBuffer = ""
-            translationEmitted = ""
         }
         activeTtsTurn?.let { turn ->
             out += LiveSessionEvent.Audio(outputItemId(turn), null, final = true, eventID = nextEventId())
@@ -331,7 +327,6 @@ class SeedLiveInterpretClient(
                 val turn = ++nextSourceTurn
                 activeSourceTurn = turn
                 sourceBuffer = ""
-                sourceEmitted = ""
                 ensureLinked(turn, emitted)
                 if (response.startTime >= 0) {
                     emitted += LiveSessionEvent.SpeechStart(sourceItemId(turn), response.startTime, nextEventId())
@@ -342,7 +337,6 @@ class SeedLiveInterpretClient(
                 val turn = activeSourceTurn ?: (++nextSourceTurn).also {
                     activeSourceTurn = it
                     sourceBuffer = ""
-                    sourceEmitted = ""
                     ensureLinked(it, emitted)
                     if (response.startTime > 0) {
                         emitted += LiveSessionEvent.SpeechStart(sourceItemId(it), response.startTime, nextEventId())
@@ -366,7 +360,6 @@ class SeedLiveInterpretClient(
                 }
                 activeSourceTurn = null
                 sourceBuffer = ""
-                sourceEmitted = ""
             }
             VolcAstEventType.TRANSLATION_SUBTITLE_START -> {
                 activeTranslationTurn?.let { prev ->
@@ -377,7 +370,6 @@ class SeedLiveInterpretClient(
                 val turn = ++nextTranslationTurn
                 activeTranslationTurn = turn
                 translationBuffer = ""
-                translationEmitted = ""
                 ensureLinked(turn, emitted)
                 appendTranslationDelta(turn, response.text, emitted)
             }
@@ -385,7 +377,6 @@ class SeedLiveInterpretClient(
                 val turn = activeTranslationTurn ?: (++nextTranslationTurn).also {
                     activeTranslationTurn = it
                     translationBuffer = ""
-                    translationEmitted = ""
                     ensureLinked(it, emitted)
                 }
                 appendTranslationDelta(turn, response.text, emitted)
@@ -400,7 +391,6 @@ class SeedLiveInterpretClient(
                 }
                 activeTranslationTurn = null
                 translationBuffer = ""
-                translationEmitted = ""
             }
             VolcAstEventType.TTS_SENTENCE_START -> {
                 if (config.audioOutput) {
@@ -444,24 +434,14 @@ class SeedLiveInterpretClient(
 
     private fun appendSourceDelta(turn: Int, incoming: String, out: MutableList<LiveSessionEvent>) {
         if (incoming.isEmpty()) return
-        val merged = VolcAstSubtitleMerger.merge(sourceBuffer, incoming)
-        sourceBuffer = merged
-        if (merged.startsWith(sourceEmitted) && merged.length > sourceEmitted.length) {
-            val delta = merged.substring(sourceEmitted.length)
-            sourceEmitted = merged
-            out += LiveSessionEvent.Text(sourceItemId(turn), delta, source = true, final = false, eventID = nextEventId())
-        }
+        sourceBuffer = VolcAstSubtitleMerger.append(sourceBuffer, incoming)
+        out += LiveSessionEvent.Text(sourceItemId(turn), incoming, source = true, final = false, eventID = nextEventId())
     }
 
     private fun appendTranslationDelta(turn: Int, incoming: String, out: MutableList<LiveSessionEvent>) {
         if (incoming.isEmpty()) return
-        val merged = VolcAstSubtitleMerger.merge(translationBuffer, incoming)
-        translationBuffer = merged
-        if (merged.startsWith(translationEmitted) && merged.length > translationEmitted.length) {
-            val delta = merged.substring(translationEmitted.length)
-            translationEmitted = merged
-            out += LiveSessionEvent.Text(outputItemId(turn), delta, source = false, final = false, eventID = nextEventId())
-        }
+        translationBuffer = VolcAstSubtitleMerger.append(translationBuffer, incoming)
+        out += LiveSessionEvent.Text(outputItemId(turn), incoming, source = false, final = false, eventID = nextEventId())
     }
 
     private fun handleFailureStatus(code: Int, detail: String) {

@@ -124,7 +124,7 @@ internal fun LiveServiceProfileEditor(
             Surface(
                 onClick = { onEdit(profile.switchingProtocol(id)) },
                 enabled = canSwitch,
-                shape = RoundedCornerShape(Design.radiusInput),
+                shape = CircleShape,
                 color = if (selected) colors.primaryContainer else colors.surfaceContainer,
                 border = BorderStroke(1.dp, if (selected) colors.primary else colors.outlineVariant),
             ) {
