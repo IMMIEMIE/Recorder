@@ -22,7 +22,7 @@ struct LiveTranslateSettingsView: View {
                     .toggleStyle(.switch)
                     // An unverified build can still leave local mode, but cannot enter it.
                     .disabled(model.liveSettingsBusy || (!local && !model.hyRuntimeVerified))
-                Text(verbatim: interface.localizeMessage(model.hyRuntimeVerified ? (local ? "音频和文字都留在本机，不访问云端。" : "关闭时使用云端 Qwen LiveTranslate。") : model.hyRuntimeUnavailableReason))
+                Text(verbatim: interface.localizeMessage(model.hyRuntimeVerified ? (local ? "音频和文字都留在本机，不访问云端。" : "关闭时使用云端实时转译服务。") : model.hyRuntimeUnavailableReason))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Group {

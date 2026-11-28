@@ -3,19 +3,23 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 port_file=$(mktemp /tmp/recorder-live-port.XXXXXX)
 gemini_port_file=$(mktemp /tmp/recorder-gemini-port.XXXXXX)
+volc_port_file=$(mktemp /tmp/recorder-volc-port.XXXXXX)
 python3 tests/mock_livetranslate_server.py "$port_file" &
 mock_pid=$!
 python3 tests/mock_gemini_live_server.py "$gemini_port_file" &
 gemini_pid=$!
-trap 'kill "$mock_pid" "$gemini_pid" 2>/dev/null || true; rm -f "$port_file" "$gemini_port_file"' EXIT
+python3 tests/mock_volc_ast_server.py "$volc_port_file" &
+volc_pid=$!
+trap 'kill "$mock_pid" "$gemini_pid" "$volc_pid" 2>/dev/null || true; rm -f "$port_file" "$gemini_port_file" "$volc_port_file"' EXIT
 for attempt in {1..50}; do
-  if ! kill -0 "$mock_pid" 2>/dev/null || ! kill -0 "$gemini_pid" 2>/dev/null; then exit 1; fi
-  if [ -s "$port_file" ] && [ -s "$gemini_port_file" ]; then break; fi
+  if ! kill -0 "$mock_pid" 2>/dev/null || ! kill -0 "$gemini_pid" 2>/dev/null || ! kill -0 "$volc_pid" 2>/dev/null; then exit 1; fi
+  if [ -s "$port_file" ] && [ -s "$gemini_port_file" ] && [ -s "$volc_port_file" ]; then break; fi
   sleep 0.1
 done
-[ -s "$port_file" ] && [ -s "$gemini_port_file" ] || exit 1
+[ -s "$port_file" ] && [ -s "$gemini_port_file" ] && [ -s "$volc_port_file" ] || exit 1
 export RECORDER_LIVE_MOCK="ws://127.0.0.1:$(cat "$port_file")"
 export RECORDER_GEMINI_MOCK="ws://127.0.0.1:$(cat "$gemini_port_file")"
+export RECORDER_VOLC_AST_MOCK="ws://127.0.0.1:$(cat "$volc_port_file")"
 export CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$PWD/.build/module-cache"
 mkdir -p .build/feature-tests

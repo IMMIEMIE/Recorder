@@ -54,6 +54,7 @@ internal fun LiveServiceProfileEditor(
     val colors = MaterialTheme.colorScheme
     val newName = stringResource(R.string.new_profile_name)
     val canSwitch = !testing && !recording
+    val isVolcAst = profile.isVolcAst
 
     // Horizontal profile selector chips replace the narrow dropdown menu.
     Row(
@@ -105,9 +106,11 @@ internal fun LiveServiceProfileEditor(
     }
 
     ProfileField(stringResource(R.string.profile_name), profile.name, !testing) { onEdit(profile.copy(name = it)) }
+    // Protocol selector: Qwen LiveTranslate 3.8 / Gemini Live 1.0 / Seed-LiveInterpret 2.0
     val protocols = listOf(
-        LiveServiceProfile.QWEN_PROTOCOL_ID to "Qwen LiveTranslate 3.8",
+        LiveServiceProfile.QWEN_PROTOCOL_ID to stringResource(R.string.protocol_qwen_38),
         LiveServiceProfile.GEMINI_PROTOCOL_ID to "Gemini Live 1.0",
+        LiveServiceProfile.VOLC_AST_PROTOCOL_ID to stringResource(R.string.protocol_volc_ast_20),
     )
     Row(
         Modifier
@@ -148,8 +151,48 @@ internal fun LiveServiceProfileEditor(
             )
         }
     }
+
     ProfileField(stringResource(R.string.endpoint), profile.endpoint, !testing && !recording) { onEdit(profile.copy(endpoint = it)) }
-    ProfileField(stringResource(R.string.model_id), profile.modelID, !testing) { onEdit(profile.copy(modelID = it)) }
+    ProfileField(
+        stringResource(if (isVolcAst) R.string.resource_id else R.string.model_id),
+        profile.modelID,
+        !testing,
+    ) { onEdit(profile.copy(modelID = it)) }
+
+    if (isVolcAst) {
+        var expandedSource by remember { mutableStateOf(false) }
+        val currentSourceLabel = when (profile.sourceLanguage) {
+            "" -> stringResource(R.string.source_language_auto)
+            "zhen" -> stringResource(R.string.source_language_zhen)
+            else -> LiveTranslateConfig.LANGUAGES.firstOrNull { it.first == profile.sourceLanguage }?.second ?: profile.sourceLanguage
+        }
+        Box(Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = { expandedSource = true },
+                enabled = !testing,
+                shape = RoundedCornerShape(Design.radiusButton),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.source_language_label, currentSourceLabel))
+            }
+            DropdownMenu(expanded = expandedSource, onDismissRequest = { expandedSource = false }) {
+                LiveTranslateConfig.SOURCE_LANGUAGES.forEach { (code, fallbackName) ->
+                    val label = when (code) {
+                        "" -> stringResource(R.string.source_language_auto)
+                        "zhen" -> stringResource(R.string.source_language_zhen)
+                        else -> fallbackName
+                    }
+                    DropdownMenuItem(
+                        text = { Text(label) },
+                        onClick = {
+                            expandedSource = false
+                            onEdit(profile.copy(sourceLanguage = code))
+                        },
+                    )
+                }
+            }
+        }
+    }
 
     var advanced by remember { mutableStateOf(false) }
     val chevronRotation by animateFloatAsState(
@@ -169,7 +212,7 @@ internal fun LiveServiceProfileEditor(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            stringResource(R.string.profile_advanced),
+            stringResource(if (isVolcAst) R.string.profile_advanced_volc else R.string.profile_advanced),
             style = Design.caption.copy(fontWeight = FontWeight.Medium),
             color = colors.onSurfaceVariant,
             modifier = Modifier.weight(1f),
@@ -187,7 +230,12 @@ internal fun LiveServiceProfileEditor(
         exit = shrinkVertically(tween(180)) + fadeOut(tween(140)),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (!profile.isGeminiLive) {
+            if (isVolcAst) {
+                ProfileField(stringResource(R.string.app_key_optional), profile.appKey, !testing && !recording) {
+                    onEdit(profile.copy(appKey = it))
+                }
+                Text(stringResource(R.string.app_key_hint), style = Design.caption, color = colors.onSurfaceVariant)
+            } else if (!profile.isGeminiLive) {
                 val vad = profile.turnDetection == "server_vad"
                 OutlinedButton(
                     onClick = { onEdit(profile.copy(turnDetection = if (vad) "speaker_detection" else "server_vad")) },

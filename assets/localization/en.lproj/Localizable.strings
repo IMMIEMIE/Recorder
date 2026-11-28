@@ -590,3 +590,18 @@
 "系统声音采集异常：%@。请在系统设置 → 隐私与安全性中允许声笺录制屏幕与系统音频；如刚开启权限，请重启声笺后重试。" = "System audio capture error: %@. Allow Shengjian under System Settings → Privacy & Security → Screen & System Audio Recording; if you just enabled it, relaunch Shengjian and try again.";
 "麦克风采集异常：%@" = "Microphone capture error: %@";
 "更多操作" = "More Actions";
+
+"关闭时使用云端实时转译服务。" = "When off, uses the cloud live translation service.";
+"资源 ID" = "Resource ID";
+"源语言" = "Source Language";
+"中英双语 (zhen)" = "Chinese-English (zhen)";
+"鉴权与上行音频" = "Auth and Input Audio";
+"App Key（选填）" = "App Key (Optional)";
+"留空使用新版单 API Key；旧版双凭证填 App Key" = "Leave blank for single X-Api-Key; enter App Key for legacy dual auth";
+"默认仅填写下方专用 API Key（X-Api-Key）。如使用旧版火山语音双凭证，请在此填写 App Key 并在下方填写 Access Key。" = "By default, only enter the service API key below (X-Api-Key). For legacy Volcengine dual credentials, enter App Key here and Access Key below.";
+"请填写配置名称和有效的资源 ID" = "Enter a profile name and a valid resource ID";
+"请选择支持的源语言" = "Choose a supported source language";
+"App Key 格式无效，请重新填写" = "Invalid App Key format. Please re-enter it.";
+"LiveTranslate API Key 无效、资源未开通或无权访问，请核对密钥、App Key 及资源 ID" = "LiveTranslate API key is invalid, resource is not enabled, or access was denied. Check your key, App Key, and resource ID.";
+"LiveTranslate 服务处理失败，请检查资源权限和会话配置；已有文字已保留" = "LiveTranslate failed to process the request. Check resource permissions and session settings; existing text was kept.";
+"服务端返回了不支持的压缩译音格式，已停止播放；字幕继续更新" = "The server returned an unsupported compressed audio format. Playback stopped; captions continue.";

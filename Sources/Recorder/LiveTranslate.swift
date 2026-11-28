@@ -81,7 +81,7 @@ struct LiveTranslateConfiguration: Codable, Equatable {
               Self.languages.contains(where: { $0.0 == language }) else {
             throw AIError.message("请填写有效的 WSS 实时服务地址，并选择支持的目标语言")
         }
-        if profile.isGeminiLive {
+        if profile.isGeminiLive || profile.isVolcAst {
             guard parts.query == nil else {
                 throw AIError.message("请填写有效的 WSS 实时服务地址，并选择支持的目标语言")
             }

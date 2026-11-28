@@ -39,6 +39,10 @@ data class LiveTranslateConfig(
             "zh" to "中文", "en" to "English", "ja" to "日本語", "ko" to "한국어",
             "fr" to "Français", "de" to "Deutsch", "es" to "Español", "ru" to "Русский",
         )
+        val SOURCE_LANGUAGES = listOf(
+            "" to "自动",
+            "zhen" to "中英双语 (zhen)",
+        ) + LANGUAGES
 
         fun fromJson(text: String?): LiveTranslateConfig {
             if (text.isNullOrEmpty()) return LiveTranslateConfig()
@@ -83,7 +87,7 @@ data class LiveTranslateConfig(
             LANGUAGES.none { it.first == language }
         ) throw invalid
         val port = if (uri.port == -1) "" else ":${uri.port}"
-        if (profile.isGeminiLive) {
+        if (profile.isGeminiLive || profile.isVolcAst) {
             if (uri.rawQuery != null) throw invalid
             return "$scheme://$host$port$path"
         }

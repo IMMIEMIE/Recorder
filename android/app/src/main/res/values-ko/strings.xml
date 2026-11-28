@@ -326,4 +326,15 @@
     <string name="err_system_audio_projection_stopped">시스템에서 오디오 프로젝션이 중지되어 녹음을 종료했습니다. 기존 텍스트는 유지되었습니다.</string>
     <string name="notice_system_audio_silent">시스템 소리가 감지되지 않습니다. DRM 보호 콘텐츠, 통화 또는 캡처를 허용하지 않는 앱은 내부 오디오를 녹음할 수 없습니다.</string>
     <string name="notice_mixed_mode_headphones">믹스 모드에서 이어폰이 감지되지 않았습니다. 스피커 소리가 마이크로 유입되는 에코를 줄이려면 이어폰 착용을 권장합니다.</string>
+    <string name="protocol_qwen_38">Qwen LiveTranslate 3.8</string>
+    <string name="protocol_volc_ast_20">Seed-LiveInterpret 2.0 (volc-ast)</string>
+    <string name="resource_id">리소스 ID</string>
+    <string name="source_language_label">원본 언어 · %1$s ▾</string>
+    <string name="source_language_auto">자동</string>
+    <string name="source_language_zhen">중영 이중 언어 (zhen)</string>
+    <string name="profile_advanced_volc">인증 및 입력 오디오</string>
+    <string name="app_key_optional">App Key(선택 사항)</string>
+    <string name="app_key_hint">비워 두면 단일 X-Api-Key 인증을 사용합니다. 기존 이중 자격 증명(X-Api-App-Key + X-Api-Access-Key)을 사용할 때만 App Key를 입력하세요.</string>
+    <string name="err_invalid_source_language">지원되는 원본 언어를 선택하세요.</string>
+    <string name="err_invalid_app_key_format">App Key 형식이 잘못되었습니다. 다시 입력해 주세요.</string>
 </resources>

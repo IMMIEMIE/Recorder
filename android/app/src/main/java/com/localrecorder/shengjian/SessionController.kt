@@ -21,6 +21,7 @@ import com.localrecorder.live.ConversationSession
 import com.localrecorder.live.DialogueTurns
 import com.localrecorder.live.EndCause
 import com.localrecorder.live.LiveMessage
+import com.localrecorder.live.LiveServiceCatalog
 import com.localrecorder.live.LiveServiceProfile
 import com.localrecorder.live.LiveSessionEvent
 import com.localrecorder.live.LiveTranslateConfig
@@ -561,10 +562,8 @@ class SessionController(private val context: Context) : SessionPlatform {
     }
 
     /** Keys are stored under the normalized address. */
-    fun hasKey(endpoint: String): Boolean = hasKey(LiveServiceProfile(endpoint = endpoint))
-
     fun hasKey(profile: LiveServiceProfile): Boolean {
-        val draft = LiveTranslateConfig(catalog = com.localrecorder.live.LiveServiceCatalog(profile))
+        val draft = LiveTranslateConfig(catalog = LiveServiceCatalog(profile))
         val account = try {
             draft.normalized(allowLocalhost).keyAccount
         } catch (_: LiveTranslateException) {
@@ -572,6 +571,9 @@ class SessionController(private val context: Context) : SessionPlatform {
         }
         return secrets.has(account)
     }
+
+    /** Keys are stored under the normalized address. */
+    fun hasKey(endpoint: String): Boolean = hasKey(LiveServiceProfile(endpoint = endpoint))
 
     fun clearSettingsFeedback() {
         _ui.update { it.copy(settingsMessage = "", testSucceeded = null) }

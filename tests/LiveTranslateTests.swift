@@ -556,6 +556,7 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
 
         // MARK: - Gemini Live API tests
         try await runGeminiLiveTests(audioURL: audioURL)
+        try await runSeedLiveInterpretTests(qwenBase: base, audioURL: audioURL)
     }
 
     @MainActor static func runGeminiLiveTests(audioURL: URL) async throws {
@@ -947,4 +948,251 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
 
         print("PASS: Gemini Live protocol, normalization, auth, AUDIO/TEXT modalities, interruption, goAway, errors and AppModel end-to-end")
     }
+
+    @MainActor static func runSeedLiveInterpretTests(qwenBase: String, audioURL: URL) async throws {
+        // 1. Protobuf wire codec unit tests (varint, nested messages, unknown fields, subtitle merger).
+        var writer = VolcAstProtoWriter()
+        var metaWriter = VolcAstProtoWriter()
+        metaWriter.writeString(field: 1, value: "sid-1")
+        metaWriter.writeInt32(field: 2, value: 42)
+        metaWriter.writeInt32(field: 3, value: VolcAstTranslateResponse.statusSuccess)
+        metaWriter.writeString(field: 4, value: "ok")
+        // Unknown billing submessage (field 5, wire 2) should be skipped cleanly.
+        metaWriter.writeBytes(field: 5, value: Data([0x0A, 0x03, 0x61, 0x62, 0x63]))
+        writer.writeMessage(field: 1, encoded: metaWriter.data)
+        writer.writeInt32(field: 2, value: VolcAstEventType.translationSubtitleEnd.rawValue)
+        writer.writeBytes(field: 3, value: Data([0x00, 0x40]))
+        writer.writeString(field: 4, value: "你好，世界🌏。")
+        writer.writeInt32(field: 5, value: 1200)
+        writer.writeInt32(field: 6, value: 2400)
+        writer.writeBool(field: 7, value: true)
+        writer.writeInt32(field: 8, value: 300)
+        // Unknown fixed32 (field 99, wire 5) should be skipped cleanly.
+        writer.writeTag(field: 99, wireType: 5)
+        var rawWithUnknown = writer.data
+        rawWithUnknown.append(contentsOf: [0x01, 0x02, 0x03, 0x04]) // 4 bytes for fixed32 field 99
+        let decoded = try VolcAstTranslateResponse.decode(rawWithUnknown)
+        try check(decoded.responseMeta?.sessionID == "sid-1" && decoded.responseMeta?.sequence == 42, "decode ResponseMeta")
+        try check(!decoded.hasErrorStatus && decoded.event == .translationSubtitleEnd, "decode event and success status")
+        try check(decoded.data == Data([0x00, 0x40]) && decoded.text == "你好，世界🌏。", "decode payload and UTF-8 text")
+        try check(decoded.startTime == 1200 && decoded.endTime == 2400 && decoded.spkChg && decoded.mutedDurationMS == 300, "decode timestamps and flags")
+        try check(VolcAstSubtitleMerger.append(existing: "yes ", incoming: "yes") == "yes yes", "repeated words with space preserved")
+        try check(VolcAstSubtitleMerger.append(existing: "yes", incoming: "yes") == "yesyes", "identical tokens never swallowed")
+        try check(VolcAstSubtitleMerger.append(existing: "to ", incoming: "today") == "to today", "short prefix word preserved")
+        try check(VolcAstSubtitleMerger.append(existing: "to", incoming: "day") == "today", "subword delta concatenated cleanly")
+        try check(VolcAstSubtitleMerger.append(existing: "a ", incoming: "and") == "a and", "short article prefix preserved")
+        try check(VolcAstSubtitleMerger.append(existing: "你好", incoming: "，世界") == "你好，世界", "Chinese incremental delta preserved")
+
+        // 2. Profile protocol switching, validation, URL formatting and backward-compatible JSON.
+        var switched = LiveServiceProfile().switchingProtocol(to: LiveServiceProfile.volcAstProtocolID)
+        try check(switched.isVolcAst && switched.version == "2.0", "switched to volc-ast 2.0")
+        try check(switched.endpoint == LiveServiceProfile.volcAstDefaultEndpoint, "default volc-ast endpoint")
+        try check(switched.modelID == LiveServiceProfile.volcAstDefaultResourceID, "default volc-ast resource ID")
+        try check(switched.resolvedSourceLanguage(targetLanguage: "zh") == "en", "auto source for zh -> en")
+        try check(switched.resolvedSourceLanguage(targetLanguage: "en") == "zh", "auto source for en -> zh")
+        switched.sourceLanguage = "zhen"
+        try check(switched.resolvedSourceLanguage(targetLanguage: "zh") == "zhen", "explicit zhen preserved")
+        var volcCfg = LiveTranslateConfiguration(enabled: true, language: "zh")
+        volcCfg.catalog.use(switched)
+        let volcURL = try volcCfg.url()
+        try check(volcURL.absoluteString == LiveServiceProfile.volcAstDefaultEndpoint && volcURL.query == nil, "volc-ast URL omits model query")
+        let encodedProfile = try JSONEncoder().encode(switched)
+        let decodedProfile = try JSONDecoder().decode(LiveServiceProfile.self, from: encodedProfile)
+        try check(decodedProfile == switched, "volc-ast profile JSON round-trip")
+        // Minimal profile JSON omitting optional Qwen VAD/audio fields still decodes cleanly.
+        let minimalProfile = Data(#"{"id":"v-min","name":"Seed","endpoint":"wss://openspeech.bytedance.com/api/v4/ast/v2/translate","modelID":"volc.service_type.10053","protocolID":"volc-ast","version":"2.0"}"#.utf8)
+        let decodedMinimal = try JSONDecoder().decode(LiveServiceProfile.self, from: minimalProfile)
+        try check(decodedMinimal.isVolcAst && decodedMinimal.inputFormat == "pcm" && decodedMinimal.turnDetection == "server_vad", "minimal profile JSON decodes with defaults")
+        var badAppKey = switched; badAppKey.appKey = "bad key\n"
+        try check((try? badAppKey.validate()) == nil, "invalid App Key rejected")
+        var badSource = switched; badSource.sourceLanguage = "xx"
+        try check((try? badSource.validate()) == nil, "unsupported source language rejected")
+
+        guard let volcBase = ProcessInfo.processInfo.environment["RECORDER_VOLC_AST_MOCK"] else {
+            throw LiveTestError(message: "Use scripts/test_livetranslate.sh (RECORDER_VOLC_AST_MOCK missing)")
+        }
+
+        func waitFor(_ condition: () -> Bool) async throws {
+            for _ in 0..<600 {
+                if condition() { return }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            throw LiveTestError(message: "Timed out waiting for volc-ast fixture")
+        }
+
+        // 3. Silent connection test (single X-Api-Key and legacy dual X-Api-App-Key + X-Api-Access-Key).
+        for (path, appKey, secret) in [("/ok", "", "mock-volc-key"), ("/dual-auth", "app-12345", "mock-volc-access")] {
+            var cfg = LiveTranslateConfiguration(enabled: true, language: "zh")
+            cfg.catalog.use(.seedLiveInterpret(id: "v-test", endpoint: volcBase + path, appKey: appKey))
+            let session = SeedLiveInterpretSession(client: SeedLiveInterpretClient(allowLocalhost: true))
+            var ready = false, ended = false
+            var endError: String?
+            var events: [LiveTranslationSessionEvent] = []
+            session.onReady = { ready = true; session.finish() }
+            session.onEvent = { events.append($0) }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: cfg, key: secret, sessionID: "s-silent")
+            try await waitFor { ended }
+            try check(ready && endError == nil && events.isEmpty, "silent connection test succeeded without audio: \(path)")
+        }
+
+        // 4. S2T and S2S (streaming + afterFinal playback + replay clip + explicit source_language).
+        for (audioOutput, timing, path, srcLang) in [
+            (false, LiveTranslatePlaybackTiming.streaming, "/source-check/zhen", "zhen"),
+            (true, LiveTranslatePlaybackTiming.streaming, "/ok", ""),
+            (true, LiveTranslatePlaybackTiming.afterFinal, "/ok", "en"),
+        ] {
+            var cfg = LiveTranslateConfiguration(enabled: true, language: "zh", audioOutput: audioOutput, playbackTiming: timing)
+            cfg.catalog.use(.seedLiveInterpret(id: "v-run", endpoint: volcBase + path, sourceLanguage: srcLang))
+            let session = SeedLiveInterpretSession(client: SeedLiveInterpretClient(allowLocalhost: true))
+            var ready = false, ended = false
+            var endError: String?
+            var updates: [LiveTranslationUpdate] = []
+            var audioBytes = 0
+            var replayBytes = 0
+            session.onReady = { ready = true }
+            session.onEvent = { ev in
+                switch ev {
+                case .update(let u): updates.append(u)
+                case .audio(let pcm): audioBytes += pcm.count
+                case .replayClip(_, let pcm): replayBytes += pcm.count
+                default: break
+                }
+            }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: cfg, key: "mock-volc-key", sessionID: "s-run")
+            try await waitFor { ready || ended }
+            try check(ready, "volc-ast session started: \(path)")
+            try check(session.append(Data(repeating: 1, count: 640)), "audio chunk accepted")
+            try await waitFor { updates.contains { $0.source == "Hello world" && $0.translation == "你好，世界" } }
+            if audioOutput && timing == .afterFinal {
+                try check(audioBytes == 0, "afterFinal waits until subtitles finalize before releasing audio")
+            }
+            session.finish()
+            try await waitFor { ended }
+            try check(endError == nil, "clean session end: \(endError ?? "")")
+            let last = updates.last!
+            try check(last.source == "Hello world." && last.sourceDone, "final source text")
+            try check(last.translation == "你好，世界🌏。" && last.translationDone, "final translation text")
+            try check(last.startSample == 1200 * 16, "start_time mapped to samples")
+            try check(audioBytes == (audioOutput ? 4800 : 0), "24kHz PCM audio reassembled across odd byte split")
+            try check(replayBytes == (audioOutput ? 4800 : 0), "replay clip cached on completion")
+        }
+
+        // 5b. Repeated words, short prefixes, and authoritative End replacement over wire.
+        do {
+            var cfg = LiveTranslateConfiguration(enabled: true, language: "zh")
+            cfg.catalog.use(.seedLiveInterpret(id: "v-rep", endpoint: volcBase + "/repeat-words"))
+            let session = SeedLiveInterpretSession(client: SeedLiveInterpretClient(allowLocalhost: true))
+            var ready = false, ended = false
+            var updates: [LiveTranslationUpdate] = []
+            session.onReady = { ready = true }
+            session.onEvent = { if case .update(let u) = $0 { updates.append(u) } }
+            session.onEnd = { _ in ended = true }
+            try session.start(configuration: cfg, key: "mock-volc-key", sessionID: "s-rep")
+            try await waitFor { ready || ended }
+            _ = session.append(Data(repeating: 1, count: 640))
+            try await waitFor { updates.contains { $0.source == "yes yes to today" && $0.translation == "你好世" } }
+            session.finish()
+            try await waitFor { ended }
+            let last = updates.last!
+            try check(last.source == "yes yes to today" && last.sourceDone, "empty End preserves accumulated repeated/prefix words")
+            try check(last.translation == "你好，世界！" && last.translationDone, "non-empty End replaces provisional Chinese text cleanly")
+        }
+
+        // 5. Defensive OggS audio warning keeps subtitles running.
+        do {
+            var cfg = LiveTranslateConfiguration(enabled: true, language: "zh", audioOutput: true, playbackTiming: .streaming)
+            cfg.catalog.use(.seedLiveInterpret(id: "v-ogg", endpoint: volcBase + "/ogg-audio"))
+            let session = SeedLiveInterpretSession(client: SeedLiveInterpretClient(allowLocalhost: true))
+            var ready = false, ended = false
+            var warning: String?
+            var finalText = ""
+            session.onReady = { ready = true }
+            session.onEvent = { ev in
+                if case .playbackWarning(let msg) = ev { warning = msg }
+                if case .update(let u) = ev, u.translationDone { finalText = u.translation }
+            }
+            session.onEnd = { _ in ended = true }
+            try session.start(configuration: cfg, key: "mock-volc-key", sessionID: "s-ogg")
+            try await waitFor { ready || ended }
+            _ = session.append(Data(repeating: 1, count: 640))
+            try await waitFor { warning != nil }
+            session.finish()
+            try await waitFor { ended }
+            try check(warning?.contains("译音格式") == true && finalText == "你好，世界🌏。", "OggS triggers playback warning while subtitles finish")
+        }
+
+        // 6. Failure paths & credential non-leakage.
+        for route in ["/unauthorized", "/redirect", "/http-429", "/session-failed-auth", "/session-failed-quota", "/rate-limited", "/wrong-order", "/invalid-proto", "/disconnect", "/finished-early", "/timeout"] {
+            var cfg = LiveTranslateConfiguration(enabled: true, language: "zh")
+            cfg.catalog.use(.seedLiveInterpret(id: "v-err", endpoint: volcBase + route))
+            let client = SeedLiveInterpretClient(finishTimeout: 0.15, allowLocalhost: true)
+            let session = SeedLiveInterpretSession(client: client)
+            var ready = false, ended = false
+            var endError: String?
+            session.onReady = { ready = true }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: cfg, key: "mock-volc-key", sessionID: "s-err")
+            try await waitFor { ready || ended }
+            if ready {
+                if route == "/disconnect" || route == "/finished-early" { _ = session.append(Data([0, 0])) }
+                else { session.finish() }
+            }
+            try await waitFor { ended }
+            try check(endError != nil, "volc-ast failure surfaced: \(route)")
+            try check(!endError!.contains("mock-volc-key"), "volc-ast error never leaks key: \(route)")
+            if route == "/rate-limited" || route == "/http-429" {
+                try check(session.endKind == .rateLimited, "rate limit classified: \(route)")
+            }
+        }
+
+        // 7. AppModel end-to-end with Seed-LiveInterpret 2.0 + switching Qwen <-> Seed-LiveInterpret 2.0 + session persistence.
+        let volcSuite = "recorder.volc.tests.\(UUID().uuidString)"
+        let volcDefaults = UserDefaults(suiteName: volcSuite)!
+        defer { volcDefaults.removePersistentDomain(forName: volcSuite) }
+        let qwenProfile = LiveServiceProfile(id: "qwen-1", name: "Qwen", endpoint: qwenBase + "/ok")
+        let volcProfile = LiveServiceProfile.seedLiveInterpret(id: "volc-1", name: "Seed 2.0", endpoint: volcBase + "/ok", sourceLanguage: "en")
+        try APIKeyStore.save("mock-only", endpoint: "livetranslate:" + qwenProfile.endpoint)
+        try APIKeyStore.save("mock-volc-key", endpoint: "livetranslate:" + volcProfile.endpoint)
+        var initial = LiveTranslateConfiguration(enabled: true, language: "zh")
+        initial.catalog.use(qwenProfile)
+        initial.catalog.use(volcProfile)
+        try initial.save(defaults: volcDefaults, allowLocalhost: true)
+        let sessionDir = FileManager.default.temporaryDirectory.appendingPathComponent("volc-sessions-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: sessionDir) }
+        let store = SessionStore(directory: sessionDir)
+        let app = AppModel(
+            defaults: volcDefaults,
+            integrateSystem: false,
+            liveAllowLocalhost: true,
+            liveClientFactory: { LiveTranslateClient(allowLocalhost: true) },
+            liveKeyReader: { try APIKeyStore.read(endpoint: $0) },
+            sessionStore: store
+        )
+        defer { app.shutdown() }
+        app.audioSource = "file"; app.audioFileURL = audioURL
+        // Silent connection test on Seed 2.0
+        app.testLiveConnection()
+        try await waitFor { !app.liveTesting }
+        try check(app.liveMessage.contains("连接成功") && app.finalText.isEmpty, "AppModel testLiveConnection on volc-ast")
+        // Record on Seed 2.0
+        app.start()
+        try await waitFor { app.finalText.count == 1 && app.state == "ready" }
+        try check(app.finalText[0].text == "Hello world." && app.finalText[0].translation == "你好，世界🌏。", "AppModel Seed 2.0 recording")
+        // Switch back to Qwen and record in the same session
+        app.selectLiveProfile(qwenProfile.id)
+        app.start()
+        try await waitFor { app.finalText.count == 2 && app.state == "ready" }
+        try check(store.list().singleOrNil?.rows.count == 2, "both volc-ast and Qwen recordings persisted cleanly")
+        // Verify switching protocolID on liveProfile synchronously clears draft liveKeyInput.
+        app.liveKeyInput = "draft-secret"
+        app.liveProfile = app.liveProfile.switchingProtocol(to: LiveServiceProfile.volcAstProtocolID)
+        try check(app.liveKeyInput.isEmpty, "switching protocol clears draft liveKeyInput")
+        print("PASS: Seed-LiveInterpret 2.0 Protobuf codec, auth modes, S2T/S2S, OggS guard, errors, and AppModel Qwen<->Seed switching")
+    }
+}
+
+private extension Array {
+    var singleOrNil: Element? { count == 1 ? first : nil }
 }
