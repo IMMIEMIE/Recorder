@@ -105,16 +105,48 @@ internal fun LiveServiceProfileEditor(
     }
 
     ProfileField(stringResource(R.string.profile_name), profile.name, !testing) { onEdit(profile.copy(name = it)) }
-    Surface(
-        color = colors.surfaceContainer,
-        shape = RoundedCornerShape(Design.radiusInput),
+    val protocols = listOf(
+        LiveServiceProfile.QWEN_PROTOCOL_ID to "Qwen LiveTranslate 3.8",
+        LiveServiceProfile.GEMINI_PROTOCOL_ID to "Gemini Live 1.0",
+    )
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            stringResource(R.string.protocol_detail, profile.protocolID, profile.version),
-            style = Design.caption,
-            color = colors.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-        )
+        protocols.forEach { (protocolID, label) ->
+            val selected = profile.protocolID == protocolID
+            Surface(
+                onClick = { if (!selected) onEdit(profile.switchingProtocol(protocolID)) },
+                enabled = canSwitch,
+                shape = CircleShape,
+                color = if (selected) colors.secondaryContainer else colors.surfaceContainerLowest,
+                border = BorderStroke(1.dp, if (selected) colors.primary else colors.outlineVariant),
+                modifier = Modifier.heightIn(min = 36.dp),
+            ) {
+                Text(
+                    label,
+                    style = Design.caption.copy(fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium),
+                    color = if (selected) colors.onSecondaryContainer else colors.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                )
+            }
+        }
+    }
+    if (protocols.none { it.first == profile.protocolID }) {
+        Surface(
+            color = colors.surfaceContainer,
+            shape = RoundedCornerShape(Design.radiusInput),
+        ) {
+            Text(
+                stringResource(R.string.protocol_detail, profile.protocolID, profile.version),
+                style = Design.caption,
+                color = colors.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
     }
     ProfileField(stringResource(R.string.endpoint), profile.endpoint, !testing && !recording) { onEdit(profile.copy(endpoint = it)) }
     ProfileField(stringResource(R.string.model_id), profile.modelID, !testing) { onEdit(profile.copy(modelID = it)) }
@@ -155,33 +187,35 @@ internal fun LiveServiceProfileEditor(
         exit = shrinkVertically(tween(180)) + fadeOut(tween(140)),
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            val vad = profile.turnDetection == "server_vad"
-            OutlinedButton(
-                onClick = { onEdit(profile.copy(turnDetection = if (vad) "speaker_detection" else "server_vad")) },
-                enabled = !testing,
-                shape = RoundedCornerShape(Design.radiusButton),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(stringResource(R.string.detection_mode, stringResource(if (vad) R.string.quiet_detection else R.string.speaker_detection)))
-            }
-            if (vad) {
-                Column {
-                    Text(stringResource(R.string.quiet_threshold, profile.threshold), style = Design.caption, color = colors.onSurfaceVariant)
-                    Slider(
-                        value = profile.threshold.toFloat(),
-                        enabled = !testing,
-                        onValueChange = { onEdit(profile.copy(threshold = it.toDouble())) },
-                    )
+            if (!profile.isGeminiLive) {
+                val vad = profile.turnDetection == "server_vad"
+                OutlinedButton(
+                    onClick = { onEdit(profile.copy(turnDetection = if (vad) "speaker_detection" else "server_vad")) },
+                    enabled = !testing,
+                    shape = RoundedCornerShape(Design.radiusButton),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.detection_mode, stringResource(if (vad) R.string.quiet_detection else R.string.speaker_detection)))
                 }
-                Column {
-                    Text(stringResource(R.string.quiet_duration, profile.silenceMS), style = Design.caption, color = colors.onSurfaceVariant)
-                    Slider(
-                        value = profile.silenceMS.toFloat(),
-                        enabled = !testing,
-                        valueRange = 100f..3000f,
-                        steps = 28,
-                        onValueChange = { onEdit(profile.copy(silenceMS = kotlin.math.round(it / 100).toInt() * 100)) },
-                    )
+                if (vad) {
+                    Column {
+                        Text(stringResource(R.string.quiet_threshold, profile.threshold), style = Design.caption, color = colors.onSurfaceVariant)
+                        Slider(
+                            value = profile.threshold.toFloat(),
+                            enabled = !testing,
+                            onValueChange = { onEdit(profile.copy(threshold = it.toDouble())) },
+                        )
+                    }
+                    Column {
+                        Text(stringResource(R.string.quiet_duration, profile.silenceMS), style = Design.caption, color = colors.onSurfaceVariant)
+                        Slider(
+                            value = profile.silenceMS.toFloat(),
+                            enabled = !testing,
+                            valueRange = 100f..3000f,
+                            steps = 28,
+                            onValueChange = { onEdit(profile.copy(silenceMS = kotlin.math.round(it / 100).toInt() * 100)) },
+                        )
+                    }
                 }
             }
             Text(stringResource(R.string.pcm_input), style = Design.caption, color = colors.onSurfaceVariant)

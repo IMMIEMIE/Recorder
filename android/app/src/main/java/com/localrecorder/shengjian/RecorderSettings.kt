@@ -99,7 +99,7 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
             profile = profile,
             config = ui.config,
             key = key,
-            keySaved = remember(profile.endpoint, ui.hasKey) { controller.hasKey(profile.endpoint) },
+            keySaved = remember(profile.endpoint, profile.protocolID, ui.hasKey) { controller.hasKey(profile) },
             testing = ui.testing,
             testSucceeded = ui.testSucceeded,
             statusMessage = when {
@@ -110,7 +110,7 @@ internal fun SettingsScreen(controller: SessionController, ui: UiState, onBack: 
             isError = invalid || ui.testSucceeded == false,
             onEdit = { updated ->
                 if (updated.id == profile.id || commitService()) {
-                    if (updated.id != profile.id || updated.endpoint != profile.endpoint) key = ""
+                    if (updated.id != profile.id || updated.endpoint != profile.endpoint || updated.protocolID != profile.protocolID) key = ""
                     profile = updated
                     edited()
                 }
