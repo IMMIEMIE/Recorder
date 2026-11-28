@@ -1164,7 +1164,7 @@ extension AppModel {
         let client: any LiveTranslationSession
         if let factory = liveSessionFactory { client = factory(configuration.provider) }
         else if configuration.provider == .qwenCloud {
-            do { client = try configuration.profile.makeSession(clientFactory: liveClientFactory) }
+            do { client = try configuration.profile.makeSession(clientFactory: liveClientFactory, allowLocalhost: liveAllowLocalhost) }
             catch {
                 pendingStart = false; liveMessage = error.localizedDescription
                 if !test { self.error = liveMessage }

@@ -39,6 +39,10 @@ data class LiveTranslateConfig(
             "zh" to "中文", "en" to "English", "ja" to "日本語", "ko" to "한국어",
             "fr" to "Français", "de" to "Deutsch", "es" to "Español", "ru" to "Русский",
         )
+        val SOURCE_LANGUAGES = listOf(
+            "" to "自动",
+            "zhen" to "中英双语 (zhen)",
+        ) + LANGUAGES
 
         fun fromJson(text: String?): LiveTranslateConfig {
             if (text.isNullOrEmpty()) return LiveTranslateConfig()
@@ -77,14 +81,18 @@ data class LiveTranslateConfig(
         val scheme = uri.scheme
         val path = uri.rawPath
         val queryNames = uri.rawQuery?.split('&')?.map { it.substringBefore('=') } ?: emptyList()
+        val queryValid = if (profile.isVolcAst) queryNames.isEmpty() else queryNames.all { it == "model" }
         if (host.isNullOrEmpty() || uri.rawUserInfo != null || uri.rawFragment != null ||
             !(scheme == "wss" || (allowLocalhost && scheme == "ws" && host == "127.0.0.1")) ||
             path.isNullOrEmpty() || path == "/" || uri.port == 0 || uri.port > 65535 ||
-            !queryNames.all { it == "model" } ||
+            !queryValid ||
             !volume.isFinite() || volume !in 0f..1f ||
             LANGUAGES.none { it.first == language }
         ) throw invalid
         val port = if (uri.port == -1) "" else ":${uri.port}"
+        if (profile.isVolcAst) {
+            return "$scheme://$host$port$path"
+        }
         val model = java.net.URLEncoder.encode(profile.modelID, "UTF-8")
         return "$scheme://$host$port$path?model=$model"
     }

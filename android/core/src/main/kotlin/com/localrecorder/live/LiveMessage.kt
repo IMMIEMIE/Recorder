@@ -18,6 +18,12 @@ sealed interface LiveMessage {
     data object InvalidTurnDetection : LiveMessage {
         override val defaultText = "请检查断句方式、阈值及静音时长"
     }
+    data object InvalidSourceLanguage : LiveMessage {
+        override val defaultText = "请选择支持的源语言"
+    }
+    data object InvalidAppKeyFormat : LiveMessage {
+        override val defaultText = "App Key 格式无效，请重新填写"
+    }
     data object InvalidEndpointOrLanguage : LiveMessage {
         override val defaultText = "请填写有效的 WSS 实时服务地址，并选择支持的目标语言"
     }

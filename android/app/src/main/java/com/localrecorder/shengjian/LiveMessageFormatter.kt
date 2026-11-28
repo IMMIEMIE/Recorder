@@ -9,6 +9,8 @@ internal fun Context.formatLiveMessage(message: LiveMessage): String = when (mes
     LiveMessage.UnsupportedProtocol -> getString(R.string.err_unsupported_protocol)
     LiveMessage.InvalidProfileNameOrModel -> getString(R.string.err_invalid_profile_name_or_model)
     LiveMessage.InvalidTurnDetection -> getString(R.string.err_invalid_turn_detection)
+    LiveMessage.InvalidSourceLanguage -> getString(R.string.err_invalid_source_language)
+    LiveMessage.InvalidAppKeyFormat -> getString(R.string.err_invalid_app_key_format)
     LiveMessage.InvalidEndpointOrLanguage -> getString(R.string.err_invalid_endpoint_or_language)
 
     LiveMessage.MissingApiKey -> getString(R.string.err_missing_api_key)
