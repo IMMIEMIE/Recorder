@@ -87,8 +87,27 @@ internal object GeminiLiveAdapter {
         JSONObject().put("audioStreamEnd", true),
     )
 
-    fun isAudioPcmMimeType(mimeType: String?): Boolean =
-        mimeType != null && mimeType.lowercase().startsWith("audio/pcm")
+    fun isAudioPcmMimeType(mimeType: String?): Boolean {
+        if (mimeType == null) return false
+        val mediaType = mimeType.substringBefore(';').trim().lowercase()
+        return mediaType == "audio/pcm"
+    }
+
+    /** Output audio playback requires 24 kHz PCM16: accepts `audio/pcm` with omitted `rate` or `rate=24000`. */
+    fun isSupportedOutputAudioPcmMimeType(mimeType: String?): Boolean {
+        if (mimeType == null || !isAudioPcmMimeType(mimeType)) return false
+        val params = mimeType.split(';').drop(1)
+        for (rawParam in params) {
+            val idx = rawParam.indexOf('=')
+            if (idx < 0) continue
+            val key = rawParam.substring(0, idx).trim().lowercase()
+            if (key == "rate") {
+                val value = rawParam.substring(idx + 1).trim().toIntOrNull()
+                if (value != LiveTranslateConfig.OUTPUT_SAMPLE_RATE) return false
+            }
+        }
+        return true
+    }
 
     data class ClassifiedError(
         val error: LiveMessage,
@@ -186,11 +205,15 @@ internal class GeminiLiveTurnDecoder(private val audioOutput: Boolean) {
                 val part = parts.optJSONObject(i) ?: continue
                 if (part.optBoolean("thought", false)) continue
                 val inlineData = part.optJSONObject("inlineData")
-                if (inlineData != null && GeminiLiveAdapter.isAudioPcmMimeType(inlineData.optStringOrNull("mimeType"))) {
+                val mimeType = inlineData?.optStringOrNull("mimeType")
+                if (inlineData != null && GeminiLiveAdapter.isAudioPcmMimeType(mimeType)) {
                     if (audioOutput) {
-                        val raw = inlineData.optStringOrNull("data")
-                        val bytes = raw?.let {
-                            try { Base64.getDecoder().decode(it) } catch (_: IllegalArgumentException) { null }
+                        val bytes = if (GeminiLiveAdapter.isSupportedOutputAudioPcmMimeType(mimeType)) {
+                            inlineData.optStringOrNull("data")?.let {
+                                try { Base64.getDecoder().decode(it) } catch (_: IllegalArgumentException) { null }
+                            }
+                        } else {
+                            null
                         }
                         out += LiveSessionEvent.Audio(currentOutputId(), bytes, final = false, eventID = nextEventId())
                     }

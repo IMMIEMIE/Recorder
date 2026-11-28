@@ -81,7 +81,25 @@ enum GeminiLiveProtocol {
 
     static func isAudioPCMMimeType(_ mimeType: String?) -> Bool {
         guard let mimeType else { return false }
-        return mimeType.lowercased().hasPrefix("audio/pcm")
+        let mediaType = mimeType.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false).first
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        return mediaType == "audio/pcm"
+    }
+
+    /// Output audio playback requires 24 kHz PCM16: accepts `audio/pcm` with omitted `rate` or `rate=24000`.
+    static func isSupportedOutputAudioPCMMimeType(_ mimeType: String?) -> Bool {
+        guard let mimeType, isAudioPCMMimeType(mimeType) else { return false }
+        let parts = mimeType.split(separator: ";").dropFirst()
+        for rawParam in parts {
+            let pair = rawParam.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard pair.count == 2 else { continue }
+            let key = pair[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if key == "rate" {
+                let value = pair[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                guard Int(value) == 24000 else { return false }
+            }
+        }
+        return true
     }
 
     static func classifyError(httpStatus: Int?, closeCode: Int?, detail: String) -> (kind: LiveCloudEndKind, message: String) {
@@ -136,9 +154,11 @@ final class GeminiLiveSession: NSObject, LiveTranslationSession, URLSessionWebSo
     private var slow = false
 
     // Turn & audio tracking.
+    private static let trailingSilenceByteLimit = 32_000 // <= 1 s at 16 kHz mono PCM16
+    private static let trailingSilenceDrainTimeout: TimeInterval = 6.0
     private var sentSamples = 0
     private var hasSentAudio = false
-    private var hasAudioSinceLastTurn = false
+    private var bytesSinceLastTurn = 0
     private var completedTurns = 0
     private var turnIndex = 0
     private var turnOpen = false
@@ -212,7 +232,7 @@ final class GeminiLiveSession: NSObject, LiveTranslationSession, URLSessionWebSo
             self.setupSent = false; self.ready = false; self.finishing = false; self.closed = false
             self.goAwayReceived = false; self.idleFinishTimer = false
             self.windowStart = 0; self.windowQueue = 0; self.windowBytes = 0; self.slow = false
-            self.sentSamples = 0; self.hasSentAudio = false; self.hasAudioSinceLastTurn = false
+            self.sentSamples = 0; self.hasSentAudio = false; self.bytesSinceLastTurn = 0
             self.completedTurns = 0; self.turnIndex = 0; self.resetTurnState()
             self.revision = 0
 
@@ -245,7 +265,7 @@ final class GeminiLiveSession: NSObject, LiveTranslationSession, URLSessionWebSo
             windowBytes += pcm.count
             sentSamples += pcm.count / 2
             hasSentAudio = true
-            hasAudioSinceLastTurn = true
+            bytesSinceLastTurn += pcm.count
             enqueue(GeminiLiveProtocol.realtimeAudioPayload(pcm), bytes: pcm.count)
             return true
         }
@@ -255,14 +275,14 @@ final class GeminiLiveSession: NSObject, LiveTranslationSession, URLSessionWebSo
         queue.async {
             guard self.ready, !self.closed, !self.finishing else { return }
             self.finishing = true
-            if !self.hasSentAudio || (!self.turnOpen && !self.hasAudioSinceLastTurn) {
+            if !self.hasSentAudio || (!self.turnOpen && self.bytesSinceLastTurn == 0) {
                 self.end(nil)
                 return
             }
             self.enqueue(GeminiLiveProtocol.audioStreamEndPayload())
-            if !self.turnOpen && self.completedTurns > 0 {
+            if !self.turnOpen && self.completedTurns > 0 && self.bytesSinceLastTurn <= Self.trailingSilenceByteLimit {
                 self.idleFinishTimer = true
-                self.armTimeout(min(self.finishTimeout, 3.0), message: nil)
+                self.armTimeout(min(self.finishTimeout, Self.trailingSilenceDrainTimeout), message: nil)
             } else {
                 self.idleFinishTimer = false
                 self.armTimeout(self.finishTimeout, message: "LiveTranslate 尾句处理超时，已保留收到的文字，末句可能不完整")
@@ -415,7 +435,14 @@ final class GeminiLiveSession: NSObject, LiveTranslationSession, URLSessionWebSo
             if let inlineData = part["inlineData"] as? [String: Any],
                GeminiLiveProtocol.isAudioPCMMimeType(inlineData["mimeType"] as? String) {
                 if audioEnabled {
-                    consumeAudioBase64(inlineData["data"] as? String)
+                    if GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType(inlineData["mimeType"] as? String) {
+                        consumeAudioBase64(inlineData["data"] as? String)
+                    } else {
+                        replayRejected = true
+                        turnReplayAudio.removeAll()
+                        pendingPlaybackAudio.removeAll()
+                        warnPlayback("译音数据格式无效，已停止播放")
+                    }
                 }
             }
             if let text = part["text"] as? String, !text.isEmpty,
@@ -518,7 +545,7 @@ final class GeminiLiveSession: NSObject, LiveTranslationSession, URLSessionWebSo
 
         if finalizedByTurnComplete {
             completedTurns += 1
-            hasAudioSinceLastTurn = false
+            bytesSinceLastTurn = 0
             if finishing {
                 end(nil)
                 return

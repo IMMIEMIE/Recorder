@@ -26,6 +26,12 @@ class GeminiLiveClient(
     private val wireObserver: ((JSONObject) -> Unit)? = null,
     private val diagnostic: (String) -> Unit = {},
 ) : LiveTransport {
+    companion object {
+        /** At most 1 s of 16 kHz mono PCM16 sent after the last completed turn counts as probable trailing silence. */
+        const val TRAILING_SILENCE_BYTE_LIMIT = 32_000L
+        const val TRAILING_SILENCE_DRAIN_MS = 6_000L
+    }
+
     private val queue = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "gemini-live").apply { isDaemon = true }
     }
@@ -48,7 +54,7 @@ class GeminiLiveClient(
 
     private var sentBytes = 0L
     private var hasSentAudio = false
-    private var hasAudioSinceLastTurn = false
+    private var bytesSinceLastTurn = 0L
 
     // OkHttp's queue holds base64 JSON; convert back to an estimate of raw PCM bytes.
     override val queuedAudioBytes: Int
@@ -87,7 +93,7 @@ class GeminiLiveClient(
             if (sent) {
                 sentBytes += pcm.size
                 hasSentAudio = true
-                hasAudioSinceLastTurn = true
+                bytesSinceLastTurn += pcm.size
                 AppendResult.SENT
             } else {
                 AppendResult.CLOSED
@@ -100,14 +106,14 @@ class GeminiLiveClient(
             if (!ready || closed || finishing) return@post
             finishing = true
             acceptingAudio = false
-            if (!hasSentAudio || (!decoder.turnOpen && !hasAudioSinceLastTurn)) {
+            if (!hasSentAudio || (!decoder.turnOpen && bytesSinceLastTurn == 0L)) {
                 end(null)
                 return@post
             }
             if (!send(GeminiLiveAdapter.audioStreamEndMessage())) return@post
-            if (!decoder.turnOpen && decoder.completedTurns > 0) {
+            if (!decoder.turnOpen && decoder.completedTurns > 0 && bytesSinceLastTurn <= TRAILING_SILENCE_BYTE_LIMIT) {
                 idleFinishTimer = true
-                armTimeout(minOf(finishTimeoutMs, 3_000L), error = null)
+                armTimeout(minOf(finishTimeoutMs, TRAILING_SILENCE_DRAIN_MS), error = null)
             } else {
                 idleFinishTimer = false
                 armTimeout(finishTimeoutMs, error = LiveMessage.FinishTimeout)
@@ -188,7 +194,7 @@ class GeminiLiveClient(
                 }
             }
             if (decoded.turnComplete) {
-                hasAudioSinceLastTurn = false
+                bytesSinceLastTurn = 0L
                 if (finishing) {
                     end(null)
                     return
@@ -270,7 +276,6 @@ class GeminiLiveClient(
 
     private inner class SocketListener : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            response.close()
             post {
                 if (closed || setupSent) return@post
                 val config = configuration ?: return@post

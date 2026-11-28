@@ -311,18 +311,54 @@ class GeminiLiveTests {
     }
 
     @Test
-    fun malformedAudioWarnsWithoutStoppingSubtitles() {
-        val probe = Probe()
-        probe.connect("/bad-audio", audio = true)
-        probe.waitFor { probe.ready }
-        assertEquals(AppendResult.SENT, probe.client.append(ByteArray(640)))
-        probe.client.finish()
-        probe.waitFor { probe.ended }
-        assertNull(probe.error)
-        assertEquals(LiveMessage.AudioInvalidFormat, probe.audioError)
-        val row = probe.events.rows.values.single()
-        assertEquals("Hello world.", row.source.text)
-        assertEquals("你好，世界🌏。", probe.events.translation(row).text)
+    fun malformedAudioAndUnsupportedSampleRateWarnWithoutStoppingSubtitles() {
+        assertTrue(GeminiLiveAdapter.isSupportedOutputAudioPcmMimeType("audio/pcm"))
+        assertTrue(GeminiLiveAdapter.isSupportedOutputAudioPcmMimeType("audio/pcm;rate=24000"))
+        assertTrue(GeminiLiveAdapter.isSupportedOutputAudioPcmMimeType("AUDIO/PCM; rate = 24000 ; endian=little"))
+        assertFalse(GeminiLiveAdapter.isSupportedOutputAudioPcmMimeType("audio/pcm;rate=16000"))
+        assertFalse(GeminiLiveAdapter.isSupportedOutputAudioPcmMimeType("audio/pcm;rate=abc"))
+        assertFalse(GeminiLiveAdapter.isSupportedOutputAudioPcmMimeType("audio/wav;rate=24000"))
+
+        for (route in listOf("/bad-audio", "/wrong-audio-rate")) {
+            val probe = Probe()
+            probe.connect(route, audio = true)
+            probe.waitFor { probe.ready }
+            assertEquals(AppendResult.SENT, probe.client.append(ByteArray(640)))
+            probe.client.finish()
+            probe.waitFor { probe.ended }
+            assertNull("clean session end ($route)", probe.error)
+            assertEquals("invalid audio warning ($route)", LiveMessage.AudioInvalidFormat, probe.audioError)
+            assertEquals("no invalid audio played ($route)", 0, probe.audioBytes)
+            val row = probe.events.rows.values.single()
+            assertEquals("Hello world.", row.source.text)
+            assertEquals("你好，世界🌏。", probe.events.translation(row).text)
+        }
+    }
+
+    @Test
+    fun postTurnFinishDistinguishesShortTrailingSilenceFromNewUtterance() {
+        // <= 32,000 bytes (<= 1 s) after a completed turn finishes cleanly without false timeout error.
+        val shortSilence = Probe(timeoutMs = 150)
+        shortSilence.connect("/post-turn-hang")
+        shortSilence.waitFor { shortSilence.ready }
+        assertEquals(AppendResult.SENT, shortSilence.client.append(ByteArray(640)))
+        shortSilence.waitFor { shortSilence.events.rows.values.any { it.source.done } }
+        assertEquals(AppendResult.SENT, shortSilence.client.append(ByteArray(32_000)))
+        shortSilence.client.finish()
+        shortSilence.waitFor { shortSilence.ended }
+        assertNull("short trailing silence ends cleanly", shortSilence.error)
+
+        // > 32,000 bytes (> 1 s) after a completed turn uses full finish timeout and reports FinishTimeout.
+        val newUtterance = Probe(timeoutMs = 150)
+        newUtterance.connect("/post-turn-hang")
+        newUtterance.waitFor { newUtterance.ready }
+        assertEquals(AppendResult.SENT, newUtterance.client.append(ByteArray(640)))
+        newUtterance.waitFor { newUtterance.events.rows.values.any { it.source.done } }
+        assertEquals(AppendResult.SENT, newUtterance.client.append(ByteArray(32_640)))
+        newUtterance.client.finish()
+        newUtterance.waitFor { newUtterance.ended }
+        assertEquals(LiveMessage.FinishTimeout, newUtterance.cause.errorMessage)
+        assertEquals("你好，世界🌏。", newUtterance.events.translation(newUtterance.events.rows.values.single()).text)
     }
 
     @Test

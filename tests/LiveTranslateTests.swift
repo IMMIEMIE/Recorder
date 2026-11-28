@@ -634,6 +634,14 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
         try check(textModalities == ["TEXT"] && textSetup["outputAudioTranscription"] == nil,
                   "non-native-audio model uses TEXT modality when audioOutput is false")
 
+        // Verify output audio PCM MIME type and sample rate validation.
+        try check(GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType("audio/pcm"), "omitted rate defaults to 24 kHz")
+        try check(GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType("audio/pcm;rate=24000"), "explicit 24 kHz rate accepted")
+        try check(GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType("AUDIO/PCM; rate = 24000 ; endian=little"), "parameter spacing & case accepted")
+        try check(!GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType("audio/pcm;rate=16000"), "16 kHz output audio rejected")
+        try check(!GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType("audio/pcm;rate=bad"), "non-numeric rate rejected")
+        try check(!GeminiLiveProtocol.isSupportedOutputAudioPCMMimeType("audio/wav;rate=24000"), "non-PCM MIME rejected")
+
         guard let geminiBase = ProcessInfo.processInfo.environment["RECORDER_GEMINI_MOCK"] else {
             throw LiveTestError(message: "Use scripts/test_livetranslate.sh (RECORDER_GEMINI_MOCK missing)")
         }
@@ -794,6 +802,68 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             try await wait { ended }
             try check(endError == nil && warning != nil && lastUpdate?.translation == "你好，世界🌏。",
                       "malformed audio emits playback warning without dropping subtitles")
+        }
+
+        // Unsupported output audio sample rate (e.g. rate=16000) warns and drops audio while keeping subtitles.
+        do {
+            let session = GeminiLiveSession(allowLocalhost: true)
+            var ready = false, ended = false, endError: String? = nil
+            var warning: String?
+            var audioBytes = 0
+            var lastUpdate: LiveTranslationUpdate?
+            session.onReady = { ready = true }
+            session.onEvent = {
+                switch $0 {
+                case .playbackWarning(let m): warning = m
+                case .audio(let d): audioBytes += d.count
+                case .update(let u): lastUpdate = u
+                default: break
+                }
+            }
+            session.onEnd = { endError = $0; ended = true }
+            try session.start(configuration: makeGeminiConfig(route: "/wrong-audio-rate", audio: true), key: "mock-gemini", sessionID: "t7-rate")
+            try await wait { ready }
+            _ = session.append(Data(repeating: 0, count: 640))
+            session.finish()
+            try await wait { ended }
+            try check(endError == nil && warning == "译音数据格式无效，已停止播放" && audioBytes == 0 && lastUpdate?.translation == "你好，世界🌏。",
+                      "non-24kHz audio emits playback warning, drops audio, and preserves subtitles")
+        }
+
+        // Post-turn finish timeout: <= 32,000 bytes (<= 1 s trailing silence) finishes cleanly;
+        // > 32,000 bytes (a new utterance stopped right away) surfaces FinishTimeout.
+        do {
+            let shortSilence = GeminiLiveSession(finishTimeout: 0.15, allowLocalhost: true)
+            var ready = false, turnDone = false, ended = false, endError: String? = nil
+            shortSilence.onReady = { ready = true }
+            shortSilence.onEvent = { if case .update(let u) = $0, u.committed { turnDone = true } }
+            shortSilence.onEnd = { endError = $0; ended = true }
+            try shortSilence.start(configuration: makeGeminiConfig(route: "/post-turn-hang"), key: "mock-gemini", sessionID: "t7-silence")
+            try await wait { ready }
+            _ = shortSilence.append(Data(repeating: 0, count: 640))
+            try await wait { turnDone }
+            _ = shortSilence.append(Data(repeating: 0, count: 32_000))
+            shortSilence.finish()
+            try await wait { ended }
+            try check(endError == nil, "short trailing silence (<= 1 s) after completed turn finishes cleanly")
+
+            let newUtterance = GeminiLiveSession(finishTimeout: 0.15, allowLocalhost: true)
+            ready = false; turnDone = false; ended = false; endError = nil
+            var preservedText = ""
+            newUtterance.onReady = { ready = true }
+            newUtterance.onEvent = {
+                if case .update(let u) = $0, u.committed { turnDone = true; preservedText = u.translation }
+            }
+            newUtterance.onEnd = { endError = $0; ended = true }
+            try newUtterance.start(configuration: makeGeminiConfig(route: "/post-turn-hang"), key: "mock-gemini", sessionID: "t7-utterance")
+            try await wait { ready }
+            _ = newUtterance.append(Data(repeating: 0, count: 640))
+            try await wait { turnDone }
+            _ = newUtterance.append(Data(repeating: 0, count: 32_640))
+            newUtterance.finish()
+            try await wait { ended }
+            try check(endError == "LiveTranslate 尾句处理超时，已保留收到的文字，末句可能不完整" && preservedText == "你好，世界🌏。",
+                      "new utterance (> 1 s) stopped immediately surfaces finish timeout while preserving prior text")
         }
 
         do {

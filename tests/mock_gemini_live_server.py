@@ -178,21 +178,24 @@ class Handler(BaseHTTPRequestHandler):
                             self.frame({'serverContent': {'outputTranscription': {'text': '你好，'}}})
                             if route.path == '/bad-audio':
                                 self.frame({'serverContent': {'modelTurn': {'parts': [{'inlineData': {'mimeType': 'audio/pcm;rate=24000', 'data': 'not valid base64!'}}]}}})
+                            elif route.path == '/wrong-audio-rate':
+                                self.frame({'serverContent': {'modelTurn': {'parts': [{'inlineData': {'mimeType': 'audio/pcm;rate=16000', 'data': base64.b64encode(pcm_part1).decode()}}]}}})
                             else:
                                 self.frame({'serverContent': {'modelTurn': {'parts': [{'inlineData': {'mimeType': 'audio/pcm;rate=24000', 'data': base64.b64encode(pcm_part1).decode()}}]}}})
                         else:
                             self.frame({'serverContent': {'modelTurn': {'parts': [{'text': '你好，'}]}}})
-                        if route.path == '/go-away':
+                        if route.path in ('/go-away', '/post-turn-hang'):
                             self.frame({'serverContent': {'inputTranscription': {'text': 'world.'}}})
                             if audio_modality:
                                 self.frame({'serverContent': {'outputTranscription': {'text': '世界🌏。'}}})
                             else:
                                 self.frame({'serverContent': {'modelTurn': {'parts': [{'text': '世界🌏。'}]}}})
                             self.frame({'serverContent': {'generationComplete': True, 'turnComplete': True}})
-                            self.frame({'goAway': {'timeLeft': '5s'}})
-                            return
+                            if route.path == '/go-away':
+                                self.frame({'goAway': {'timeLeft': '5s'}})
+                                return
                 elif rt.get('audioStreamEnd') is True:
-                    if route.path == '/timeout':
+                    if route.path in ('/timeout', '/post-turn-hang'):
                         threading.Event().wait(2)
                         return
                     if route.path == '/interrupted':
@@ -204,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.frame({'serverContent': {'inputTranscription': {'text': 'world.'}}})
                         if audio_modality:
                             self.frame({'serverContent': {'outputTranscription': {'text': '世界🌏。'}}})
-                            if route.path != '/bad-audio':
+                            if route.path not in ('/bad-audio', '/wrong-audio-rate'):
                                 self.frame({'serverContent': {'modelTurn': {'parts': [{'inlineData': {'mimeType': 'audio/pcm;rate=24000', 'data': base64.b64encode(pcm_part2).decode()}}]}}})
                         else:
                             self.frame({'serverContent': {'modelTurn': {'parts': [{'text': '世界🌏。'}]}}})
