@@ -498,7 +498,7 @@ class SessionController(private val context: Context) : SessionPlatform {
     fun saveSettings(draft: LiveTranslateConfig, key: String, draftOptions: AppOptions): Boolean {
         val localized = localizedContext()
         val active = engine.snapshot.state != SessionState.IDLE
-        if (active && (key.isNotBlank() || draft.profile.id != config.profile.id || draft.endpoint != config.endpoint)) {
+        if (active && (key.isNotBlank() || draft.profile.id != config.profile.id || draft.endpoint != config.endpoint || draft.profile.protocolID != config.profile.protocolID)) {
             _ui.update { it.copy(settingsMessage = localized.getString(R.string.dialogue_service_locked)) }
             return false
         }
@@ -561,8 +561,10 @@ class SessionController(private val context: Context) : SessionPlatform {
     }
 
     /** Keys are stored under the normalized address. */
-    fun hasKey(endpoint: String): Boolean {
-        val draft = LiveTranslateConfig(endpoint = endpoint)
+    fun hasKey(endpoint: String): Boolean = hasKey(LiveServiceProfile(endpoint = endpoint))
+
+    fun hasKey(profile: LiveServiceProfile): Boolean {
+        val draft = LiveTranslateConfig(catalog = com.localrecorder.live.LiveServiceCatalog(profile))
         val account = try {
             draft.normalized(allowLocalhost).keyAccount
         } catch (_: LiveTranslateException) {

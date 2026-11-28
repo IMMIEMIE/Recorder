@@ -8,7 +8,7 @@ swiftc -parse-as-library -module-cache-path "$PWD/.build/module-cache" \
   Sources/RecorderBackend/BackendTypes.swift Sources/RecorderBackend/ConfigStore.swift \
   Sources/RecorderBackend/ModelDownloader.swift Sources/RecorderBackend/PinnedModelArtifact.swift \
   Sources/Recorder/AIClient.swift Sources/Recorder/LiveTranslate.swift Sources/Recorder/LiveServiceProfile.swift \
-  Sources/Recorder/LiveTranslationSession.swift Sources/Recorder/LiveTranslateAudio.swift \
+  Sources/Recorder/GeminiLiveSession.swift Sources/Recorder/LiveTranslationSession.swift Sources/Recorder/LiveTranslateAudio.swift \
   Sources/Recorder/HyModelStore.swift Sources/Recorder/LocalSpeechOutput.swift tests/LocalSpeechTests.swift \
   -o .build/feature-tests/local-speech-tests
 .build/feature-tests/local-speech-tests

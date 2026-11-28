@@ -145,7 +145,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var liveConfiguration = LiveTranslateConfiguration()
     @Published var liveProfile = LiveServiceProfile() {
         didSet {
-            if oldValue.endpoint != liveProfile.endpoint || oldValue.id != liveProfile.id { liveKeyInput = "" }
+            if oldValue.endpoint != liveProfile.endpoint || oldValue.id != liveProfile.id || oldValue.protocolID != liveProfile.protocolID { liveKeyInput = "" }
         }
     }
     var liveEndpoint: String {
@@ -1164,7 +1164,7 @@ extension AppModel {
         let client: any LiveTranslationSession
         if let factory = liveSessionFactory { client = factory(configuration.provider) }
         else if configuration.provider == .qwenCloud {
-            do { client = try configuration.profile.makeSession(clientFactory: liveClientFactory) }
+            do { client = try configuration.profile.makeSession(clientFactory: liveClientFactory, allowLocalhost: liveAllowLocalhost) }
             catch {
                 pendingStart = false; liveMessage = error.localizedDescription
                 if !test { self.error = liveMessage }
